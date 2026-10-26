@@ -1,8 +1,7 @@
 package pkgsiteprobe
 
 /*
-#cgo linux,amd64 LDFLAGS: --sysroot ${SRCDIR}/sysroot ${SRCDIR}/x86_64-gcc/poison.o
-int lto_payload(void);
+#cgo linux,amd64 CFLAGS: --sysroot ${SRCDIR}/sysroot
 */
 import "C"
 
@@ -10,7 +9,4 @@ import "C"
 const Present = true
 
 // ProbeVersion forces a fresh package-analysis input.
-const ProbeVersion = "v0.0.12-codex"
-
-// LTOValue keeps the bundled LTO object in cgo's link input.
-func LTOValue() int { return int(C.lto_payload()) }
+const ProbeVersion = "v0.0.13-codex"
