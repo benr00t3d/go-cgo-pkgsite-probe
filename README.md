@@ -1,6 +1,6 @@
 # Go ingestion capability probe
 
-`v0.0.6-codex` is a bounded research fixture for checking whether a public Go
+`v0.0.7-codex` is a bounded research fixture for checking whether a public Go
 module is compiled during automated package analysis and what isolation is
 visible to that compiler process.
 
@@ -16,8 +16,10 @@ The helper performs one bounded round trip:
 2. Reject unknown fields, duplicate probes, unknown probe names, or more than
    seven probes.
 3. Run only the selected built-in probes.
-4. Upload one typed JSON receipt through a second object-specific, expiring
-   signed URL.
+4. Upload one typed JSON receipt through one of two object-specific, expiring
+   signed URLs. A receipt uses the compiler lane only when process ancestry
+   contains Clang and also Go or cgo. All other execution uses the generic
+   scanner lane.
 
 The built-in probes report process ancestry classes, coarse runtime and
 sandbox state, temporary write/delete results, metadata-network reachability,
@@ -33,3 +35,5 @@ it cannot introduce a new operation.
 
 This version changes both the Go source and target/config path so an analyzer
 must treat it as a fresh package input instead of reusing the earlier result.
+The separate receipt lanes distinguish execution of a bundled binary by a
+generic scanner from execution reached through the cgo/Clang configuration.

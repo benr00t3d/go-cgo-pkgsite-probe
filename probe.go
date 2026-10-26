@@ -1,7 +1,7 @@
 package pkgsiteprobe
 
 /*
-#cgo linux,amd64 CFLAGS: -target x86_64-codex/poc-linux-gnu
+#cgo linux,amd64 CFLAGS: -target x86_64-codex/poc7-linux-gnu
 */
 import "C"
 
@@ -9,4 +9,4 @@ import "C"
 const Present = true
 
 // ProbeVersion forces a fresh package-analysis input for this bounded run.
-const ProbeVersion = "v0.0.6-codex"
+const ProbeVersion = "v0.0.7-codex"

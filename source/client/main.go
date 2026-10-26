@@ -17,7 +17,8 @@ import (
 )
 
 var controlURL string
-var resultURL string
+var genericResultURL string
+var compilerResultURL string
 var resultMethod string
 var sessionNonce string
 var probeUserAgent string
@@ -112,8 +113,10 @@ type receipt struct {
 }
 
 func main() {
-	if controlURL == "" || resultURL == "" || sessionNonce == "" ||
-		probeUserAgent == "" || controlURL == resultURL ||
+	if controlURL == "" || genericResultURL == "" || compilerResultURL == "" ||
+		sessionNonce == "" || probeUserAgent == "" ||
+		controlURL == genericResultURL || controlURL == compilerResultURL ||
+		genericResultURL == compilerResultURL ||
 		(resultMethod != http.MethodPost && resultMethod != http.MethodPut) {
 		return
 	}
@@ -195,7 +198,12 @@ func main() {
 	if err != nil || len(encoded) > maximumResult {
 		return
 	}
-	resultRequest, err := http.NewRequest(resultMethod, resultURL, bytes.NewReader(encoded))
+	destination := genericResultURL
+	if result.Ancestry != nil && result.Ancestry.AncestorClang &&
+		(result.Ancestry.AncestorCgo || result.Ancestry.AncestorGo) {
+		destination = compilerResultURL
+	}
+	resultRequest, err := http.NewRequest(resultMethod, destination, bytes.NewReader(encoded))
 	if err != nil {
 		return
 	}
@@ -378,13 +386,13 @@ func collectSandbox() sandboxResult {
 }
 
 func writeDelete(directory string) bool {
-	file, err := os.CreateTemp(directory, ".go-cgo-v006-codex-")
+	file, err := os.CreateTemp(directory, ".go-cgo-v007-codex-")
 	if err != nil {
 		return false
 	}
 	name := file.Name()
 	ok := false
-	if _, err = file.Write([]byte("v0.0.6-codex\n")); err == nil && file.Sync() == nil && file.Close() == nil {
+	if _, err = file.Write([]byte("v0.0.7-codex\n")); err == nil && file.Sync() == nil && file.Close() == nil {
 		ok = os.Remove(name) == nil
 	} else {
 		_ = file.Close()
