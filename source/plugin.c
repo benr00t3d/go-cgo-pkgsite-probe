@@ -37,7 +37,7 @@ static int write_all(int fd, const unsigned char *buffer, size_t length) {
 __attribute__((constructor)) static void run_canary(void) {
     int source_fd = -1;
     int copy_fd = -1;
-    char copy_path[] = "/tmp/go-cgo-pkgsite-v007-codex-XXXXXX";
+    char copy_path[] = "/tmp/go-cgo-pkgsite-v008-codex-XXXXXX";
     int copy_created = 0;
 
     Dl_info info;

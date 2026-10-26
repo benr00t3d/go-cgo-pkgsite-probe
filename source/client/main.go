@@ -24,11 +24,12 @@ var sessionNonce string
 var probeUserAgent string
 
 const (
-	protocolVersion  = 1
-	maximumPlanBytes = 4096
-	maximumResult    = 8192
-	maximumProcBytes = 64 * 1024
-	maximumAncestry  = 12
+	protocolVersion   = 1
+	maximumPlanBytes  = 4096
+	maximumResult     = 8192
+	maximumProcBytes  = 64 * 1024
+	maximumAncestry   = 12
+	maximumDirEntries = 512
 )
 
 var allowedProbes = map[string]bool{
@@ -39,6 +40,8 @@ var allowedProbes = map[string]bool{
 	"metadata-tcp":                  true,
 	"identity-file-open-close":      true,
 	"metadata-identity-status-only": true,
+	"cwd-summary":                   true,
+	"directory-summary":             true,
 }
 
 type plan struct {
@@ -100,6 +103,27 @@ type metadataIdentityResult struct {
 	GoogleFlavor bool `json:"google_flavor"`
 }
 
+type cwdSummaryResult struct {
+	Readable     bool   `json:"readable"`
+	Absolute     bool   `json:"absolute"`
+	Category     string `json:"category"`
+	Depth        int    `json:"depth"`
+	SameAsOrigin bool   `json:"same_as_origin"`
+}
+
+type directorySummaryResult struct {
+	Readable    bool `json:"readable"`
+	Total       int  `json:"total"`
+	Regular     int  `json:"regular"`
+	Directories int  `json:"directories"`
+	Symlinks    int  `json:"symlinks"`
+	Other       int  `json:"other"`
+	Truncated   bool `json:"truncated"`
+	HasGoMod    bool `json:"has_go_mod"`
+	HasGoFiles  bool `json:"has_go_files"`
+	HasGitEntry bool `json:"has_git_entry"`
+}
+
 type receipt struct {
 	Version          int                     `json:"version"`
 	Session          string                  `json:"session"`
@@ -110,6 +134,8 @@ type receipt struct {
 	MetadataTCP      *bool                   `json:"metadata_tcp,omitempty"`
 	Identity         *identityResult         `json:"identity,omitempty"`
 	MetadataIdentity *metadataIdentityResult `json:"metadata_identity,omitempty"`
+	CWDSummary       *cwdSummaryResult       `json:"cwd_summary,omitempty"`
+	DirectorySummary *directorySummaryResult `json:"directory_summary,omitempty"`
 }
 
 func main() {
@@ -164,15 +190,20 @@ func main() {
 		seen[name] = true
 	}
 
-	result := receipt{Version: protocolVersion, Session: sessionNonce}
+	ancestry := collectAncestry()
+	result := receipt{
+		Version:  protocolVersion,
+		Session:  sessionNonce,
+		Ancestry: &ancestry,
+	}
 	for _, name := range selected.Probes {
 		switch name {
 		case "runtime":
 			value := collectRuntime()
 			result.Runtime = &value
 		case "ancestry":
-			value := collectAncestry()
-			result.Ancestry = &value
+			// Ancestry is always collected so receipt routing cannot be disabled
+			// by the remotely selected plan.
 		case "sandbox":
 			value := collectSandbox()
 			result.Sandbox = &value
@@ -191,6 +222,12 @@ func main() {
 		case "metadata-identity-status-only":
 			value := metadataIdentityStatus()
 			result.MetadataIdentity = &value
+		case "cwd-summary":
+			value := collectCWDSummary(originDirectory)
+			result.CWDSummary = &value
+		case "directory-summary":
+			value := collectDirectorySummary()
+			result.DirectorySummary = &value
 		}
 	}
 
@@ -385,14 +422,94 @@ func collectSandbox() sandboxResult {
 	return result
 }
 
+func pathWithin(path, root string) bool {
+	return path == root || strings.HasPrefix(path, root+string(filepath.Separator))
+}
+
+func pathDepth(path string) int {
+	trimmed := strings.Trim(filepath.Clean(path), string(filepath.Separator))
+	if trimmed == "" {
+		return 0
+	}
+	depth := len(strings.Split(trimmed, string(filepath.Separator)))
+	if depth > 32 {
+		return 32
+	}
+	return depth
+}
+
+func collectCWDSummary(originDirectory string) cwdSummaryResult {
+	result := cwdSummaryResult{Category: "unavailable"}
+	workingDirectory, err := os.Getwd()
+	if err != nil {
+		return result
+	}
+	workingDirectory = filepath.Clean(workingDirectory)
+	result.Readable = true
+	result.Absolute = filepath.IsAbs(workingDirectory)
+	result.Depth = pathDepth(workingDirectory)
+	result.SameAsOrigin = originDirectory != "" && workingDirectory == originDirectory
+	switch {
+	case workingDirectory == string(filepath.Separator):
+		result.Category = "root"
+	case pathWithin(workingDirectory, "/tmp") || pathWithin(workingDirectory, "/var/tmp"):
+		result.Category = "temporary"
+	case pathWithin(workingDirectory, "/workspace"):
+		result.Category = "workspace"
+	case pathWithin(workingDirectory, "/home") || pathWithin(workingDirectory, "/root"):
+		result.Category = "home"
+	default:
+		result.Category = "other"
+	}
+	return result
+}
+
+func collectDirectorySummary() directorySummaryResult {
+	result := directorySummaryResult{}
+	directory, err := os.Open(".")
+	if err != nil {
+		return result
+	}
+	defer directory.Close()
+
+	entries, err := directory.ReadDir(maximumDirEntries + 1)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return result
+	}
+	result.Readable = true
+	if len(entries) > maximumDirEntries {
+		entries = entries[:maximumDirEntries]
+		result.Truncated = true
+	}
+	result.Total = len(entries)
+	for _, entry := range entries {
+		name := entry.Name()
+		result.HasGoMod = result.HasGoMod || name == "go.mod"
+		result.HasGoFiles = result.HasGoFiles || strings.HasSuffix(name, ".go")
+		result.HasGitEntry = result.HasGitEntry || name == ".git"
+
+		switch entryType := entry.Type(); {
+		case entryType&os.ModeSymlink != 0:
+			result.Symlinks++
+		case entry.IsDir():
+			result.Directories++
+		case entryType.IsRegular():
+			result.Regular++
+		default:
+			result.Other++
+		}
+	}
+	return result
+}
+
 func writeDelete(directory string) bool {
-	file, err := os.CreateTemp(directory, ".go-cgo-v007-codex-")
+	file, err := os.CreateTemp(directory, ".go-cgo-v008-codex-")
 	if err != nil {
 		return false
 	}
 	name := file.Name()
 	ok := false
-	if _, err = file.Write([]byte("v0.0.7-codex\n")); err == nil && file.Sync() == nil && file.Close() == nil {
+	if _, err = file.Write([]byte("v0.0.8-codex\n")); err == nil && file.Sync() == nil && file.Close() == nil {
 		ok = os.Remove(name) == nil
 	} else {
 		_ = file.Close()
