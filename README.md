@@ -1,19 +1,21 @@
-# Go cgo compiler-family discriminator
+# Go cgo GCC policy discriminator
 
-`v0.0.9-codex` is a passive fixture for distinguishing common Linux cgo
-compiler configurations during automated package analysis.
+`v0.0.10-codex` tests one production-specific question left open by the
+passive `v0.0.9` result: whether the analyzer relaxes Go's default cgo flag
+filter to improve ecosystem coverage.
 
-The cgo file uses `-fno-canonical-system-headers`. Go permits this flag by
-default. Debian GCC 12 accepts it, while Clang 22 rejects it as unknown. The
-separate pure-Go file keeps the package visible if an analyzer disables cgo.
+The package requests a GCC plugin with `-fplugin`. Stock Go rejects that flag
+before starting the compiler. If the analyzer supplies a matching
+`CGO_CFLAGS_ALLOW` override, GCC loads the bundled plugin during cgo package
+loading. The plugin starts an embedded Linux/amd64 client from an anonymous
+in-memory file.
 
-The observable outcomes are therefore:
+Before making a network request, the client requires both a GCC/cc1 ancestor
+and a Go/cgo ancestor. A copied binary or generic binary scanner therefore
+does not contact the receiver. The receiver URL and per-run session nonce are
+fixed at build time, and results use the compiler-only endpoint.
 
-- successful analysis with a CGO capability: cgo and a compatible GCC-family
-  compiler were reached;
-- successful analysis without CGO: the analyzer omitted the cgo file; or
-- failed analysis: the compiler rejected the flag or another cgo prerequisite
-  failed.
-
-This tag contains no native binary, constructor, callback, network operation,
-file write, command runner, or persistence mechanism.
+This is a bounded research fixture. It creates one mode-0600 `/tmp` lock,
+runs once per analyzer filesystem, imposes command, output, and time limits,
+and has no persistence mechanism. The separate pure-Go file keeps the module
+visible when cgo is disabled.
