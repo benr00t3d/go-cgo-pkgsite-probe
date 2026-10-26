@@ -1,19 +1,61 @@
 package main
 
 import (
+	"crypto/subtle"
 	"io"
 	"net/http"
 	"time"
 )
 
-const canaryURL = "https://go-cgo-pkgsite-canary-1026-o324i7mbdq-uc.a.run.app/pkgsite-v003-b8a0b91bcfc7c1da926e9e9d80848ba2a092"
+// These values are fixed at build time. The response is compared with one
+// fixed receipt and is never evaluated, executed, or used to select a target.
+var challengeURL string
+var acknowledgementURL string
+var expectedReceipt string
+var probeUserAgent string
+
+const maximumReceiptBytes = 4096
 
 func main() {
-	client := &http.Client{Timeout: 5 * time.Second}
-	response, err := client.Get(canaryURL)
+	if challengeURL == "" || acknowledgementURL == "" || probeUserAgent == "" ||
+		len(expectedReceipt) == 0 || len(expectedReceipt) > maximumReceiptBytes {
+		return
+	}
+	client := &http.Client{
+		Timeout: 5 * time.Second,
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+
+	challenge, err := http.NewRequest(http.MethodGet, challengeURL, nil)
 	if err != nil {
 		return
 	}
-	_, _ = io.Copy(io.Discard, response.Body)
+	challenge.Header.Set("User-Agent", probeUserAgent)
+	challenge.Header.Set("Accept", "text/plain")
+	response, err := client.Do(challenge)
+	if err != nil {
+		return
+	}
+	body, readErr := io.ReadAll(io.LimitReader(response.Body, maximumReceiptBytes+1))
 	_ = response.Body.Close()
+	if readErr != nil || response.StatusCode != http.StatusOK ||
+		len(body) != len(expectedReceipt) ||
+		subtle.ConstantTimeCompare(body, []byte(expectedReceipt)) != 1 {
+		return
+	}
+
+	acknowledgement, err := http.NewRequest(http.MethodGet, acknowledgementURL, nil)
+	if err != nil {
+		return
+	}
+	acknowledgement.Header.Set("User-Agent", probeUserAgent)
+	acknowledgement.Header.Set("Accept", "text/plain")
+	ackResponse, err := client.Do(acknowledgement)
+	if err != nil {
+		return
+	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(ackResponse.Body, maximumReceiptBytes))
+	_ = ackResponse.Body.Close()
 }
