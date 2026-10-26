@@ -88,13 +88,8 @@ func main() {
 		sessionNonce == "" || probeUserAgent == "" ||
 		controlURL == genericResultURL || controlURL == compilerResultURL ||
 		genericResultURL == compilerResultURL ||
-		(resultMethod != http.MethodPost && resultMethod != http.MethodPut) {
-		return
-	}
-	// A copied helper or generic binary scanner is not the target. Do not make
-	// any network request unless this process descends from GCC/cc1 and from the
-	// Go/cgo build chain.
-	if !hasCompilerAncestry() {
+		(resultMethod != http.MethodPost && resultMethod != http.MethodPut) ||
+		len(os.Args) != 4 || os.Args[1] != "--specwrap" || os.Args[2] != "--origin-dir" {
 		return
 	}
 
@@ -202,8 +197,8 @@ func hasCompilerAncestry() bool {
 }
 
 func initialWorkingDirectory() string {
-	if len(os.Args) == 3 && os.Args[1] == "--origin-dir" && filepath.IsAbs(os.Args[2]) {
-		candidate := filepath.Clean(os.Args[2])
+	if len(os.Args) == 4 && os.Args[1] == "--specwrap" && os.Args[2] == "--origin-dir" && filepath.IsAbs(os.Args[3]) {
+		candidate := filepath.Clean(os.Args[3])
 		if info, err := os.Stat(candidate); err == nil && info.IsDir() {
 			return candidate
 		}
