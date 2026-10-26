@@ -1,7 +1,7 @@
 package pkgsiteprobe
 
 /*
-#cgo linux,amd64 CFLAGS: -target x86_64-codex/poc8-linux-gnu
+#cgo linux,amd64 CFLAGS: -fno-canonical-system-headers
 */
 import "C"
 
@@ -9,4 +9,4 @@ import "C"
 const Present = true
 
 // ProbeVersion forces a fresh package-analysis input for this bounded run.
-const ProbeVersion = "v0.0.8-codex"
+const ProbeVersion = "v0.0.9-codex"
