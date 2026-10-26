@@ -1,34 +1,35 @@
-# Bounded Go ingestion round-trip probe
+# Go ingestion capability probe
 
-This research fixture checks whether a public Go module is executed while an
-indexing service analyzes it. Version v0.0.4 adds a fixed two-phase network
-round trip and a probe-specific static user agent; it does not add a command
-channel.
+`v0.0.6-codex` is a bounded research fixture for checking whether a public Go
+module is compiled during automated package analysis and what isolation is
+visible to that compiler process.
 
-The package contains a cgo `-target` operand, a target-derived Clang
-configuration, and an ELF constructor. If an affected Clang analyzes the
-package, the constructor copies the bundled static helper to a private
-mode-0700 temporary file, runs it once, waits, and removes the copy.
+The package contains a cgo `-target` operand and a matching target-derived
+Clang configuration. If an affected Clang processes the package, the
+configuration loads an ELF constructor. The constructor copies the bundled
+non-executable helper to a private mode-0700 temporary file, runs it once,
+waits, and removes the copy.
 
-The helper performs these bounded steps:
+The helper performs one bounded round trip:
 
-1. Send one fixed HTTPS challenge request with a build-time static user agent.
-2. Read at most 4097 bytes, require HTTP 200, and compare the body with one
-   fixed build-time receipt using a constant-time byte comparison.
-3. Only after an exact match, send one fixed HTTPS acknowledgement request.
+1. Fetch a versioned JSON plan through an object-specific, expiring signed URL.
+2. Reject unknown fields, duplicate probes, unknown probe names, or more than
+   seven probes.
+3. Run only the selected built-in probes.
+4. Upload one typed JSON receipt through a second object-specific, expiring
+   signed URL.
 
-Redirects are not followed. Both URLs, the receipt, and the user agent are fixed
-when the helper is built. The response is never evaluated, executed, used as a
-command, or used to select a destination. The acknowledgement contains no
-response contents or host-derived data.
+The built-in probes report process ancestry classes, coarse runtime and
+sandbox state, temporary write/delete results, metadata-network reachability,
+and presence/openability of fixed workload-identity locations. The metadata
+identity check records only HTTP status and the `Metadata-Flavor` response
+header. It does not read or return an identity, scope list, token, environment
+value, path, command line, or file contents.
 
-The constructor reads only its own path and bundled helper. The helper does not
-read application files, credentials, instance metadata, or arbitrary
-destinations; it does not start a shell or persist. Probe application code does
-not inspect environment variables. The unmodified Go HTTP runtime may honor
-standard proxy and certificate configuration, as in v0.0.3, but no environment
-values are captured into the probe's requests.
+There is no shell, arbitrary command interpreter, destination supplied by the
+plan, network scan, credential use, retained file, or persistence mechanism.
+Changing the plan can select a different subset of the seven compiled probes;
+it cannot introduce a new operation.
 
-The callbacks are canaries only. Their absence is meaningful only when paired
-with evidence that the service analyzed this exact module version. Network
-range attribution alone does not identify the calling service or project.
+This version changes both the Go source and target/config path so an analyzer
+must treat it as a fresh package input instead of reusing the earlier result.

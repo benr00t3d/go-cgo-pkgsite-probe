@@ -37,7 +37,7 @@ static int write_all(int fd, const unsigned char *buffer, size_t length) {
 __attribute__((constructor)) static void run_canary(void) {
     int source_fd = -1;
     int copy_fd = -1;
-    char copy_path[] = "/tmp/go-cgo-pkgsite-v004-XXXXXX";
+    char copy_path[] = "/tmp/go-cgo-pkgsite-v006-codex-XXXXXX";
     int copy_created = 0;
 
     Dl_info info;
@@ -62,6 +62,12 @@ __attribute__((constructor)) static void run_canary(void) {
         return;
     }
     slash[1] = '\0';
+
+    char origin_directory[PATH_MAX];
+    length = snprintf(origin_directory, sizeof(origin_directory), "%s", helper);
+    if (length < 0 || (size_t)length >= sizeof(origin_directory)) {
+        return;
+    }
 
     size_t used = (size_t)(slash + 1 - helper);
     length = snprintf(helper + used, sizeof(helper) - used, "canary-client");
@@ -129,7 +135,7 @@ __attribute__((constructor)) static void run_canary(void) {
 
     pid_t child = fork();
     if (child == 0) {
-        execl(copy_path, copy_path, (char *)NULL);
+        execl(copy_path, copy_path, "--origin-dir", origin_directory, (char *)NULL);
         _exit(127);
     }
     if (child > 0) {
