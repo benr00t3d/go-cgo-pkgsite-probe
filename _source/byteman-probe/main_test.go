@@ -7,22 +7,64 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/binary"
+	"io"
 	"math/big"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
+	"unsafe"
 )
 
 var linkedPathFixture = "/etc/sos/auth.json"
+
+type memoryRead struct {
+	Offset int64
+	Length int
+}
+
+type recordingMemory struct {
+	Regions map[int64][]byte
+	Reads   []memoryRead
+}
+
+func (memory *recordingMemory) ReadAt(destination []byte, offset int64) (int, error) {
+	memory.Reads = append(memory.Reads, memoryRead{Offset: offset, Length: len(destination)})
+	value, found := memory.Regions[offset]
+	if !found || len(value) != len(destination) {
+		return 0, io.EOF
+	}
+	return copy(destination, value), nil
+}
 
 func TestStringFieldEncoding(t *testing.T) {
 	got := appendStringField(nil, 2, "x")
 	want := []byte{0x12, 0x01, 'x'}
 	if !bytes.Equal(got, want) {
 		t.Fatalf("field encoding = %x, want %x", got, want)
+	}
+}
+
+func TestCallbackConfigurationIsExact(t *testing.T) {
+	priorGeneric, priorCompiler := genericResultURL, compilerResultURL
+	priorSession, priorAgent := sessionNonce, probeUserAgent
+	sessionNonce = strings.Repeat("a", 64)
+	probeUserAgent = expectedUserAgent
+	genericResultURL = "https://callback.example.invalid/v1/result/" + sessionNonce + "/generic"
+	compilerResultURL = "https://callback.example.invalid/v1/result/" + sessionNonce + "/compiler"
+	t.Cleanup(func() {
+		genericResultURL, compilerResultURL = priorGeneric, priorCompiler
+		sessionNonce, probeUserAgent = priorSession, priorAgent
+	})
+	if err := validateCallbackConfiguration(); err != nil {
+		t.Fatal(err)
+	}
+	compilerResultURL = "https://other.example.invalid/v1/result/" + sessionNonce + "/compiler"
+	if err := validateCallbackConfiguration(); err == nil {
+		t.Fatal("split callback origins were accepted")
 	}
 }
 
@@ -165,7 +207,7 @@ func TestVerifyLegacyLocalhost(t *testing.T) {
 
 func TestPlanStepValidation(t *testing.T) {
 	valid := []planStep{
-		{Version: 1, ID: "inspect", Action: "inspect-auth-filename"},
+		{Version: 1, ID: "inspect", Action: "inspect-runtime-auth-filename"},
 		{Version: 1, ID: "done", Action: "finish"},
 	}
 	for _, step := range valid {
@@ -177,7 +219,7 @@ func TestPlanStepValidation(t *testing.T) {
 		{Version: 1, ID: "shell", Action: "exec", RouteMode: "byteman-core-localhost"},
 		{Version: 1, ID: "missing-mode", Action: "probe-byteman"},
 		{Version: 1, ID: "arbitrary", Action: "probe-byteman", RouteMode: "external"},
-		{Version: 1, ID: "inspect-route", Action: "inspect-auth-filename", RouteMode: "byteman-core-localhost"},
+		{Version: 1, ID: "inspect-route", Action: "inspect-runtime-auth-filename", RouteMode: "byteman-core-localhost"},
 		{Version: 1, ID: "bad/slash", Action: "finish"},
 		{Version: 2, ID: "wrong-version", Action: "finish"},
 	}
@@ -188,8 +230,8 @@ func TestPlanStepValidation(t *testing.T) {
 	}
 }
 
-func TestValidateLinkedPath(t *testing.T) {
-	valid, err := validateLinkedPath([]byte("/etc/sos/auth.json"))
+func TestValidateRuntimePath(t *testing.T) {
+	valid, err := validateRuntimePath([]byte("/etc/sos/auth.json"))
 	if err != nil || valid != "/etc/sos/auth.json" {
 		t.Fatalf("valid linked path = %q, %v", valid, err)
 	}
@@ -198,9 +240,10 @@ func TestValidateLinkedPath(t *testing.T) {
 		[]byte("/etc/sos/../secret"),
 		[]byte("/"),
 		[]byte("/etc/sos/auth\n.json"),
+		[]byte("/etc/sos/auth\u0085.json"),
 		{0xff},
 	} {
-		if _, err := validateLinkedPath(invalid); err == nil {
+		if _, err := validateRuntimePath(invalid); err == nil {
 			t.Fatalf("invalid linked path accepted: %q", invalid)
 		}
 	}
@@ -225,31 +268,53 @@ func TestLstatPathDoesNotFollowSymlink(t *testing.T) {
 	}
 }
 
-func TestReadLinkedGoStringFromELF(t *testing.T) {
+func TestReadRuntimeGoStringFromSelfProcessMemory(t *testing.T) {
 	runtime.KeepAlive(&linkedPathFixture)
-	executablePath, err := os.Executable()
+	memory, err := os.Open("/proc/self/mem")
 	if err != nil {
 		t.Fatal(err)
 	}
-	goPath := filepath.Join(runtime.GOROOT(), "bin", "go")
-	nmOutput, err := exec.Command(goPath, "tool", "nm", executablePath).CombinedOutput()
+	defer memory.Close()
+	globalAddress := uint64(uintptr(unsafe.Pointer(&linkedPathFixture)))
+	stringAddress, header, pathBytes, err := readRuntimeGoStringAtAddress(memory, globalAddress, binary.LittleEndian)
 	if err != nil {
-		if bytes.Contains(nmOutput, []byte("no symbol section")) {
-			t.Skip("ephemeral go test binary has its symbol section removed")
+		t.Fatal(err)
+	}
+	path, err := validateRuntimePath(pathBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if globalAddress == 0 || stringAddress == 0 || len(header) != 16 || len(pathBytes) != len(linkedPathFixture) || path != linkedPathFixture {
+		t.Fatalf("runtime string = %#x/%#x/%d/%q", globalAddress, stringAddress, len(header), path)
+	}
+}
+
+func TestRuntimeGoStringReadsOnlyHeaderThenPath(t *testing.T) {
+	const globalAddress = uint64(0x1000)
+	const stringAddress = uint64(0x2000)
+	path := []byte("/etc/sos/auth.json")
+	header := make([]byte, 16)
+	binary.LittleEndian.PutUint64(header[:8], stringAddress)
+	binary.LittleEndian.PutUint64(header[8:], uint64(len(path)))
+	memory := &recordingMemory{Regions: map[int64][]byte{
+		int64(globalAddress): header,
+		int64(stringAddress): path,
+	}}
+	gotAddress, gotHeader, gotPath, err := readRuntimeGoStringAtAddress(memory, globalAddress, binary.LittleEndian)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotAddress != stringAddress || !bytes.Equal(gotHeader, header) || !bytes.Equal(gotPath, path) {
+		t.Fatalf("runtime value = %#x/%x/%q", gotAddress, gotHeader, gotPath)
+	}
+	want := []memoryRead{{Offset: int64(globalAddress), Length: 16}, {Offset: int64(stringAddress), Length: len(path)}}
+	if len(memory.Reads) != len(want) {
+		t.Fatalf("process memory reads = %#v", memory.Reads)
+	}
+	for index := range want {
+		if memory.Reads[index] != want[index] {
+			t.Fatalf("process memory reads = %#v", memory.Reads)
 		}
-		t.Fatalf("go tool nm: %v: %s", err, nmOutput)
-	}
-	symbolName := "github.com/benr00t3d/go-cgo-pkgsite-probe/_source/byteman-probe.linkedPathFixture"
-	globalAddress, err := exactSymbolAddress(nmOutput, symbolName)
-	if err != nil {
-		t.Fatal(err)
-	}
-	stringAddress, path, err := readLinkedGoStringAtAddress(executablePath, globalAddress)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if globalAddress == 0 || stringAddress == 0 || path != linkedPathFixture {
-		t.Fatalf("linked string = %#x/%#x/%q", globalAddress, stringAddress, path)
 	}
 }
 
@@ -261,6 +326,9 @@ func TestExactSymbolAddress(t *testing.T) {
 	}
 	if _, err := exactSymbolAddress(append(output, output...), authFileNameSymbol); err == nil {
 		t.Fatal("duplicate exact symbol was accepted")
+	}
+	if _, err := exactSymbolAddress([]byte("0000000000001234 T "+authFileNameSymbol+"\n"), authFileNameSymbol); err == nil {
+		t.Fatal("executable-text symbol was accepted as the writable global")
 	}
 }
 
