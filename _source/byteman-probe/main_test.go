@@ -7,11 +7,13 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/json"
 	"math/big"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -23,6 +25,91 @@ func TestStringFieldEncoding(t *testing.T) {
 	want := []byte{0x12, 0x01, 'x'}
 	if !bytes.Equal(got, want) {
 		t.Fatalf("field encoding = %x, want %x", got, want)
+	}
+}
+
+func TestCallbackConfigurationIsExact(t *testing.T) {
+	priorGeneric, priorCompiler := genericResultURL, compilerResultURL
+	priorSession, priorAgent := sessionNonce, probeUserAgent
+	sessionNonce = strings.Repeat("a", 64)
+	probeUserAgent = expectedUserAgent
+	genericResultURL = "https://callback.example.invalid/v1/result/" + sessionNonce + "/generic"
+	compilerResultURL = "https://callback.example.invalid/v1/result/" + sessionNonce + "/compiler"
+	t.Cleanup(func() {
+		genericResultURL, compilerResultURL = priorGeneric, priorCompiler
+		sessionNonce, probeUserAgent = priorSession, priorAgent
+	})
+	if err := validateCallbackConfiguration(); err != nil {
+		t.Fatal(err)
+	}
+	compilerResultURL = "https://other.example.invalid/v1/result/" + sessionNonce + "/compiler"
+	if err := validateCallbackConfiguration(); err == nil {
+		t.Fatal("split callback origins were accepted")
+	}
+}
+
+func TestCapslockIdentityGateIsExact(t *testing.T) {
+	capslock := "/capslock/modcache/" + moduleName + "@" + probeVersion
+	pid1 := "/talisman-worker-capabilities -http=:8080"
+	if classifyLaneWithIdentity(capslock, 0, pid1) != "capslock" ||
+		classifyLaneWithIdentity(capslock+"/subdir", 0, pid1) != "capslock" {
+		t.Fatal("exact Capslock identity was not accepted")
+	}
+	for _, test := range []struct {
+		cwd  string
+		uid  int
+		pid1 string
+	}{
+		{capslock, 1000, pid1},
+		{capslock, 0, "/sbin/init"},
+		{"/capslock/modcache/other@v1", 0, pid1},
+		{"/capslock/modcache/" + moduleName + "@v0.0.59-codex", 0, pid1},
+	} {
+		if classifyLaneWithIdentity(test.cwd, test.uid, test.pid1) == "capslock" {
+			t.Fatalf("wrong identity entered Capslock lane: %#v", test)
+		}
+	}
+}
+
+func TestStaticReportSerializationIsMinimal(t *testing.T) {
+	identity := identityResult{
+		Lane: "capslock", CWD: "/private/cwd",
+	}
+	report := newProbeReport(time.Unix(1, 0), identity)
+	report.FinishedUTC = time.Unix(2, 0).UTC().Format(time.RFC3339Nano)
+	report.Inspection = &inspectionResult{}
+	report.Reason = "bounded static evidence completed"
+	report.TargetModule = "private-target"
+	report.Metadata.Email = "private@example.invalid"
+	report.Byteman = []grpcResult{{Method: "private-method"}}
+	encoded, err := json.Marshal(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range [][]byte{
+		[]byte("private/cwd"),
+		[]byte("private-target"), []byte("private@example.invalid"), []byte("private-method"),
+	} {
+		if bytes.Contains(encoded, forbidden) {
+			t.Fatalf("static report exposed forbidden value %q: %s", forbidden, encoded)
+		}
+	}
+	var decoded map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"schema", "module", "version", "started_utc", "finished_utc", "identity",
+		"inspection", "reason", "process_memory_read", "auth_file_content_read",
+		"mutating_requests_attempted", "non_callback_network_requests_attempted",
+	}
+	if len(decoded) != len(want) {
+		t.Fatalf("static report fields = %v", decoded)
+	}
+	for _, key := range want {
+		if _, ok := decoded[key]; !ok {
+			t.Fatalf("static report omitted %q", key)
+		}
 	}
 }
 
@@ -165,7 +252,7 @@ func TestVerifyLegacyLocalhost(t *testing.T) {
 
 func TestPlanStepValidation(t *testing.T) {
 	valid := []planStep{
-		{Version: 1, ID: "inspect", Action: "inspect-auth-filename"},
+		{Version: 1, ID: "inspect", Action: "inspect-auth-init"},
 		{Version: 1, ID: "done", Action: "finish"},
 	}
 	for _, step := range valid {
@@ -177,7 +264,7 @@ func TestPlanStepValidation(t *testing.T) {
 		{Version: 1, ID: "shell", Action: "exec", RouteMode: "byteman-core-localhost"},
 		{Version: 1, ID: "missing-mode", Action: "probe-byteman"},
 		{Version: 1, ID: "arbitrary", Action: "probe-byteman", RouteMode: "external"},
-		{Version: 1, ID: "inspect-route", Action: "inspect-auth-filename", RouteMode: "byteman-core-localhost"},
+		{Version: 1, ID: "inspect-route", Action: "inspect-auth-init", RouteMode: "byteman-core-localhost"},
 		{Version: 1, ID: "bad/slash", Action: "finish"},
 		{Version: 2, ID: "wrong-version", Action: "finish"},
 	}
@@ -185,6 +272,100 @@ func TestPlanStepValidation(t *testing.T) {
 		if err := validatePlanStep(step); err == nil {
 			t.Fatalf("invalid step accepted: %#v", step)
 		}
+	}
+}
+
+func TestExactAuthInitSymbols(t *testing.T) {
+	output := []byte("0000000000001000 T " + authInitSymbolPrefix + "\n" +
+		"0000000000001010 t " + authInitSymbolPrefix + ".0\n" +
+		"0000000000001020 T unrelated.init\n")
+	symbols, err := exactAuthInitSymbols(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(symbols) != 2 || symbols[0].Name != authInitSymbolPrefix || symbols[1].Name != authInitSymbolPrefix+".0" {
+		t.Fatalf("auth init symbols = %#v", symbols)
+	}
+	if isBoundedAuthInitSymbol(authInitSymbolPrefix+".;bad") || isBoundedAuthInitSymbol(authInitSymbolPrefix+".") {
+		t.Fatal("invalid auth init symbol was accepted")
+	}
+}
+
+func TestExactFunctionSymbol(t *testing.T) {
+	output := []byte("0000000000001234 T " + authLoadFileEntrySymbol + "\n")
+	symbol, err := exactFunctionSymbol(output, authLoadFileEntrySymbol)
+	if err != nil || symbol.Name != authLoadFileEntrySymbol || symbol.Address != "0x1234" {
+		t.Fatalf("function symbol = %#v, %v", symbol, err)
+	}
+	if _, err := exactFunctionSymbol(append(output, output...), authLoadFileEntrySymbol); err == nil {
+		t.Fatal("duplicated exact function symbol was accepted")
+	}
+	if _, err := exactFunctionSymbol([]byte("0000000000001234 D "+authLoadFileEntrySymbol+"\n"), authLoadFileEntrySymbol); err == nil {
+		t.Fatal("data symbol was accepted as executable function")
+	}
+}
+
+func TestBoundedFunctionDisassemblyAndCalls(t *testing.T) {
+	data := []byte("0001: call 0002 <os.ReadFile>\n0003: call 0004 <encoding/json.Unmarshal>\n0005: ret\n")
+	evidence := boundedFunctionDisassembly(staticSymbol{Name: authLoadFileEntrySymbol, Address: "0x1"}, data)
+	if evidence.DisassemblySHA256 == "" || evidence.LineCount != 3 || evidence.LinesDropped || len(evidence.CallSymbols) != 2 ||
+		evidence.CallSymbols[0] != "os.ReadFile" || evidence.CallSymbols[1] != "encoding/json.Unmarshal" {
+		t.Fatalf("function evidence = %#v", evidence)
+	}
+}
+
+func TestBoundedFunctionDisassemblyTruncates(t *testing.T) {
+	lines := make([]string, maximumFunctionDisassemblyLines+2)
+	for index := range lines {
+		lines[index] = strings.Repeat("x", 300)
+	}
+	evidence := boundedFunctionDisassembly(
+		staticSymbol{Name: authLoadFileEntrySymbol, Address: "0x1"},
+		[]byte(strings.Join(lines, "\n")),
+	)
+	if !evidence.LinesDropped || evidence.LineCount != maximumFunctionDisassemblyLines ||
+		len(evidence.Lines) != maximumFunctionDisassemblyLines {
+		t.Fatalf("function evidence bounds = %#v", evidence)
+	}
+	for _, line := range evidence.Lines {
+		if len(line) > 256+len("[truncated]") {
+			t.Fatalf("retained line length = %d", len(line))
+		}
+	}
+}
+
+func TestAuthSourceNameIsPackageBounded(t *testing.T) {
+	got, ok := authSourceName("prefix sos.googlesource.com/sos/auth.LoadFileEntry suffix")
+	if !ok || got != authLoadFileEntrySymbol {
+		t.Fatalf("auth source name = %q/%t", got, ok)
+	}
+	for _, test := range []struct {
+		line string
+		want string
+		ok   bool
+	}{
+		{"sos.googlesource.com/sos/other.Load", "", false},
+		{"sos.googlesource.com/sos/auth/etc/sos/auth.json", "", false},
+		{authFileNameSymbol + "/var/lib/private.json", authFileNameSymbol, true},
+		{authLoadFileEntrySymbol + "/run/secrets/auth", authLoadFileEntrySymbol, true},
+	} {
+		got, ok := authSourceName(test.line)
+		if got != test.want || ok != test.ok {
+			t.Fatalf("authSourceName(%q) = %q/%t, want %q/%t", test.line, got, ok, test.want, test.ok)
+		}
+		for _, forbidden := range []string{"/etc/", "/var/", "/run/"} {
+			if strings.Contains(got, forbidden) {
+				t.Fatalf("canonical auth token retained path suffix %q", got)
+			}
+		}
+	}
+}
+
+func TestBoundedInstructionWindows(t *testing.T) {
+	data := []byte("one\ntwo\nref auth.FileName\nfour\nfive\nsix\nref auth.FileName\neight\n")
+	windows := boundedInstructionWindows(data, "auth.FileName", 1, 1, 2)
+	if len(windows) != 2 || len(windows[0]) != 3 || len(windows[1]) != 3 {
+		t.Fatalf("bounded instruction windows = %#v", windows)
 	}
 }
 

