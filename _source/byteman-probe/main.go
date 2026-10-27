@@ -36,21 +36,21 @@ var rpcDialAddress string
 const (
 	protocolVersion            = 1
 	moduleName                 = "github.com/benr00t3d/go-cgo-pkgsite-probe"
-	probeVersion               = "v0.0.73-codex"
-	expectedUserAgent          = "go-cgo-pkgsite-probe-v073-codex"
+	probeVersion               = "v0.0.79-codex"
+	expectedUserAgent          = "go-cgo-pkgsite-probe-v079-codex"
 	targetRegistry             = "https://proxy.golang.org"
 	targetModuleName           = "github.com/benr00t3d/go-byteman-crosswrite-canary"
-	targetVersion              = "v0.0.2"
-	targetCanaryBytes          = 2801339
-	targetSHA512               = "26e0def56df5cb09079842f940a3dc98f1d493f23fc2eaaf71d2df968fb94d42520b18c919156cbdd831516a80dd3cfdd31b20fe81ed52e7cdc2bf3c7fc014f7"
-	targetSHA256               = "a80d50ddbe4d9381bdc50ea2f5dad7d93a474e67fda8b9a9cb6af6b72977fe33"
-	targetSHA1                 = "dd806e02f50cf479433a369b074fb0a8b341a8a4"
-	targetMD5                  = "e9c7205cf55d9d598f1a4e59b7c23e99"
+	targetVersion              = "v0.0.4"
+	targetCanaryBytes          = 2671
+	targetSHA512               = "081d2735a371bbf01ea0e0add3ab38fd2ce60cb33c8896f0330536657bc08e6b323c84b4730850fb966b32527e8945978f3dd074364cf44c31216959456f6cc6"
+	targetSHA256               = "3e2932904fcdf4559ea81d6312d5f5aab7e289c47900f41fd543929aadf03c5a"
+	targetSHA1                 = "c11a560772d54bdfd82ba8c64770205ae378d714"
+	targetMD5                  = "dbb5cf55816d11d09f7f83b149bf79d8"
 	descriptorReceiptSHA256    = "2f971b887a6da75675db2d570d14fe28f788a1513cefec2f3c521afb725ec225"
-	expectedDigestFieldSHA256  = "496464f0e034b4ff4cffc06fe2889d5be794cd7b9dd4d5463d30cb499f8779cd"
-	expectedMetadataSHA256     = "f15edffefd0c4601ff133a04f107df3492ca3eb3070ce223af5bbcd0db15451e"
-	canonicalProxyZipSHA256    = "e6492a7506743ffc579e1f33701944f9dfd42c695ccbd7d80aa7d5f95e972a90"
-	downloadSource             = "robert-owned-v073-substituted-execution"
+	expectedDigestFieldSHA256  = "430d806a91904935ef981d14264619d951885f6559aa91499ab077a9f06dbc9f"
+	expectedMetadataSHA256     = "8295858f5e3c9e18b68b0369aeec92975a51336a70b120f17a9377ed6985e27c"
+	canonicalProxyZipSHA256    = "6f0b2479fa3dab9414e8b0fac10b5781922686769f1ee811942282c0a2626e6f"
+	downloadSource             = "robert-owned-v079-download-refresh"
 	emptyValueSHA256           = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 	downloadPolicyName         = "ALWAYS"
 	downloadPolicyValue        = 4
@@ -259,10 +259,10 @@ func main() {
 	identity := inspectIdentity(cwd)
 	report := newProbeReport(started, identity)
 	endpoint := genericResultURL
-	resultID := "v073-codex-" + identity.Lane
+	resultID := "v079-codex-" + identity.Lane
 	if identity.Lane == "capslock" {
 		endpoint = compilerResultURL
-		resultID = "v073-codex-capslock-substituted-execution"
+		resultID = "v079-codex-capslock-download-refresh"
 		report.Download = runContentIngest()
 		if report.Download.Verified {
 			report.Refresh = runRefresh()
@@ -282,7 +282,7 @@ func main() {
 }
 
 func newProbeReport(started time.Time, identity identityResult) probeReport {
-	return probeReport{Schema: "owned-cross-package-substituted-execution/v1", Module: moduleName, Version: probeVersion, TargetModule: targetModuleName, TargetVersion: targetVersion, TargetURLSHA256: pinnedReadbackURLSHA256, TargetBodySHA256: targetSHA256, DescriptorReceiptSHA256: descriptorReceiptSHA256, CanonicalZipSHA256: canonicalProxyZipSHA256, ExpectedDigestSHA256: expectedDigestFieldSHA256, StartedUTC: started.UTC().Format(time.RFC3339Nano), Identity: identity, Download: downloadResult{Method: "/sos.byteman.Byteman/Download", PolicyName: downloadPolicyName, PolicyValue: downloadPolicyValue, RedirectPolicyName: redirectPolicyName, RedirectPolicyValue: redirectPolicyValue}, Refresh: refreshResult{Method: "/sos.talisman.Talisman/Refresh"}}
+	return probeReport{Schema: "owned-cross-package-download-refresh/v1", Module: moduleName, Version: probeVersion, TargetModule: targetModuleName, TargetVersion: targetVersion, TargetURLSHA256: pinnedReadbackURLSHA256, TargetBodySHA256: targetSHA256, DescriptorReceiptSHA256: descriptorReceiptSHA256, CanonicalZipSHA256: canonicalProxyZipSHA256, ExpectedDigestSHA256: expectedDigestFieldSHA256, StartedUTC: started.UTC().Format(time.RFC3339Nano), Identity: identity, Download: downloadResult{Method: "/sos.byteman.Byteman/Download", PolicyName: downloadPolicyName, PolicyValue: downloadPolicyValue, RedirectPolicyName: redirectPolicyName, RedirectPolicyValue: redirectPolicyValue}, Refresh: refreshResult{Method: "/sos.talisman.Talisman/Refresh"}}
 }
 
 func buildRefreshRequest() []byte {

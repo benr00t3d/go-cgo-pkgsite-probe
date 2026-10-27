@@ -21,7 +21,7 @@ func installTestConfiguration(t *testing.T) {
 	callbackOrigin := "https://fresh-callback.example.invalid"
 	genericResultURL = callbackOrigin + "/v1/result/" + callbackSessionNonce + "/generic"
 	compilerResultURL = callbackOrigin + "/v1/result/" + callbackSessionNonce + "/compiler"
-	pinnedReadbackURL = callbackOrigin + "/v1/goproxy/" + callbackSessionNonce + "/github.com/benr00t3d/go-byteman-crosswrite-canary/@v/v0.0.2.zip"
+	pinnedReadbackURL = callbackOrigin + "/v1/goproxy/" + callbackSessionNonce + "/github.com/benr00t3d/go-byteman-crosswrite-canary/@v/v0.0.4.zip"
 	digest := sha256.Sum256([]byte(pinnedReadbackURL))
 	pinnedReadbackURLSHA256 = hex.EncodeToString(digest[:])
 	payload := buildPinnedDownloadRequest()
@@ -84,7 +84,7 @@ func TestRefreshRequestIsExact(t *testing.T) {
 	payload := buildRefreshRequest()
 	frame := grpcFrame(payload)
 	digest := sha256.Sum256(frame)
-	if len(frame) != 74 || hex.EncodeToString(digest[:]) != "dab49b45c47debffaa7e0e2f3303f90c31e9e2de21319b19ff0e4b78f3c104f4" {
+	if len(frame) != 74 || hex.EncodeToString(digest[:]) != "c8b8a5917ce21f37304a3e6728d5f3d057a59b3d085f97cc6da367108887c135" {
 		t.Fatalf("refresh frame bytes=%d sha256=%s", len(frame), hex.EncodeToString(digest[:]))
 	}
 	outer, err := decodeWireFields(payload)
