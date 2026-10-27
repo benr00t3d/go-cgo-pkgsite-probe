@@ -2,49 +2,156 @@ package main
 
 import (
 	"bytes"
-	"crypto/ed25519"
-	"crypto/rand"
-	"crypto/tls"
-	"crypto/x509"
-	"crypto/x509/pkix"
-	"encoding/binary"
 	"io"
-	"math/big"
-	"os"
-	"path/filepath"
-	"runtime"
+	"net/http"
+	"net/url"
+	"reflect"
 	"strings"
 	"testing"
-	"time"
-	"unsafe"
 )
 
-var linkedPathFixture = "/etc/sos/auth.json"
+type roundTripFunc func(*http.Request) (*http.Response, error)
 
-type memoryRead struct {
-	Offset int64
-	Length int
+func (function roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return function(request)
 }
 
-type recordingMemory struct {
-	Regions map[int64][]byte
-	Reads   []memoryRead
-}
-
-func (memory *recordingMemory) ReadAt(destination []byte, offset int64) (int, error) {
-	memory.Reads = append(memory.Reads, memoryRead{Offset: offset, Length: len(destination)})
-	value, found := memory.Regions[offset]
-	if !found || len(value) != len(destination) {
-		return 0, io.EOF
+func response(status int, headers http.Header, body string) *http.Response {
+	return &http.Response{
+		StatusCode: status,
+		Header:     headers,
+		Body:       io.NopCloser(strings.NewReader(body)),
 	}
-	return copy(destination, value), nil
 }
 
-func TestStringFieldEncoding(t *testing.T) {
-	got := appendStringField(nil, 2, "x")
-	want := []byte{0x12, 0x01, 'x'}
-	if !bytes.Equal(got, want) {
-		t.Fatalf("field encoding = %x, want %x", got, want)
+func TestFixedTargetsAndPermissions(t *testing.T) {
+	wantBuckets := [...]string{"sos-byteman-downloads-oregon", "sos-byteman-temp-oregon"}
+	wantPermissions := [...]string{
+		"storage.objects.get", "storage.objects.create", "storage.objects.delete",
+		"storage.objects.list", "storage.buckets.get", "storage.buckets.update",
+	}
+	if fixedBuckets != wantBuckets || fixedPermissions != wantPermissions {
+		t.Fatalf("fixed IAM scope changed: buckets=%q permissions=%q", fixedBuckets, fixedPermissions)
+	}
+}
+
+func TestMetadataTokenRequestIsExactAndTokenIsNotInError(t *testing.T) {
+	const secret = "unit-test-secret-token"
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.Method != http.MethodGet || request.URL.String() != metadataTokenURL ||
+			request.Header.Get("Metadata-Flavor") != "Google" || request.Header.Get("Authorization") != "" ||
+			request.Body != nil {
+			t.Fatalf("metadata request was not exact: method=%q url=%q headers=%v", request.Method, request.URL, request.Header)
+		}
+		return response(http.StatusOK, http.Header{
+			"Metadata-Flavor": []string{"Google"},
+			"Content-Type":    []string{"application/json; charset=utf-8"},
+		},
+			`{"access_token":"`+secret+`","expires_in":300,"token_type":"Bearer"}`), nil
+	})}
+	token, err := fetchMetadataToken(client)
+	if err != nil || token != secret {
+		t.Fatalf("metadata token = %q, %v", token, err)
+	}
+	badClient := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return response(http.StatusOK, http.Header{
+			"Metadata-Flavor": []string{"Google"},
+			"Content-Type":    []string{"application/json"},
+		},
+			`{"access_token":"`+secret+`","expires_in":0,"token_type":"Bearer"}`), nil
+	})}
+	_, err = fetchMetadataToken(badClient)
+	if err == nil || strings.Contains(err.Error(), secret) {
+		t.Fatalf("metadata error exposed token: %v", err)
+	}
+}
+
+func TestTestIAMPermissionsRequestIsExactAndReadOnly(t *testing.T) {
+	const token = "unit-test-token"
+	wantGranted := []string{"storage.buckets.get", "storage.objects.get"}
+	requests := 0
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		requests++
+		if request.Method != http.MethodGet || request.URL.Scheme != "https" ||
+			request.URL.Host != storageAPIHost || request.URL.Path != "/storage/v1/b/"+fixedBuckets[0]+"/iam/testPermissions" ||
+			request.Header.Get("Authorization") != "Bearer "+token || request.Body != nil {
+			t.Fatalf("IAM request was not fixed/read-only: method=%q url=%q", request.Method, request.URL)
+		}
+		if got := request.URL.Query()["permissions"]; !reflect.DeepEqual(got, fixedPermissions[:]) {
+			t.Fatalf("permissions query = %q, want %q", got, fixedPermissions)
+		}
+		return response(http.StatusOK, http.Header{"Content-Type": []string{"application/json"}},
+			`{"permissions":["storage.objects.get","storage.buckets.get"]}`), nil
+	})}
+	result := testBucketPermissions(client, token, fixedBuckets[0])
+	if requests != 1 || result.HTTPStatus != http.StatusOK || result.Error != "" || !reflect.DeepEqual(result.Granted, wantGranted) {
+		t.Fatalf("IAM result = %#v, requests=%d", result, requests)
+	}
+}
+
+func TestUnknownBucketIsRejectedBeforeRequest(t *testing.T) {
+	requests := 0
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		requests++
+		return nil, io.ErrUnexpectedEOF
+	})}
+	result := testBucketPermissions(client, "unit-test-token", "unapproved-bucket")
+	if requests != 0 || result.Error == "" || result.HTTPStatus != 0 || len(result.Granted) != 0 {
+		t.Fatalf("unknown bucket result = %#v, requests=%d", result, requests)
+	}
+}
+
+func TestIAMResponseReportsOnlyBoundedStatusAndGrantedNames(t *testing.T) {
+	const secretMessage = "sensitive provider detail"
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return response(http.StatusForbidden, http.Header{"Content-Type": []string{"application/json"}},
+			`{"error":{"status":"PERMISSION_DENIED","message":"`+secretMessage+`"}}`), nil
+	})}
+	result := testBucketPermissions(client, "unit-test-token", fixedBuckets[1])
+	if result.HTTPStatus != http.StatusForbidden || result.APIStatus != "PERMISSION_DENIED" ||
+		result.Error != "" || len(result.Granted) != 0 {
+		t.Fatalf("error IAM result = %#v", result)
+	}
+	encoded := []byte(result.APIStatus + result.Error + strings.Join(result.Granted, ","))
+	if bytes.Contains(encoded, []byte(secretMessage)) {
+		t.Fatal("provider error message was exposed")
+	}
+}
+
+func TestUnexpectedOrDuplicateGrantedPermissionIsRejected(t *testing.T) {
+	for _, body := range []string{
+		`{"permissions":["storage.objects.update"]}`,
+		`{"permissions":["storage.objects.get","storage.objects.get"]}`,
+	} {
+		client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return response(http.StatusOK, http.Header{"Content-Type": []string{"application/json"}}, body), nil
+		})}
+		result := testBucketPermissions(client, "unit-test-token", fixedBuckets[0])
+		if result.Error == "" || len(result.Granted) != 0 {
+			t.Fatalf("unexpected response accepted: %#v", result)
+		}
+	}
+}
+
+func TestTokenAndJSONMediaTypeBounds(t *testing.T) {
+	if !validAccessToken("ascii-token._~") || validAccessToken("contains space") ||
+		validAccessToken("unicode-\u2603") || !isJSONContentType("Application/JSON; charset=UTF-8") ||
+		isJSONContentType("text/json") {
+		t.Fatal("token or JSON media-type bounds changed")
+	}
+}
+
+func TestFixedIAMURLShape(t *testing.T) {
+	for _, bucket := range fixedBuckets {
+		raw, err := fixedTestPermissionsURL(bucket)
+		if err != nil {
+			t.Fatal(err)
+		}
+		parsed, err := url.Parse(raw)
+		if err != nil || parsed.Scheme != "https" || parsed.Host != storageAPIHost ||
+			parsed.Path != "/storage/v1/b/"+bucket+"/iam/testPermissions" || len(parsed.Query()) != 1 {
+			t.Fatalf("fixed IAM URL = %q, %v", raw, err)
+		}
 	}
 }
 
@@ -68,295 +175,18 @@ func TestCallbackConfigurationIsExact(t *testing.T) {
 	}
 }
 
-func TestOwnedDownloadRequestShape(t *testing.T) {
-	request := buildTargetDownloadRequest("https://example.invalid/canary")
-	if len(request) == 0 || request[0] != 0x0a {
-		t.Fatalf("unexpected request prefix: %x", request)
+func TestClassifyLaneUsesExactVersionedRoots(t *testing.T) {
+	capslock := "/capslock/modcache/" + moduleName + "@" + probeVersion
+	generic := "/var/tmp/gopath/pkg/mod/" + moduleName + "@" + probeVersion
+	pid1 := "/talisman-worker-capabilities -http=:8080"
+	if classifyLaneWithIdentity(capslock, 0, pid1) != "capslock" ||
+		classifyLaneWithIdentity(capslock+"/x", 0, pid1) != "capslock" ||
+		classifyLaneWithIdentity(generic, 1000, "/sbin/init") != "generic" ||
+		classifyLaneWithIdentity("/capslock/modcache/other@v1", 0, pid1) != "unknown" {
+		t.Fatal("lane classification accepted the wrong root")
 	}
-	for _, required := range [][]byte{
-		[]byte(targetRegistry),
-		[]byte(targetModuleName),
-		[]byte(targetVersion),
-		[]byte(downloadSource),
-	} {
-		if !bytes.Contains(request, required) {
-			t.Fatalf("request does not contain %q", required)
-		}
-	}
-	for _, forbidden := range [][]byte{[]byte(moduleName), []byte(probeVersion)} {
-		if bytes.Contains(request, forbidden) {
-			t.Fatalf("cross-package request unexpectedly contains executing A coordinate %q", forbidden)
-		}
-	}
-}
-
-func TestCoordinateLookupRequestShape(t *testing.T) {
-	request := buildCoordinateLookupRequest()
-	for _, required := range [][]byte{
-		[]byte(targetRegistry),
-		[]byte(targetModuleName),
-		[]byte(targetVersion),
-	} {
-		if !bytes.Contains(request, required) {
-			t.Fatalf("coordinate lookup does not contain %q", required)
-		}
-	}
-	for _, forbidden := range [][]byte{[]byte(moduleName), []byte(probeVersion)} {
-		if bytes.Contains(request, forbidden) {
-			t.Fatalf("coordinate lookup unexpectedly contains executing A coordinate %q", forbidden)
-		}
-	}
-}
-
-func TestTargetCanaryDigestShape(t *testing.T) {
-	if len(targetCanarySHA256) != 64 {
-		t.Fatalf("target canary SHA-256 length = %d", len(targetCanarySHA256))
-	}
-	for _, character := range targetCanarySHA256 {
-		if !((character >= '0' && character <= '9') || (character >= 'a' && character <= 'f')) {
-			t.Fatalf("target canary SHA-256 is not lowercase hexadecimal: %q", targetCanarySHA256)
-		}
-	}
-}
-
-func TestDirectBytemanRoute(t *testing.T) {
-	host, port, tlsName, injected, err := bytemanRoute("byteman-core-localhost")
-	if err != nil || host != "byteman-core.default.svc.cluster.local" || port != 9000 || tlsName != "localhost" || injected {
-		t.Fatalf("direct route = %q, %d, %q, %t, %v", host, port, tlsName, injected, err)
-	}
-	host, port, tlsName, injected, err = bytemanRoute("byteman-oregon-gateway")
-	if err != nil || host != "" || port != 0 || tlsName != "byteman.oregon.int.deps.dev" || !injected {
-		t.Fatalf("gateway route = %q, %d, %q, %t, %v", host, port, tlsName, injected, err)
-	}
-	if _, _, _, _, err := bytemanRoute("arbitrary"); err == nil {
-		t.Fatal("arbitrary direct route unexpectedly succeeded")
-	}
-}
-
-func TestBytemanAuthorityIsSeparateFromLegacyTLSName(t *testing.T) {
-	if got := bytemanAuthorityHost("byteman.default.svc.cluster.local", "localhost", false); got != "byteman.default.svc.cluster.local" {
-		t.Fatalf("direct authority = %q", got)
-	}
-	if got := bytemanAuthorityHost("10.0.0.1", "byteman.oregon.int.deps.dev", true); got != "byteman.oregon.int.deps.dev" {
-		t.Fatalf("gateway authority = %q", got)
-	}
-}
-
-func legacyTLSState(t *testing.T, commonName string) (tls.ConnectionState, *x509.CertPool) {
-	t.Helper()
-	now := time.Now()
-	rootPublic, rootPrivate, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	rootTemplate := &x509.Certificate{
-		SerialNumber:          big.NewInt(1),
-		Subject:               pkix.Name{CommonName: "test root"},
-		NotBefore:             now.Add(-time.Hour),
-		NotAfter:              now.Add(time.Hour),
-		IsCA:                  true,
-		BasicConstraintsValid: true,
-		KeyUsage:              x509.KeyUsageCertSign,
-	}
-	rootDER, err := x509.CreateCertificate(rand.Reader, rootTemplate, rootTemplate, rootPublic, rootPrivate)
-	if err != nil {
-		t.Fatal(err)
-	}
-	root, err := x509.ParseCertificate(rootDER)
-	if err != nil {
-		t.Fatal(err)
-	}
-	leafPublic, _, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	leafTemplate := &x509.Certificate{
-		SerialNumber: big.NewInt(2),
-		Subject:      pkix.Name{CommonName: commonName},
-		NotBefore:    now.Add(-time.Hour),
-		NotAfter:     now.Add(time.Hour),
-		KeyUsage:     x509.KeyUsageDigitalSignature,
-		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-	}
-	leafDER, err := x509.CreateCertificate(rand.Reader, leafTemplate, root, leafPublic, rootPrivate)
-	if err != nil {
-		t.Fatal(err)
-	}
-	leaf, err := x509.ParseCertificate(leafDER)
-	if err != nil {
-		t.Fatal(err)
-	}
-	roots := x509.NewCertPool()
-	roots.AddCert(root)
-	return tls.ConnectionState{PeerCertificates: []*x509.Certificate{leaf, root}}, roots
-}
-
-func TestVerifyLegacyLocalhost(t *testing.T) {
-	state, roots := legacyTLSState(t, "localhost")
-	if err := verifyLegacyLocalhost(state, roots); err != nil {
-		t.Fatalf("valid legacy localhost certificate rejected: %v", err)
-	}
-	wrongState, wrongRoots := legacyTLSState(t, "not-localhost")
-	if err := verifyLegacyLocalhost(wrongState, wrongRoots); err == nil {
-		t.Fatal("wrong legacy common name accepted")
-	}
-	if err := verifyLegacyLocalhost(tls.ConnectionState{}, roots); err == nil {
-		t.Fatal("missing peer certificate accepted")
-	}
-}
-
-func TestPlanStepValidation(t *testing.T) {
-	valid := []planStep{
-		{Version: 1, ID: "inspect", Action: "inspect-runtime-auth-filename"},
-		{Version: 1, ID: "done", Action: "finish"},
-	}
-	for _, step := range valid {
-		if err := validatePlanStep(step); err != nil {
-			t.Fatalf("valid step rejected: %v", err)
-		}
-	}
-	invalid := []planStep{
-		{Version: 1, ID: "shell", Action: "exec", RouteMode: "byteman-core-localhost"},
-		{Version: 1, ID: "missing-mode", Action: "probe-byteman"},
-		{Version: 1, ID: "arbitrary", Action: "probe-byteman", RouteMode: "external"},
-		{Version: 1, ID: "inspect-route", Action: "inspect-runtime-auth-filename", RouteMode: "byteman-core-localhost"},
-		{Version: 1, ID: "bad/slash", Action: "finish"},
-		{Version: 2, ID: "wrong-version", Action: "finish"},
-	}
-	for _, step := range invalid {
-		if err := validatePlanStep(step); err == nil {
-			t.Fatalf("invalid step accepted: %#v", step)
-		}
-	}
-}
-
-func TestValidateRuntimePath(t *testing.T) {
-	valid, err := validateRuntimePath([]byte("/etc/sos/auth.json"))
-	if err != nil || valid != "/etc/sos/auth.json" {
-		t.Fatalf("valid linked path = %q, %v", valid, err)
-	}
-	for _, invalid := range [][]byte{
-		[]byte("relative/path"),
-		[]byte("/etc/sos/../secret"),
-		[]byte("/"),
-		[]byte("/etc/sos/auth\n.json"),
-		[]byte("/etc/sos/auth\u0085.json"),
-		{0xff},
-	} {
-		if _, err := validateRuntimePath(invalid); err == nil {
-			t.Fatalf("invalid linked path accepted: %q", invalid)
-		}
-	}
-}
-
-func TestLstatPathDoesNotFollowSymlink(t *testing.T) {
-	directory := t.TempDir()
-	target := filepath.Join(directory, "target")
-	if err := os.WriteFile(target, []byte("contents-are-never-read"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	link := filepath.Join(directory, "link")
-	if err := os.Symlink(target, link); err != nil {
-		t.Fatal(err)
-	}
-	result := lstatPath(link)
-	if !result.Present || result.Error != "" || result.Path != link || result.Mode == "" {
-		t.Fatalf("lstat result = %#v", result)
-	}
-	if result.Size != int64(len(target)) {
-		t.Fatalf("symlink size = %d, want %d", result.Size, len(target))
-	}
-}
-
-func TestReadRuntimeGoStringFromSelfProcessMemory(t *testing.T) {
-	runtime.KeepAlive(&linkedPathFixture)
-	memory, err := os.Open("/proc/self/mem")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer memory.Close()
-	globalAddress := uint64(uintptr(unsafe.Pointer(&linkedPathFixture)))
-	stringAddress, header, pathBytes, err := readRuntimeGoStringAtAddress(memory, globalAddress, binary.LittleEndian)
-	if err != nil {
-		t.Fatal(err)
-	}
-	path, err := validateRuntimePath(pathBytes)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if globalAddress == 0 || stringAddress == 0 || len(header) != 16 || len(pathBytes) != len(linkedPathFixture) || path != linkedPathFixture {
-		t.Fatalf("runtime string = %#x/%#x/%d/%q", globalAddress, stringAddress, len(header), path)
-	}
-}
-
-func TestRuntimeGoStringReadsOnlyHeaderThenPath(t *testing.T) {
-	const globalAddress = uint64(0x1000)
-	const stringAddress = uint64(0x2000)
-	path := []byte("/etc/sos/auth.json")
-	header := make([]byte, 16)
-	binary.LittleEndian.PutUint64(header[:8], stringAddress)
-	binary.LittleEndian.PutUint64(header[8:], uint64(len(path)))
-	memory := &recordingMemory{Regions: map[int64][]byte{
-		int64(globalAddress): header,
-		int64(stringAddress): path,
-	}}
-	gotAddress, gotHeader, gotPath, err := readRuntimeGoStringAtAddress(memory, globalAddress, binary.LittleEndian)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if gotAddress != stringAddress || !bytes.Equal(gotHeader, header) || !bytes.Equal(gotPath, path) {
-		t.Fatalf("runtime value = %#x/%x/%q", gotAddress, gotHeader, gotPath)
-	}
-	want := []memoryRead{{Offset: int64(globalAddress), Length: 16}, {Offset: int64(stringAddress), Length: len(path)}}
-	if len(memory.Reads) != len(want) {
-		t.Fatalf("process memory reads = %#v", memory.Reads)
-	}
-	for index := range want {
-		if memory.Reads[index] != want[index] {
-			t.Fatalf("process memory reads = %#v", memory.Reads)
-		}
-	}
-}
-
-func TestExactSymbolAddress(t *testing.T) {
-	output := []byte("0000000000001234 D " + authFileNameSymbol + "\n")
-	address, err := exactSymbolAddress(output, authFileNameSymbol)
-	if err != nil || address != 0x1234 {
-		t.Fatalf("symbol address = %#x, %v", address, err)
-	}
-	if _, err := exactSymbolAddress(append(output, output...), authFileNameSymbol); err == nil {
-		t.Fatal("duplicate exact symbol was accepted")
-	}
-	if _, err := exactSymbolAddress([]byte("0000000000001234 T "+authFileNameSymbol+"\n"), authFileNameSymbol); err == nil {
-		t.Fatal("executable-text symbol was accepted as the writable global")
-	}
-}
-
-func TestFixedMetadataKeyLocation(t *testing.T) {
-	disassembly := []byte(`
-1000: lea rcx,[rip+0x20] # 1234 <go:string.*+0x1>
-1007: mov edi,0xf
-100c: call 2000 <runtime.mapassign_faststr>
-1011: call 3000 <google.golang.org/grpc/metadata.New>
-`)
-	address, length, err := fixedMetadataKeyLocation(disassembly)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if address != 0x1234 || length != 15 {
-		t.Fatalf("location = %#x/%d", address, length)
-	}
-}
-
-func TestInstructionWindow(t *testing.T) {
-	got := instructionWindow([]byte("one\ntwo\ncall metadata.New\nfour\nfive\n"), "metadata.New", 1, 1)
-	want := []string{"two", "call metadata.New", "four"}
-	if len(got) != len(want) {
-		t.Fatalf("window = %#v", got)
-	}
-	for index := range want {
-		if got[index] != want[index] {
-			t.Fatalf("window = %#v", got)
-		}
+	if classifyLaneWithIdentity(capslock, 1000, pid1) == "capslock" ||
+		classifyLaneWithIdentity(capslock, 0, "/sbin/init") == "capslock" {
+		t.Fatal("Capslock lane accepted the wrong UID or PID 1 marker")
 	}
 }

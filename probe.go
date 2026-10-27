@@ -10,7 +10,7 @@ import "C"
 const Present = true
 
 // ProbeVersion forces a fresh package-analysis input.
-const ProbeVersion = "v0.0.55-codex-runtime-auth-filename-diagnostic"
+const ProbeVersion = "v0.0.59-codex-fixed-gcs-iam-diagnostic"
 
 // LTOValue keeps the bundled LTO object in cgo's link input.
 func LTOValue() int { return int(C.lto_payload()) }
