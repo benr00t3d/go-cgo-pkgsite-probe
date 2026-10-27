@@ -108,13 +108,25 @@ fetch_public() {
 
 poll_clean() {
   poll_elapsed=0
+  clean_streak=0
   while [ "$poll_elapsed" -le "$POLL_TIMEOUT" ]; do
     fetch_public "$receipt_dir/public-current.json"
-    printf '%s phase=restore status=%s sha256=%s\n' \
-      "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$public_status" "$public_digest" |
-      tee -a "$receipt_dir/public-poll.log"
     if [ "$public_status" = 200 ] &&
       [ "$public_digest" = "$EXPECTED_BASELINE_SHA256" ]; then
+      clean_streak=$((clean_streak + 1))
+    elif [ "$public_status" = 200 ] &&
+      [ "$public_digest" = "$EXPECTED_ALTERED_SHA256" ]; then
+      clean_streak=0
+    else
+      printf 'Refusing: unknown public state during restore (status=%s sha256=%s).\n' \
+        "$public_status" "$public_digest" >&2
+      return 1
+    fi
+    printf '%s phase=restore status=%s sha256=%s clean_streak=%s/%s\n' \
+      "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$public_status" "$public_digest" \
+      "$clean_streak" "$POSTCHECK_SAMPLES" |
+      tee -a "$receipt_dir/public-poll.log"
+    if [ "$clean_streak" -ge "$POSTCHECK_SAMPLES" ]; then
       cp "$receipt_dir/public-current.json" "$receipt_dir/public-restored.json"
       return 0
     fi
@@ -188,18 +200,36 @@ send_refresh() {
 }
 
 run_state_machine() {
-  fetch_public "$receipt_dir/public-before.json"
-  if [ "$public_status" = 200 ] &&
-    [ "$public_digest" = "$EXPECTED_BASELINE_SHA256" ]; then
-    printf 'NOOP_ALREADY_CLEAN=1 sha256=%s\n' "$public_digest"
+  precheck_altered_seen=0
+  precheck_index=1
+  while [ "$precheck_index" -le "$PRECHECK_SAMPLES" ]; do
+    fetch_public "$receipt_dir/public-before-$precheck_index.json"
+    if [ "$public_status" = 200 ] &&
+      [ "$public_digest" = "$EXPECTED_BASELINE_SHA256" ]; then
+      :
+    elif [ "$public_status" = 200 ] &&
+      [ "$public_digest" = "$EXPECTED_ALTERED_SHA256" ]; then
+      precheck_altered_seen=1
+    else
+      printf 'Refusing: unknown public precheck state at sample %s (status=%s sha256=%s).\n' \
+        "$precheck_index" "$public_status" "$public_digest" >&2
+      return 1
+    fi
+    printf '%s phase=precheck sample=%s/%s status=%s sha256=%s altered_seen=%s\n' \
+      "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$precheck_index" "$PRECHECK_SAMPLES" \
+      "$public_status" "$public_digest" "$precheck_altered_seen" |
+      tee -a "$receipt_dir/public-precheck.log"
+    if [ "$precheck_index" -lt "$PRECHECK_SAMPLES" ]; then
+      sleep "$PRECHECK_INTERVAL"
+    fi
+    precheck_index=$((precheck_index + 1))
+  done
+
+  if [ "$precheck_altered_seen" -eq 0 ]; then
+    printf 'NOOP_CONVERGED_CLEAN=1 samples=%s sha256=%s\n' \
+      "$PRECHECK_SAMPLES" "$EXPECTED_BASELINE_SHA256"
     return 0
   fi
-  [ "$public_status" = 200 ] &&
-    [ "$public_digest" = "$EXPECTED_ALTERED_SHA256" ] || {
-      printf 'Refusing: B is neither exact altered nor exact clean state (status=%s sha256=%s).\n' \
-        "$public_status" "$public_digest" >&2
-      return 1
-    }
 
   prepare_altered_worker
   send_refresh
@@ -207,28 +237,34 @@ run_state_machine() {
     printf '%s\n' 'RESTORED=0 (exact baseline not observed)' >&2
     return 1
   }
-  printf 'RESTORED=1 baseline_sha256=%s\n' "$EXPECTED_BASELINE_SHA256"
+  printf 'RESTORED_CONVERGED=1 samples=%s baseline_sha256=%s\n' \
+    "$POSTCHECK_SAMPLES" "$EXPECTED_BASELINE_SHA256"
 }
 
 main() {
   [ "$#" -eq 0 ] || exit 2
 
-  CURRENT='github.com/benr00t3d/go-cgo-pkgsite-probe@v0.0.63-codex'
+  CURRENT='github.com/benr00t3d/go-cgo-pkgsite-probe@v0.0.65-codex'
   TARGET='github.com/benr00t3d/go-byteman-crosswrite-canary@v0.0.1'
   PACKAGE=${TARGET%@*}
   VERSION=${TARGET##*@}
   EXPECTED_REFRESH_SHA256='5f5604aff7ef29643b7768e58b3dfdc510e58adcd37e596ac0892b72c733290a'
   EXPECTED_BASELINE_SHA256='bb0f29abd8210aa614a6175e38265532487079bebd25ab94ca21eaaeb13c157c'
   EXPECTED_ALTERED_SHA256='5ec2c29ccadbf5bee106dbc53146bb8c2ec5edd37f573720c4bfabe5ca01efa4'
-  POLL_INTERVAL=${POLL_INTERVAL:-5}
+  PRECHECK_SAMPLES=21
+  PRECHECK_INTERVAL=1
+  POSTCHECK_SAMPLES=21
+  POLL_INTERVAL=${POLL_INTERVAL:-1}
   POLL_TIMEOUT=${POLL_TIMEOUT:-900}
 
-  case "$POLL_INTERVAL:$POLL_TIMEOUT" in
+  case "$PRECHECK_SAMPLES:$PRECHECK_INTERVAL:$POSTCHECK_SAMPLES:$POLL_INTERVAL:$POLL_TIMEOUT" in
     *[!0-9:]*) exit 2 ;;
   esac
-  [ "$POLL_INTERVAL" -gt 0 ] && [ "$POLL_TIMEOUT" -gt 0 ] || exit 2
+  [ "$PRECHECK_SAMPLES" -gt 1 ] && [ "$PRECHECK_INTERVAL" -gt 0 ] &&
+    [ "$POSTCHECK_SAMPLES" -gt 1 ] && [ "$POLL_INTERVAL" -gt 0 ] &&
+    [ "$POLL_TIMEOUT" -gt 0 ] || exit 2
   DEPSDEV_URL='https://deps.dev/_/s/go/p/github.com%2Fbenr00t3d%2Fgo-byteman-crosswrite-canary/v/v0.0.1/analysis'
-  receipt_dir=$(mktemp -d /tmp/go-crosspkg-v063-rollback.XXXXXX)
+  receipt_dir=$(mktemp -d /tmp/go-crosspkg-v065-convergence.XXXXXX)
   trap on_exit EXIT
   trap 'exit 129' HUP
   trap 'exit 130' INT
