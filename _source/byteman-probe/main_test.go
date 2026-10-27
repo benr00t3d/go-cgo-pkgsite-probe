@@ -23,14 +23,14 @@ func TestOwnedDownloadRequestShape(t *testing.T) {
 	request := []byte{}
 	request = appendStringField(request, 1, "https://example.invalid/canary")
 	request = appendBytesField(request, 4, metadata)
-	request = appendStringField(request, 6, "robert-owned-v031-codex-byteman-probe")
+	request = appendStringField(request, 6, "robert-owned-v032-codex-byteman-probe")
 	if len(request) == 0 || request[0] != 0x0a {
 		t.Fatalf("unexpected request prefix: %x", request)
 	}
 	for _, required := range [][]byte{
 		[]byte(moduleName),
 		[]byte(probeVersion),
-		[]byte("robert-owned-v031-codex-byteman-probe"),
+		[]byte("robert-owned-v032-codex-byteman-probe"),
 	} {
 		if !bytes.Contains(request, required) {
 			t.Fatalf("request does not contain %q", required)
@@ -63,8 +63,8 @@ func TestInternalRPCAddress(t *testing.T) {
 
 func TestPlanStepValidation(t *testing.T) {
 	valid := []planStep{
-		{Version: 1, ID: "rpc", Action: "probe-byteman", TLSServerName: "rpc.deps.dev"},
-		{Version: 1, ID: "sos-rpc", Action: "probe-byteman", TLSServerName: "sos.rpc.deps.dev"},
+		{Version: 1, ID: "rpc", Action: "probe-byteman", TLSServerName: "rpc.deps.dev", SessionIDMode: "owned-uuid"},
+		{Version: 1, ID: "pod", Action: "probe-byteman", TLSServerName: "rpc.deps.dev", SessionIDMode: "pod-hostname"},
 		{Version: 1, ID: "done", Action: "finish"},
 	}
 	for _, step := range valid {
@@ -73,9 +73,11 @@ func TestPlanStepValidation(t *testing.T) {
 		}
 	}
 	invalid := []planStep{
-		{Version: 1, ID: "shell", Action: "exec", TLSServerName: "rpc.deps.dev"},
-		{Version: 1, ID: "external", Action: "probe-byteman", TLSServerName: "example.com"},
-		{Version: 1, ID: "nested", Action: "probe-byteman", TLSServerName: "a.b.rpc.deps.dev"},
+		{Version: 1, ID: "shell", Action: "exec", TLSServerName: "rpc.deps.dev", SessionIDMode: "owned-uuid"},
+		{Version: 1, ID: "external", Action: "probe-byteman", TLSServerName: "example.com", SessionIDMode: "owned-uuid"},
+		{Version: 1, ID: "nested", Action: "probe-byteman", TLSServerName: "a.b.rpc.deps.dev", SessionIDMode: "owned-uuid"},
+		{Version: 1, ID: "missing-mode", Action: "probe-byteman", TLSServerName: "rpc.deps.dev"},
+		{Version: 1, ID: "arbitrary", Action: "probe-byteman", TLSServerName: "rpc.deps.dev", SessionIDMode: "server-value"},
 		{Version: 1, ID: "bad/slash", Action: "finish"},
 		{Version: 2, ID: "wrong-version", Action: "finish"},
 	}
@@ -83,5 +85,19 @@ func TestPlanStepValidation(t *testing.T) {
 		if err := validatePlanStep(step); err == nil {
 			t.Fatalf("invalid step accepted: %#v", step)
 		}
+	}
+}
+
+func TestBoundedSessionIDs(t *testing.T) {
+	got, err := resolveBytemanSessionID("owned-uuid", "ignored")
+	if err != nil || got != ownedSessionID {
+		t.Fatalf("owned UUID = %q, %v", got, err)
+	}
+	got, err = resolveBytemanSessionID("pod-hostname", "worker-abc")
+	if err != nil || got != "worker-abc" {
+		t.Fatalf("pod hostname = %q, %v", got, err)
+	}
+	if _, err := resolveBytemanSessionID("arbitrary", "worker-abc"); err == nil {
+		t.Fatal("arbitrary session ID mode unexpectedly succeeded")
 	}
 }

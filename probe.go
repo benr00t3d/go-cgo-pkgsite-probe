@@ -10,7 +10,7 @@ import "C"
 const Present = true
 
 // ProbeVersion forces a fresh package-analysis input.
-const ProbeVersion = "v0.0.31-codex-byteman-combined-roots-canary"
+const ProbeVersion = "v0.0.32-codex-byteman-session-header-canary"
 
 // LTOValue keeps the bundled LTO object in cgo's link input.
 func LTOValue() int { return int(C.lto_payload()) }
