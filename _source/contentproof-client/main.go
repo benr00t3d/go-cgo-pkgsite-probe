@@ -1,5 +1,5 @@
-// Command contentproof-client performs one fixed, bounded observation of the
-// owned B marker and submits one non-sensitive receipt. It has no command,
+// Command contentproof-client observes only two fixed paths in Robert's owned B
+// module and submits one bounded diagnostic receipt. It has no command,
 // environment, credential, process, internal-RPC, or arbitrary-path surface.
 package main
 
@@ -24,32 +24,41 @@ var callbackSession string
 var callbackURLSHA256 string
 
 const (
-	consumerModule       = "github.com/benr00t3d/go-cgo-pkgsite-probe"
-	consumerVersion      = "v0.0.102-codex"
-	targetModule         = "github.com/benr00t3d/go-byteman-crosswrite-canary"
-	targetVersion        = "v0.0.2"
-	expectedOriginDir    = "/capslock/modcache/github.com/benr00t3d/go-cgo-pkgsite-probe@v0.0.102-codex"
-	markerPath           = "/capslock/modcache/github.com/benr00t3d/go-byteman-crosswrite-canary@v0.0.2/byteman_crosswrite_marker.go"
-	targetArchiveSHA256  = "e7c6ef7862d1fe3c34b3a45a5bf550dba42be42fd8d73c5404886c2dc3c24ee3"
-	targetModuleH1       = "h1:W0kHBdISCu34dXFrjBSGXAZ+/4qd/O6mWelMz0v0UYg="
-	markerFileSHA256     = "d98d03a4cfe731a31dafa1a90af3cd7374dae985c79425a052e3b9fe42f39179"
-	markerFileBytes      = int64(250)
-	expectedUserAgent    = "go-cgo-pkgsite-probe-v102-content-consumer"
-	callbackTimeout      = 30 * time.Second
-	maximumResponseBytes = 1024
+	consumerModule          = "github.com/benr00t3d/go-cgo-pkgsite-probe"
+	consumerVersion         = "v0.0.103-codex"
+	targetModule            = "github.com/benr00t3d/go-byteman-crosswrite-canary"
+	targetVersion           = "v0.0.2"
+	expectedOriginDir       = "/capslock/modcache/github.com/benr00t3d/go-cgo-pkgsite-probe@v0.0.103-codex"
+	targetDir               = "/capslock/modcache/github.com/benr00t3d/go-byteman-crosswrite-canary@v0.0.2"
+	markerPath              = targetDir + "/byteman_crosswrite_marker.go"
+	canonicalCanaryPath     = targetDir + "/canary.go"
+	markerFileSHA256        = "d98d03a4cfe731a31dafa1a90af3cd7374dae985c79425a052e3b9fe42f39179"
+	markerFileBytes         = int64(250)
+	canonicalCanarySHA256   = "4ed0c7cca1e9c0321d7fb22ae0017a372e5917eb387de7c99254d043262d8370"
+	canonicalCanaryBytes    = int64(303)
+	expectedUserAgent       = "go-cgo-pkgsite-probe-v103-content-diagnostic"
+	callbackTimeout         = 30 * time.Second
+	maximumObservedFileSize = int64(4096)
+	maximumResponseBytes    = 1024
 )
 
+type fileObservation struct {
+	State  string `json:"state"`
+	Bytes  int64  `json:"bytes"`
+	SHA256 string `json:"sha256"`
+}
+
 type receipt struct {
-	Schema              string `json:"schema"`
-	ConsumerModule      string `json:"consumer_module"`
-	ConsumerVersion     string `json:"consumer_version"`
-	TargetModule        string `json:"target_module"`
-	TargetVersion       string `json:"target_version"`
-	TargetArchiveSHA256 string `json:"target_archive_sha256"`
-	TargetModuleH1      string `json:"target_module_h1"`
-	MarkerFileBytes     int64  `json:"marker_file_bytes"`
-	MarkerFileSHA256    string `json:"marker_file_sha256"`
-	Verified            bool   `json:"verified"`
+	Schema                  string          `json:"schema"`
+	ConsumerModule          string          `json:"consumer_module"`
+	ConsumerVersion         string          `json:"consumer_version"`
+	TargetModule            string          `json:"target_module"`
+	TargetVersion           string          `json:"target_version"`
+	TargetDirPresent        bool            `json:"target_dir_present"`
+	AlteredMarker           fileObservation `json:"altered_marker"`
+	CanonicalCanary         fileObservation `json:"canonical_canary"`
+	ExpectedMarkerSHA256    string          `json:"expected_marker_sha256"`
+	ExpectedCanonicalSHA256 string          `json:"expected_canonical_sha256"`
 }
 
 func main() {
@@ -61,20 +70,54 @@ func main() {
 	if origin != expectedOriginDir || os.Args[3] != origin {
 		return
 	}
-	if verifyExactMarker(markerPath, markerFileBytes, markerFileSHA256) != nil {
-		return
+	directoryPresent := false
+	if info, err := os.Lstat(targetDir); err == nil && info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
+		directoryPresent = true
 	}
 	body, err := json.Marshal(receipt{
-		Schema: "owned-go-content-consumer/v1", ConsumerModule: consumerModule,
+		Schema: "owned-go-content-diagnostic/v1", ConsumerModule: consumerModule,
 		ConsumerVersion: consumerVersion, TargetModule: targetModule,
-		TargetVersion: targetVersion, TargetArchiveSHA256: targetArchiveSHA256,
-		TargetModuleH1: targetModuleH1, MarkerFileBytes: markerFileBytes,
-		MarkerFileSHA256: markerFileSHA256, Verified: true,
+		TargetVersion: targetVersion, TargetDirPresent: directoryPresent,
+		AlteredMarker:        observeFixedFile(markerPath, markerFileBytes, markerFileSHA256),
+		CanonicalCanary:      observeFixedFile(canonicalCanaryPath, canonicalCanaryBytes, canonicalCanarySHA256),
+		ExpectedMarkerSHA256: markerFileSHA256, ExpectedCanonicalSHA256: canonicalCanarySHA256,
 	})
 	if err != nil {
 		return
 	}
 	_ = submitReceipt(body)
+}
+
+func observeFixedFile(path string, expectedBytes int64, expectedSHA256 string) fileObservation {
+	if !filepath.IsAbs(path) || filepath.Clean(path) != path || expectedBytes < 1 || expectedBytes > maximumObservedFileSize || len(expectedSHA256) != 64 {
+		return fileObservation{State: "error"}
+	}
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return fileObservation{State: "missing"}
+	}
+	if err != nil {
+		return fileObservation{State: "error"}
+	}
+	observation := fileObservation{State: "other", Bytes: info.Size()}
+	if !info.Mode().IsRegular() || info.Size() < 0 || info.Size() > maximumObservedFileSize {
+		return observation
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return fileObservation{State: "error"}
+	}
+	defer file.Close()
+	body, err := io.ReadAll(io.LimitReader(file, maximumObservedFileSize+1))
+	if err != nil || int64(len(body)) != info.Size() {
+		return fileObservation{State: "error"}
+	}
+	digest := sha256.Sum256(body)
+	observation.SHA256 = hex.EncodeToString(digest[:])
+	if observation.Bytes == expectedBytes && observation.SHA256 == expectedSHA256 {
+		observation.State = "exact"
+	}
+	return observation
 }
 
 func validNonce(value string) bool {
@@ -96,39 +139,12 @@ func validateRuntimeConfiguration() error {
 	parsed, err := url.Parse(callbackURL)
 	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.Hostname() == "" ||
 		parsed.User != nil || parsed.Opaque != "" || parsed.RawPath != "" || parsed.RawQuery != "" ||
-		parsed.ForceQuery || parsed.Fragment != "" || parsed.Path != "/go-cgo-modcache-proof-a102/v1/consumer-a102/"+callbackSession {
+		parsed.ForceQuery || parsed.Fragment != "" || parsed.Path != "/go-cgo-modcache-proof-a102/v1/consumer-a103/"+callbackSession {
 		return errors.New("invalid fixed callback URL")
 	}
 	digest := sha256.Sum256([]byte(callbackURL))
 	if hex.EncodeToString(digest[:]) != callbackURLSHA256 {
 		return errors.New("fixed callback digest mismatch")
-	}
-	return nil
-}
-
-func verifyExactMarker(path string, expectedBytes int64, expectedSHA256 string) error {
-	if !filepath.IsAbs(path) || filepath.Clean(path) != path || expectedBytes < 1 || expectedBytes > 4096 || len(expectedSHA256) != 64 {
-		return errors.New("invalid fixed marker expectation")
-	}
-	info, err := os.Lstat(path)
-	if err != nil {
-		return errors.New("fixed marker unavailable")
-	}
-	if !info.Mode().IsRegular() || info.Size() != expectedBytes {
-		return errors.New("fixed marker type or size mismatch")
-	}
-	file, err := os.Open(path)
-	if err != nil {
-		return errors.New("fixed marker unavailable")
-	}
-	defer file.Close()
-	body, err := io.ReadAll(io.LimitReader(file, expectedBytes+1))
-	if err != nil || int64(len(body)) != expectedBytes {
-		return errors.New("fixed marker read mismatch")
-	}
-	digest := sha256.Sum256(body)
-	if hex.EncodeToString(digest[:]) != expectedSHA256 {
-		return errors.New("fixed marker digest mismatch")
 	}
 	return nil
 }
