@@ -36,17 +36,17 @@ var rpcDialAddress string
 const (
 	protocolVersion         = 1
 	moduleName              = "github.com/benr00t3d/go-cgo-pkgsite-probe"
-	probeVersion            = "v0.0.52-codex"
-	expectedUserAgent       = "go-cgo-pkgsite-probe-v052-codex"
+	probeVersion            = "v0.0.53-codex"
+	expectedUserAgent       = "go-cgo-pkgsite-probe-v053-codex"
 	targetRegistry          = "https://proxy.golang.org"
 	targetModuleName        = "github.com/benr00t3d/go-byteman-crosswrite-canary"
 	targetVersion           = "v0.0.1"
 	targetCanarySHA256      = "e795c7054b74d0edf37273a3d6d1098fc57fd7e124d10a0556d3793eb3210684"
 	targetCanaryBytes       = 2512
 	descriptorReceiptSHA256 = "2f971b887a6da75675db2d570d14fe28f788a1513cefec2f3c521afb725ec225"
-	expectedRecordSHA256    = "525fb621e5b9c87888fe5b6a8d66d5813c455977e33b0efab31f516c5932af46"
+	expectedRecordSHA256    = "adfb1c1ce1b1b12a6c7fb47bc71a599080dec7357763e3af5d937849c7961e47"
 	expectedDigestSHA256    = "6bc319fc0d36191274cec1b7269adfd81385b88169cdf83a783dc882097a6b94"
-	expectedRecordIDSHA256  = "0e73ce5435b1c9f09e3933315bac2d5e34eb7db9a6906948fad0f4c7b4f076f2"
+	expectedRecordIDSHA256  = "98a540dcf85bd84794699b0522f3e5d8f5de0697b1b0c51eef1c39058ba58ce3"
 	emptyValueSHA256        = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 	callbackTimeout         = 30 * time.Second
 	streamGRPCTimeout       = 120 * time.Second
@@ -141,11 +141,33 @@ type streamRawHeaderResult struct {
 	ValueSHA256 string `json:"value_sha256"`
 }
 
+type grpcMetadataValue struct {
+	Present   bool   `json:"present"`
+	Values    int    `json:"values,omitempty"`
+	RawBytes  int    `json:"raw_bytes,omitempty"`
+	RawSHA256 string `json:"raw_sha256,omitempty"`
+	Text      string `json:"text,omitempty"`
+}
+
+type streamVariant struct {
+	ID                      string
+	IncludeMetadata         bool
+	SOSSessionHeaderPresent bool
+}
+
 type streamResult struct {
+	VariantID                 string              `json:"variant_id"`
 	Method                    string              `json:"method"`
+	IncludeMetadata           bool                `json:"include_metadata"`
 	HTTPStatus                int                 `json:"http_status,omitempty"`
 	ContentType               string              `json:"content_type,omitempty"`
-	GRPCStatusHeader          string              `json:"grpc_status_header,omitempty"`
+	GRPCStatusHeader          grpcMetadataValue   `json:"grpc_status_header"`
+	GRPCMessageHeader         grpcMetadataValue   `json:"grpc_message_header"`
+	GRPCStatusTrailer         grpcMetadataValue   `json:"grpc_status_trailer"`
+	GRPCMessageTrailer        grpcMetadataValue   `json:"grpc_message_trailer"`
+	TrailersObserved          bool                `json:"trailers_observed"`
+	TrailersComplete          bool                `json:"trailers_complete"`
+	EOFObserved               bool                `json:"eof_observed"`
 	RequestPayloadBytes       int                 `json:"request_payload_bytes"`
 	RequestPayloadSHA256      string              `json:"request_payload_sha256"`
 	RequestFrameBytes         int                 `json:"request_frame_bytes"`
@@ -161,6 +183,9 @@ type streamResult struct {
 	StoppedBeforeEOF          bool                `json:"stopped_before_eof"`
 	Verified                  bool                `json:"verified"`
 	ResponseRecordIdentitySet bool                `json:"response_record_identity_present"`
+	StartedUTC                string              `json:"started_utc"`
+	FinishedUTC               string              `json:"finished_utc"`
+	DurationMS                int64               `json:"duration_ms"`
 	Error                     string              `json:"error,omitempty"`
 }
 
@@ -179,8 +204,17 @@ type probeReport struct {
 	StartedUTC              string         `json:"started_utc"`
 	FinishedUTC             string         `json:"finished_utc"`
 	Identity                identityResult `json:"identity"`
-	Stream                  streamResult   `json:"stream"`
+	Streams                 []streamResult `json:"streams,omitempty"`
+	SuccessfulVariant       string         `json:"successful_variant,omitempty"`
+	StoppedAfterSuccess     bool           `json:"stopped_after_success"`
 	Reason                  string         `json:"reason"`
+}
+
+var fixedStreamVariants = []streamVariant{
+	{ID: "url-metadata-empty-session", IncludeMetadata: true, SOSSessionHeaderPresent: true},
+	{ID: "url-only-empty-session", IncludeMetadata: false, SOSSessionHeaderPresent: true},
+	{ID: "url-metadata-session-omitted", IncludeMetadata: true, SOSSessionHeaderPresent: false},
+	{ID: "url-only-session-omitted", IncludeMetadata: false, SOSSessionHeaderPresent: false},
 }
 
 func main() {
@@ -193,15 +227,16 @@ func main() {
 	identity := inspectIdentity(cwd)
 	report := newProbeReport(started, identity)
 	endpoint := genericResultURL
-	resultID := "v052-codex-" + identity.Lane
+	resultID := "v053-codex-" + identity.Lane
 	if identity.Lane == "capslock" {
 		endpoint = compilerResultURL
-		resultID = "v052-codex-capslock-stream"
-		report.Stream = runPinnedStreamReadback()
-		if report.Stream.Verified {
-			report.Reason = "incremental Stream returned the exact previously written owned-B bytes"
+		resultID = "v053-codex-capslock-stream-diagnostic"
+		report.Streams, report.SuccessfulVariant = runPinnedStreamDiagnostics()
+		report.StoppedAfterSuccess = report.SuccessfulVariant != ""
+		if report.StoppedAfterSuccess {
+			report.Reason = "a fixed incremental Stream variant returned the exact previously written owned-B bytes"
 		} else {
-			report.Reason = "incremental Stream did not verify the exact previously written owned-B bytes"
+			report.Reason = "all four fixed read-only Stream variants completed without exact owned-B verification"
 		}
 	} else {
 		report.Reason = "Stream is fixed to the verified Capslock lane"
@@ -212,7 +247,7 @@ func main() {
 
 func newProbeReport(started time.Time, identity identityResult) probeReport {
 	return probeReport{
-		Schema:                  "owned-byteman-stream-readback/v1",
+		Schema:                  "owned-byteman-stream-diagnostic/v1",
 		Module:                  moduleName,
 		Version:                 probeVersion,
 		TargetModule:            targetModuleName,
@@ -225,12 +260,6 @@ func newProbeReport(started time.Time, identity identityResult) probeReport {
 		ExpectedRecordIDSHA256:  expectedRecordIDSHA256,
 		StartedUTC:              started.UTC().Format(time.RFC3339Nano),
 		Identity:                identity,
-		Stream: streamResult{
-			Method:                  "/sos.byteman.Byteman/Stream",
-			SOSSessionHeaderPresent: true,
-			SOSSessionHeaderBytes:   0,
-			SOSSessionHeaderSHA256:  emptyValueSHA256,
-		},
 	}
 }
 
@@ -288,9 +317,30 @@ func validateRuntimeConfiguration() error {
 	return nil
 }
 
-func runPinnedStreamReadback() streamResult {
-	requestPayload := buildTargetStreamRequest()
-	result := newStreamResult(requestPayload)
+func runPinnedStreamDiagnostics() ([]streamResult, string) {
+	return runFixedStreamVariants(runPinnedStreamVariant)
+}
+
+func runFixedStreamVariants(run func(streamVariant) streamResult) ([]streamResult, string) {
+	results := make([]streamResult, 0, len(fixedStreamVariants))
+	for _, variant := range fixedStreamVariants {
+		result := run(variant)
+		results = append(results, result)
+		if result.Verified {
+			return results, variant.ID
+		}
+	}
+	return results, ""
+}
+
+func runPinnedStreamVariant(variant streamVariant) (result streamResult) {
+	started := time.Now()
+	requestPayload := buildTargetStreamRequest(variant.IncludeMetadata)
+	result = newStreamResult(requestPayload, variant, started)
+	defer func() {
+		result.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
+		result.DurationMS = time.Since(started).Milliseconds()
+	}()
 	client, endpoint, err := newBytemanClient()
 	if err != nil {
 		result.Error = cleanError(err)
@@ -305,7 +355,7 @@ func runPinnedStreamReadback() streamResult {
 		result.Error = cleanError(err)
 		return result
 	}
-	applyStreamHeaders(request)
+	applyStreamHeaders(request, variant.SOSSessionHeaderPresent)
 	response, err := client.Do(request)
 	if err != nil {
 		result.Error = cleanError(err)
@@ -314,7 +364,7 @@ func runPinnedStreamReadback() streamResult {
 	defer response.Body.Close()
 	result.HTTPStatus = response.StatusCode
 	result.ContentType = response.Header.Get("Content-Type")
-	result.GRPCStatusHeader = response.Header.Get("Grpc-Status")
+	captureGRPCMetadata(response.Header, &result.GRPCStatusHeader, &result.GRPCMessageHeader)
 	if response.StatusCode != http.StatusOK || !strings.HasPrefix(result.ContentType, "application/grpc") {
 		result.Error = "Stream response did not have HTTP 200 application/grpc"
 		return result
@@ -323,6 +373,9 @@ func runPinnedStreamReadback() streamResult {
 	for index := 0; index < maximumResponseFrames; index++ {
 		header := make([]byte, 5)
 		if _, err := io.ReadFull(response.Body, header); err != nil {
+			result.EOFObserved = errors.Is(err, io.EOF)
+			result.TrailersComplete = result.EOFObserved || errors.Is(err, io.ErrUnexpectedEOF)
+			captureGRPCTrailers(response, &result)
 			result.Error = cleanError(fmt.Errorf("incremental gRPC frame header: %w", err))
 			return result
 		}
@@ -337,6 +390,8 @@ func runPinnedStreamReadback() streamResult {
 		}
 		body := make([]byte, length)
 		if _, err := io.ReadFull(response.Body, body); err != nil {
+			result.TrailersComplete = errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)
+			captureGRPCTrailers(response, &result)
 			result.Error = cleanError(fmt.Errorf("incremental gRPC frame payload: %w", err))
 			return result
 		}
@@ -364,6 +419,7 @@ func runPinnedStreamReadback() streamResult {
 			result.StoppedBeforeEOF = true
 			result.Verified = true
 			_ = response.Body.Close()
+			captureGRPCTrailers(response, &result)
 			return result
 		}
 	}
@@ -383,30 +439,78 @@ func verifyCompletedStream(payload []byte, header streamHeaderResult) (string, e
 	return payloadSHA256, nil
 }
 
-func applyStreamHeaders(request *http.Request) {
+func applyStreamHeaders(request *http.Request, sessionHeaderPresent bool) {
 	request.Header.Set("Content-Type", "application/grpc")
 	request.Header.Set("TE", "trailers")
 	request.Header.Set("User-Agent", probeUserAgent)
 	request.Header.Set("Grpc-Timeout", "120S")
-	request.Header[http.CanonicalHeaderKey("X-SOS-SessionID")] = []string{""}
+	if sessionHeaderPresent {
+		request.Header[http.CanonicalHeaderKey("X-SOS-SessionID")] = []string{""}
+	}
 }
 
-func newStreamResult(payload []byte) streamResult {
+func captureGRPCMetadata(header http.Header, status, message *grpcMetadataValue) {
+	*status = captureGRPCMetadataValue(header, "Grpc-Status", false)
+	*message = captureGRPCMetadataValue(header, "Grpc-Message", true)
+}
+
+func captureGRPCTrailers(response *http.Response, result *streamResult) {
+	if len(response.Trailer) == 0 {
+		return
+	}
+	result.TrailersObserved = true
+	captureGRPCMetadata(response.Trailer, &result.GRPCStatusTrailer, &result.GRPCMessageTrailer)
+}
+
+func captureGRPCMetadataValue(header http.Header, name string, decodeMessage bool) grpcMetadataValue {
+	values := []string(nil)
+	for key, candidates := range header {
+		if strings.EqualFold(key, name) {
+			values = append(values, candidates...)
+		}
+	}
+	if values == nil {
+		return grpcMetadataValue{}
+	}
+	raw := strings.Join(values, "\x00")
+	digest := sha256.Sum256([]byte(raw))
+	text := raw
+	if decodeMessage {
+		if decoded, err := url.PathUnescape(raw); err == nil {
+			text = decoded
+		}
+		text = cleanSensitiveText(text)
+	} else if len(text) > 64 {
+		text = text[:64] + "[truncated]"
+	}
+	return grpcMetadataValue{
+		Present: true, Values: len(values), RawBytes: len(raw),
+		RawSHA256: hex.EncodeToString(digest[:]), Text: text,
+	}
+}
+
+func newStreamResult(payload []byte, variant streamVariant, started time.Time) streamResult {
 	payloadDigest := sha256.Sum256(payload)
 	frame := grpcFrame(payload)
 	frameDigest := sha256.Sum256(frame)
-	return streamResult{
+	result := streamResult{
+		VariantID:                 variant.ID,
 		Method:                    "/sos.byteman.Byteman/Stream",
+		IncludeMetadata:           variant.IncludeMetadata,
 		RequestPayloadBytes:       len(payload),
 		RequestPayloadSHA256:      hex.EncodeToString(payloadDigest[:]),
 		RequestFrameBytes:         len(frame),
 		RequestFrameSHA256:        hex.EncodeToString(frameDigest[:]),
 		RequestWire:               summarizeStreamRequest(payload),
-		SOSSessionHeaderPresent:   true,
+		SOSSessionHeaderPresent:   variant.SOSSessionHeaderPresent,
 		SOSSessionHeaderBytes:     0,
-		SOSSessionHeaderSHA256:    emptyValueSHA256,
 		ResponseRecordIdentitySet: false,
+		StartedUTC:                started.UTC().Format(time.RFC3339Nano),
 	}
+	if variant.SOSSessionHeaderPresent {
+		result.SOSSessionHeaderSHA256 = emptyValueSHA256
+	}
+	return result
 }
 
 func consumeStreamFrame(message []byte, payload *[]byte, headerResult *streamHeaderResult, frameResult *streamFrameResult) error {
@@ -595,9 +699,12 @@ func buildTargetMetadata() []byte {
 	return metadata
 }
 
-func buildTargetStreamRequest() []byte {
+func buildTargetStreamRequest(includeMetadata bool) []byte {
 	request := appendStringField(nil, 1, pinnedReadbackURL)
-	return appendBytesField(request, 2, buildTargetMetadata())
+	if includeMetadata {
+		request = appendBytesField(request, 2, buildTargetMetadata())
+	}
+	return request
 }
 
 func summarizeStreamRequest(payload []byte) []wireFieldDigest {
@@ -846,7 +953,10 @@ func cleanError(err error) string {
 	if err == nil {
 		return ""
 	}
-	value := err.Error()
+	return cleanSensitiveText(err.Error())
+}
+
+func cleanSensitiveText(value string) string {
 	for _, secret := range []string{callbackSessionNonce, pinnedReadbackSession, pinnedReadbackURL, rpcDialAddress} {
 		if secret != "" {
 			value = strings.ReplaceAll(value, secret, "[redacted]")

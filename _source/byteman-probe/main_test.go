@@ -47,7 +47,7 @@ func TestRuntimeConfigurationSeparatesCallbackAndPinnedReadback(t *testing.T) {
 
 func TestStreamRequestPinsURLAndExactMetadata(t *testing.T) {
 	installTestConfiguration(t)
-	request := buildTargetStreamRequest()
+	request := buildTargetStreamRequest(true)
 	fields, err := decodeWireFields(request)
 	if err != nil || len(fields) != 2 {
 		t.Fatalf("request fields = %#v, err %v", fields, err)
@@ -62,22 +62,74 @@ func TestStreamRequestPinsURLAndExactMetadata(t *testing.T) {
 	if got := hex.EncodeToString(metadataDigest[:]); got != "d8a03518274139d9b6dbec8b09ce0e6d9ec1ddfc3c9d5a15119ca7c677d85a62" {
 		t.Fatalf("metadata SHA256 = %s", got)
 	}
+	urlOnly := buildTargetStreamRequest(false)
+	urlFields, err := decodeWireFields(urlOnly)
+	if err != nil || len(urlFields) != 1 || urlFields[0].number != 1 || string(urlFields[0].value) != pinnedReadbackURL {
+		t.Fatalf("URL-only fields = %#v, err %v", urlFields, err)
+	}
 }
 
-func TestStreamHeaderIncludesPresentEmptySOSSessionID(t *testing.T) {
+func TestStreamTransportHeaderVariantsAreExact(t *testing.T) {
 	installTestConfiguration(t)
-	request, err := http.NewRequest(http.MethodPost, "https://byteman.example.invalid/sos.byteman.Byteman/Stream", nil)
-	if err != nil {
-		t.Fatal(err)
+	for _, present := range []bool{true, false} {
+		request, err := http.NewRequest(http.MethodPost, "https://byteman.example.invalid/sos.byteman.Byteman/Stream", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		applyStreamHeaders(request, present)
+		values, found := request.Header["X-Sos-Sessionid"]
+		if found != present {
+			t.Fatalf("header presence = %t, want %t", found, present)
+		}
+		if present {
+			if len(values) != 1 || values[0] != "" {
+				t.Fatalf("X-SOS-SessionID = %#v", values)
+			}
+			digest := sha256.Sum256([]byte(values[0]))
+			if hex.EncodeToString(digest[:]) != emptyValueSHA256 {
+				t.Fatal("empty session header digest changed")
+			}
+		}
 	}
-	applyStreamHeaders(request)
-	values, present := request.Header["X-Sos-Sessionid"]
-	if !present || len(values) != 1 || values[0] != "" {
-		t.Fatalf("X-SOS-SessionID = %#v, present=%t", values, present)
+}
+
+func TestFixedVariantsStopImmediatelyAfterSuccess(t *testing.T) {
+	want := []string{
+		"url-metadata-empty-session",
+		"url-only-empty-session",
+		"url-metadata-session-omitted",
+		"url-only-session-omitted",
 	}
-	digest := sha256.Sum256([]byte(values[0]))
-	if hex.EncodeToString(digest[:]) != emptyValueSHA256 {
-		t.Fatal("empty session header digest changed")
+	called := []string{}
+	results, success := runFixedStreamVariants(func(variant streamVariant) streamResult {
+		called = append(called, variant.ID)
+		return streamResult{VariantID: variant.ID, Verified: len(called) == 2}
+	})
+	if success != want[1] || len(results) != 2 || !bytes.Equal([]byte(strings.Join(called, "\n")), []byte(strings.Join(want[:2], "\n"))) {
+		t.Fatalf("called=%v results=%d success=%q", called, len(results), success)
+	}
+	for index, variant := range fixedStreamVariants {
+		if variant.ID != want[index] {
+			t.Fatalf("variant %d = %q", index, variant.ID)
+		}
+	}
+}
+
+func TestGRPCHeadersAndTrailersCapturedWithMessageRedaction(t *testing.T) {
+	installTestConfiguration(t)
+	header := http.Header{
+		"Grpc-Status":  []string{"2"},
+		"Grpc-Message": []string{"unable%20to%20open%20" + pinnedReadbackSession},
+	}
+	status, message := grpcMetadataValue{}, grpcMetadataValue{}
+	captureGRPCMetadata(header, &status, &message)
+	if !status.Present || status.Text != "2" || !message.Present || !strings.Contains(message.Text, "[redacted]") || strings.Contains(message.Text, pinnedReadbackSession) {
+		t.Fatalf("status=%#v message=%#v", status, message)
+	}
+	result := streamResult{}
+	captureGRPCTrailers(&http.Response{Trailer: header}, &result)
+	if !result.TrailersObserved || result.GRPCStatusTrailer.Text != "2" || !result.GRPCMessageTrailer.Present {
+		t.Fatalf("trailer capture = %#v", result)
 	}
 }
 
