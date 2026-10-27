@@ -4,13 +4,17 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/binary"
+	"encoding/hex"
+	"encoding/pem"
 	"math/big"
 	"net/http"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -23,8 +27,43 @@ func TestStringFieldEncoding(t *testing.T) {
 	}
 }
 
+func installSyntheticRuntimeConfiguration(t *testing.T) string {
+	t.Helper()
+	priorGeneric, priorCompiler, priorPlan := genericResultURL, compilerResultURL, planURL
+	priorCanary, priorSession, priorAgent := bytemanCanaryURL, sessionNonce, probeUserAgent
+	priorField, priorValue, priorName := descriptorDownloadPolicyField, descriptorDownloadPolicyValue, descriptorDownloadPolicyName
+	priorRedirectConfig, priorRedirectField := descriptorRedirectConfigField, descriptorRedirectPolicyField
+	priorRedirectValue, priorRedirectName := descriptorRedirectPolicyValue, descriptorRedirectPolicyName
+	sessionNonce = strings.Repeat("a", 64)
+	origin := "https://example.invalid"
+	genericResultURL = origin + "/v1/result/" + sessionNonce + "/generic"
+	compilerResultURL = origin + "/v1/result/" + sessionNonce + "/compiler"
+	planURL = origin + "/v1/plan/" + sessionNonce
+	bytemanCanaryURL = origin + "/v1/goproxy/" + sessionNonce + "/github.com/benr00t3d/go-byteman-crosswrite-canary/@v/" + targetVersion + ".zip"
+	probeUserAgent = expectedUserAgent
+	descriptorDownloadPolicyField = "5"
+	descriptorDownloadPolicyValue = "4"
+	descriptorDownloadPolicyName = "ALWAYS"
+	descriptorRedirectConfigField = "8"
+	descriptorRedirectPolicyField = "1"
+	descriptorRedirectPolicyValue = "2"
+	descriptorRedirectPolicyName = "FOLLOW_NONE"
+	t.Cleanup(func() {
+		genericResultURL, compilerResultURL, planURL = priorGeneric, priorCompiler, priorPlan
+		bytemanCanaryURL, sessionNonce, probeUserAgent = priorCanary, priorSession, priorAgent
+		descriptorDownloadPolicyField, descriptorDownloadPolicyValue, descriptorDownloadPolicyName = priorField, priorValue, priorName
+		descriptorRedirectConfigField, descriptorRedirectPolicyField = priorRedirectConfig, priorRedirectField
+		descriptorRedirectPolicyValue, descriptorRedirectPolicyName = priorRedirectValue, priorRedirectName
+	})
+	return bytemanCanaryURL
+}
+
 func TestOwnedDownloadRequestShape(t *testing.T) {
-	request := buildTargetDownloadRequest("https://example.invalid/canary")
+	canaryURL := installSyntheticRuntimeConfiguration(t)
+	request, err := buildTargetDownloadRequest(canaryURL)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(request) == 0 || request[0] != 0x0a {
 		t.Fatalf("unexpected request prefix: %x", request)
 	}
@@ -42,6 +81,65 @@ func TestOwnedDownloadRequestShape(t *testing.T) {
 		if bytes.Contains(request, forbidden) {
 			t.Fatalf("cross-package request unexpectedly contains executing A coordinate %q", forbidden)
 		}
+	}
+	decoded, valid := decodeWireMessage(request, 0)
+	if !valid {
+		t.Fatal("Download request was not valid protobuf wire data")
+	}
+	policyCount := 0
+	redirectCount := 0
+	for _, field := range decoded.fields {
+		if field.number == 5 && field.wire == 0 && field.varint == 4 {
+			policyCount++
+		}
+		if field.number == 8 && field.wire == 2 && field.child != nil && len(field.child.fields) == 1 &&
+			field.child.fields[0].number == 1 && field.child.fields[0].wire == 0 && field.child.fields[0].varint == 2 {
+			redirectCount++
+		}
+	}
+	if policyCount != 1 {
+		t.Fatalf("descriptor policy count = %d", policyCount)
+	}
+	if redirectCount != 1 {
+		t.Fatalf("descriptor redirect config count = %d", redirectCount)
+	}
+	transcript := grpcResult{}
+	frame := attachRequestTranscript(&transcript, request)
+	payloadDigest := sha256.Sum256(request)
+	frameDigest := sha256.Sum256(frame)
+	if transcript.RequestPayloadBytes != len(request) || transcript.RequestFrameBytes != len(request)+5 ||
+		transcript.RequestPayloadSHA256 != hex.EncodeToString(payloadDigest[:]) ||
+		transcript.RequestFrameSHA256 != hex.EncodeToString(frameDigest[:]) ||
+		transcript.RequestWireError != "" || len(transcript.RequestWire) == 0 {
+		t.Fatalf("request transcript = %#v", transcript)
+	}
+}
+
+func TestDownloadPolicyPatchPointFailsClosed(t *testing.T) {
+	canaryURL := installSyntheticRuntimeConfiguration(t)
+	descriptorDownloadPolicyField = ""
+	descriptorDownloadPolicyValue = ""
+	descriptorDownloadPolicyName = ""
+	if request, err := buildTargetDownloadRequest(canaryURL); err == nil || request != nil {
+		t.Fatalf("unresolved descriptor patch point returned request %x, err %v", request, err)
+	}
+}
+
+func TestRuntimeConfigurationPinsOriginAndOwnedBPath(t *testing.T) {
+	installSyntheticRuntimeConfiguration(t)
+	if err := validateRuntimeConfiguration(); err != nil {
+		t.Fatalf("valid runtime configuration rejected: %v", err)
+	}
+	bytemanCanaryURL = strings.Replace(bytemanCanaryURL, targetModuleName, moduleName, 1)
+	if err := validateRuntimeConfiguration(); err == nil {
+		t.Fatal("executing A coordinate was accepted as the owned-B canary path")
+	}
+}
+
+func TestMutationBudgetAllowsOnlyOneClaim(t *testing.T) {
+	budget := &mutationBudget{}
+	if !budget.claim() || budget.claim() {
+		t.Fatal("session-wide mutation budget did not allow exactly one claim")
 	}
 }
 
@@ -109,10 +207,16 @@ func TestLookupDecoderPinsDownloadAndMetadataSchema(t *testing.T) {
 	}
 	empty, err := analyzeLookupBody(grpcTestFrame(nil))
 	if err != nil || empty.RecordCount != 0 || empty.MatchCount != 0 {
-		t.Fatalf("empty unary Lookup = %#v, err %v", empty, err)
+		t.Fatalf("one empty streaming Lookup frame = %#v, err %v", empty, err)
 	}
-	if _, err := analyzeLookupBody(append(grpcTestFrame(nil), grpcTestFrame(nil)...)); err == nil {
-		t.Fatal("multi-frame unary Lookup response was accepted")
+	if _, err := analyzeLookupBody(nil); err == nil {
+		t.Fatal("zero-frame Lookup response was accepted")
+	}
+	nonmatch := appendStringField(nil, 1, "https://example.invalid/not-owned-b.zip")
+	multi := append(grpcTestFrame(appendBytesField(nil, 1, nonmatch)), grpcTestFrame(response)...)
+	streamed, err := analyzeLookupBody(multi)
+	if err != nil || streamed.RecordCount != 2 || streamed.MatchCount != 1 || streamed.MatchPath != "frame[1].1[0]" {
+		t.Fatalf("multi-frame streaming Lookup = %#v, err %v", streamed, err)
 	}
 }
 
@@ -194,6 +298,9 @@ func TestExactLookupPairRequiresReturnedDigestAndID(t *testing.T) {
 	changed.IDFieldSHA256 = "different"
 	if exactLookupPair(base, changed, "digest", "id") {
 		t.Fatal("Lookup pair with different service IDs was accepted")
+	}
+	if !exactLookupPair(base, base, "", "") {
+		t.Fatal("identical service-established pair was rejected during ambiguous-response recovery")
 	}
 }
 
@@ -328,6 +435,21 @@ func TestVerifyLegacyLocalhost(t *testing.T) {
 	}
 	if err := verifyLegacyLocalhost(tls.ConnectionState{}, roots); err == nil {
 		t.Fatal("missing peer certificate accepted")
+	}
+}
+
+func TestMountedPrivateRootPoolContainsOnlyMountedRoots(t *testing.T) {
+	state, _ := legacyTLSState(t, "localhost")
+	rootPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: state.PeerCertificates[1].Raw})
+	roots, err := mountedPrivateRootPool(rootPEM)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if subjects := roots.Subjects(); len(subjects) != 1 {
+		t.Fatalf("mounted-only root subjects = %d, want 1", len(subjects))
+	}
+	if _, err := mountedPrivateRootPool([]byte("not a certificate")); err == nil {
+		t.Fatal("invalid mounted root pool was accepted")
 	}
 }
 
