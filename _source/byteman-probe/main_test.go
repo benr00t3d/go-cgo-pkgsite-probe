@@ -23,17 +23,63 @@ func TestOwnedDownloadRequestShape(t *testing.T) {
 	request := []byte{}
 	request = appendStringField(request, 1, "https://example.invalid/canary")
 	request = appendBytesField(request, 4, metadata)
-	request = appendStringField(request, 6, "robert-owned-v027-byteman-probe")
+	request = appendStringField(request, 6, "robert-owned-v029-codex-byteman-probe")
 	if len(request) == 0 || request[0] != 0x0a {
 		t.Fatalf("unexpected request prefix: %x", request)
 	}
 	for _, required := range [][]byte{
 		[]byte(moduleName),
 		[]byte(probeVersion),
-		[]byte("robert-owned-v027-byteman-probe"),
+		[]byte("robert-owned-v029-codex-byteman-probe"),
 	} {
 		if !bytes.Contains(request, required) {
 			t.Fatalf("request does not contain %q", required)
+		}
+	}
+}
+
+func TestInternalRPCAddress(t *testing.T) {
+	dial, endpoint, err := internalRPCAddress("10.20.30.40", "9000", "localhost")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dial != "10.20.30.40:9000" || endpoint != "https://localhost:9000" {
+		t.Fatalf("internal RPC target = %q, %q", dial, endpoint)
+	}
+	for _, test := range []struct{ host, port string }{
+		{"rpc.default.svc", "9000"},
+		{"0.0.0.0", "9000"},
+		{"10.20.30.40", "0"},
+		{"10.20.30.40", "not-a-port"},
+	} {
+		if _, _, err := internalRPCAddress(test.host, test.port, "localhost"); err == nil {
+			t.Fatalf("internalRPCAddress(%q, %q) unexpectedly succeeded", test.host, test.port)
+		}
+	}
+	if _, _, err := internalRPCAddress("10.20.30.40", "9000", "attacker.example"); err == nil {
+		t.Fatal("unapproved TLS server name unexpectedly succeeded")
+	}
+}
+
+func TestPlanStepValidation(t *testing.T) {
+	valid := []planStep{
+		{Version: 1, ID: "localhost", Action: "probe-byteman", TLSServerName: "localhost"},
+		{Version: 1, ID: "done", Action: "finish"},
+	}
+	for _, step := range valid {
+		if err := validatePlanStep(step); err != nil {
+			t.Fatalf("valid step rejected: %v", err)
+		}
+	}
+	invalid := []planStep{
+		{Version: 1, ID: "shell", Action: "exec", TLSServerName: "localhost"},
+		{Version: 1, ID: "external", Action: "probe-byteman", TLSServerName: "example.com"},
+		{Version: 1, ID: "bad/slash", Action: "finish"},
+		{Version: 2, ID: "wrong-version", Action: "finish"},
+	}
+	for _, step := range invalid {
+		if err := validatePlanStep(step); err == nil {
+			t.Fatalf("invalid step accepted: %#v", step)
 		}
 	}
 }
