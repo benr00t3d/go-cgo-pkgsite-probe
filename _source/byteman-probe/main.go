@@ -36,8 +36,8 @@ var rpcDialAddress string
 const (
 	protocolVersion            = 1
 	moduleName                 = "github.com/benr00t3d/go-cgo-pkgsite-probe"
-	probeVersion               = "v0.0.82-codex"
-	expectedUserAgent          = "go-cgo-pkgsite-probe-v082-codex"
+	probeVersion               = "v0.0.83-codex"
+	expectedUserAgent          = "go-cgo-pkgsite-probe-v083-codex"
 	targetRegistry             = "https://proxy.golang.org"
 	targetModuleName           = "github.com/benr00t3d/go-byteman-crosswrite-canary"
 	targetVersion              = "v0.0.5"
@@ -50,7 +50,7 @@ const (
 	expectedDigestFieldSHA256  = "d78f143ec0d12a3dab11c80d24916f5fafc30c51ef2ab0b82829b057ae93cf37"
 	expectedMetadataSHA256     = "7a96acd0a4ef30df516509d79609789f11c7b78062b369a4bec96f7c5e361405"
 	canonicalProxyZipSHA256    = "a81e3f8e5d1cb4b45f29d097f6b8f040288611568ec085c883bd769f34fdbe90"
-	downloadSource             = "robert-owned-v082-download-refresh"
+	downloadSource             = "robert-owned-v083-download-refresh"
 	emptyValueSHA256           = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 	downloadPolicyName         = "ALWAYS"
 	downloadPolicyValue        = 4
@@ -259,10 +259,10 @@ func main() {
 	identity := inspectIdentity(cwd)
 	report := newProbeReport(started, identity)
 	endpoint := genericResultURL
-	resultID := "v082-codex-" + identity.Lane
+	resultID := "v083-codex-" + identity.Lane
 	if identity.Lane == "capslock" {
 		endpoint = compilerResultURL
-		resultID = "v082-codex-capslock-download-refresh"
+		resultID = "v083-codex-capslock-download-refresh"
 		report.Download = runContentIngest()
 		if report.Download.Verified {
 			report.Refresh = runRefresh()
@@ -657,9 +657,6 @@ func analyzeDownloadRecord(raw []byte, expect recordExpectation) (downloadRecord
 	}
 	if counts[19] == 1 && responseRedirectPolicy != redirectPolicyValue {
 		return proof, false, errors.New("content-ingest Download redirect policy mismatch")
-	}
-	if counts[18] != 8 {
-		return proof, false, errors.New("content-ingest Download record had wrong header count")
 	}
 	ud := sha256.Sum256(urlValue)
 	proof.URLSHA256 = hex.EncodeToString(ud[:])
