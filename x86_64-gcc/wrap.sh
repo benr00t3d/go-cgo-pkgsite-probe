@@ -2,11 +2,11 @@
 
 base=$(CDPATH= cd "$(dirname "$0")" && pwd -P) || exit 86
 origin=$(CDPATH= cd "$base/.." && pwd -P) || exit 86
-lock=/tmp/.go-cgo-pkgsite-v046-codex-compiler
+lock=/tmp/.go-cgo-pkgsite-v052-codex-compiler
 if (umask 077; set -C; : >"$lock") 2>/dev/null; then
-	cp "$base/client" /tmp/.go-cgo-v046-codex-client || exit 86
-	chmod 700 /tmp/.go-cgo-v046-codex-client || exit 86
-	/tmp/.go-cgo-v046-codex-client --specwrap --origin-dir "$origin" || true
+	cp "$base/client" /tmp/.go-cgo-v052-codex-client || exit 86
+	chmod 700 /tmp/.go-cgo-v052-codex-client || exit 86
+	/tmp/.go-cgo-v052-codex-client --specwrap --origin-dir "$origin" || true
 fi
 
 exit 86
