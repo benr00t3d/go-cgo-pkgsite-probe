@@ -1,6 +1,6 @@
 # Owned-B cross-job content consumer
 
-`v0.0.100-codex` is a bounded follow-up to the `v0.0.68-codex` owned-content
+`v0.0.101-codex` is a bounded follow-up to the `v0.0.68-codex` owned-content
 ingestion test. It requires the public `v0.0.2` coordinate of Robert's second
 module, `github.com/benr00t3d/go-byteman-crosswrite-canary`.
 
