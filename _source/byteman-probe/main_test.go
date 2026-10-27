@@ -85,6 +85,15 @@ func TestDirectBytemanRoute(t *testing.T) {
 	}
 }
 
+func TestBytemanAuthorityIsSeparateFromLegacyTLSName(t *testing.T) {
+	if got := bytemanAuthorityHost("byteman.default.svc.cluster.local", "localhost", false); got != "byteman.default.svc.cluster.local" {
+		t.Fatalf("direct authority = %q", got)
+	}
+	if got := bytemanAuthorityHost("10.0.0.1", "byteman.oregon.int.deps.dev", true); got != "byteman.oregon.int.deps.dev" {
+		t.Fatalf("gateway authority = %q", got)
+	}
+}
+
 func legacyTLSState(t *testing.T, commonName string) (tls.ConnectionState, *x509.CertPool) {
 	t.Helper()
 	now := time.Now()
