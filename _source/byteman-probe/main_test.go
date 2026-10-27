@@ -159,7 +159,7 @@ func TestVerifyLegacyLocalhost(t *testing.T) {
 
 func TestPlanStepValidation(t *testing.T) {
 	valid := []planStep{
-		{Version: 1, ID: "inspect", Action: "inspect-byteman-descriptors"},
+		{Version: 1, ID: "inspect", Action: "inspect-session-dataflow"},
 		{Version: 1, ID: "done", Action: "finish"},
 	}
 	for _, step := range valid {
@@ -171,7 +171,7 @@ func TestPlanStepValidation(t *testing.T) {
 		{Version: 1, ID: "shell", Action: "exec", RouteMode: "byteman-core-localhost"},
 		{Version: 1, ID: "missing-mode", Action: "probe-byteman"},
 		{Version: 1, ID: "arbitrary", Action: "probe-byteman", RouteMode: "external"},
-		{Version: 1, ID: "inspect-route", Action: "inspect-byteman-descriptors", RouteMode: "byteman-core-localhost"},
+		{Version: 1, ID: "inspect-route", Action: "inspect-session-dataflow", RouteMode: "byteman-core-localhost"},
 		{Version: 1, ID: "bad/slash", Action: "finish"},
 		{Version: 2, ID: "wrong-version", Action: "finish"},
 	}
@@ -179,6 +179,22 @@ func TestPlanStepValidation(t *testing.T) {
 		if err := validatePlanStep(step); err == nil {
 			t.Fatalf("invalid step accepted: %#v", step)
 		}
+	}
+}
+
+func TestFixedMetadataKeyLocation(t *testing.T) {
+	disassembly := []byte(`
+1000: lea rcx,[rip+0x20] # 1234 <go:string.*+0x1>
+1007: mov edi,0xf
+100c: call 2000 <runtime.mapassign_faststr>
+1011: call 3000 <google.golang.org/grpc/metadata.New>
+`)
+	address, length, err := fixedMetadataKeyLocation(disassembly)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if address != 0x1234 || length != 15 {
+		t.Fatalf("location = %#x/%d", address, length)
 	}
 }
 

