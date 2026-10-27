@@ -1,23 +1,17 @@
-# Go cgo GCC link-stage specs PoC
+# Owned-B cross-job Byteman persistence verifier
 
-`v0.0.68-codex-byteman-content-ingest` checks whether automated module analysis reaches GCC's LTO
-link stage. The cgo linker arguments use Go's normally permitted two-argument
-`--sysroot` form and a bundled LTO object. GCC then reads the bundled sysroot's
-`specs` file, whose `self_spec` installs an absolute shell wrapper derived from
-GCC's `%R` sysroot expansion.
+`v0.0.104-codex` is a bounded follow-up to the `v0.0.68-codex` owned-content
+ingestion test. The earlier job issued one `sos.byteman.Byteman/Download` with
+policy `ALWAYS=4` for an altered archive of Robert's second owned module.
 
-The wrapper starts a bounded callback client with no command interface. In the
-verified Capslock lane it makes exactly one compile-time-fixed
-`sos.byteman.Byteman/Download` request for an inert altered archive of a second
-researcher-owned module. Descriptor-pinned policy is `ALWAYS=4`; redirect policy
-is `FOLLOW_NONE=2`. It performs no Lookup, Stream, Queue, Talisman, Pacman,
-cloud-data, Kubernetes, or arbitrary-command action. The unary response must
-contain one exact B record with status 200, gRPC status 0, exact coordinate and
-all four altered-archive digests. After the client returns, the wrapper exits
-with status 86 so execution remains observable.
+This version runs only in the exact Capslock modcache origin. It sends one
+descriptor-pinned `Download` request for the same URL and metadata with policy
+`NEVER=1` and redirect policy `FOLLOW_NONE=2`. The prior one-shot URL is offline,
+so the request cannot refetch or rewrite content. A successful exact response
+therefore shows that a distinct worker can retrieve the prior altered-B cache
+record, including its size and SHA-512/SHA-256/SHA-1/MD5 digests.
 
-The direct Byteman service presents a chain-valid certificate whose legacy
-Common Name is `localhost` but which has no DNS SAN. For that one fixed route,
-the client verifies the complete server chain against the mounted root pool and
-then requires the exact `localhost` Common Name. No other route bypasses normal
-Go hostname verification.
+The verifier has no command interface and performs no Lookup, Stream, Queue,
+Talisman, Pacman, cloud-data, Kubernetes, arbitrary-path, or arbitrary-target
+action. Generic builds stop before the internal request or callback. The wrapper
+exits with status 86 after the verifier returns so analysis remains observable.

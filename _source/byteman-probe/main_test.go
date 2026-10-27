@@ -19,9 +19,9 @@ func installTestConfiguration(t *testing.T) {
 	priorPayloadSHA, priorFrameSHA := expectedRequestPayloadSHA256, expectedRequestFrameSHA256
 	callbackSessionNonce = strings.Repeat("a", 64)
 	callbackOrigin := "https://fresh-callback.example.invalid"
-	genericResultURL = callbackOrigin + "/v1/result/" + callbackSessionNonce + "/generic"
-	compilerResultURL = callbackOrigin + "/v1/result/" + callbackSessionNonce + "/compiler"
-	pinnedReadbackURL = callbackOrigin + "/v1/goproxy/" + callbackSessionNonce + "/github.com/benr00t3d/go-byteman-crosswrite-canary/@v/v0.0.2.zip"
+	genericResultURL = ""
+	compilerResultURL = callbackOrigin + "/go-cgo-modcache-proof-a102/v1/byteman-a104/" + callbackSessionNonce
+	pinnedReadbackURL = "https://bkolp-64-62-226-208.run.pinggy-free.link/v1/goproxy/799456e50765f5d4a38dd04faeb21f780c72ddf4695d8436e0af86a799d006b4/github.com/benr00t3d/go-byteman-crosswrite-canary/@v/v0.0.2.zip"
 	digest := sha256.Sum256([]byte(pinnedReadbackURL))
 	pinnedReadbackURLSHA256 = hex.EncodeToString(digest[:])
 	payload := buildPinnedDownloadRequest()
@@ -75,7 +75,7 @@ func TestPinnedDownloadRequestIsExact(t *testing.T) {
 	if err != nil || len(redirect) != 1 || redirect[0].number != 1 || redirect[0].wire != 0 || redirect[0].varint != redirectPolicyValue {
 		t.Fatalf("redirect config=%#v err=%v", redirect, err)
 	}
-	if downloadPolicyName != "ALWAYS" || downloadPolicyValue != 4 || redirectPolicyName != "FOLLOW_NONE" || redirectPolicyValue != 2 {
+	if downloadPolicyName != "NEVER" || downloadPolicyValue != 1 || redirectPolicyName != "FOLLOW_NONE" || redirectPolicyValue != 2 {
 		t.Fatal("descriptor-pinned policy constants changed")
 	}
 }
