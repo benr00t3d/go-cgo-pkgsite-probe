@@ -3,8 +3,11 @@ package main
 import (
 	"bytes"
 	"crypto/ed25519"
+	"crypto/md5"
 	"crypto/rand"
+	"crypto/sha1"
 	"crypto/sha256"
+	"crypto/sha512"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
@@ -39,6 +42,57 @@ func TestPinnedStreamRequestShape(t *testing.T) {
 	if !valid || len(message.fields) != 2 || message.fields[0].number != 1 || message.fields[1].number != 2 ||
 		string(message.fields[0].value) != bytemanCanaryURL {
 		t.Fatalf("StreamRequest fields = %#v", message)
+	}
+}
+
+func TestPinnedURLLookupRequestShape(t *testing.T) {
+	installSyntheticRuntimeConfiguration(t)
+	request := buildURLLookupRequest(bytemanCanaryURL)
+	if len(bytemanCanaryURL) != 188 || len(request) != 191 {
+		t.Fatalf("URL/LookupRequest bytes = %d/%d", len(bytemanCanaryURL), len(request))
+	}
+	message, valid := decodeWireMessage(request, 0)
+	if !valid || len(message.fields) != 1 || message.fields[0].number != 2 ||
+		message.fields[0].wire != 2 || string(message.fields[0].value) != bytemanCanaryURL {
+		t.Fatalf("LookupRequest fields = %#v", message)
+	}
+}
+
+func TestExactPersistedDigestMessage(t *testing.T) {
+	decode := func(value string) []byte {
+		decoded, err := hex.DecodeString(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return decoded
+	}
+	message := appendBytesField(nil, 1, decode(expectedSHA512Hex))
+	message = appendBytesField(message, 2, decode(targetCanarySHA256))
+	message = appendBytesField(message, 3, decode(expectedSHA1Hex))
+	message = appendBytesField(message, 4, decode(expectedMD5Hex))
+	if len(message) != 140 || !exactDigestMessage(message) {
+		t.Fatalf("exact digest message rejected: bytes=%d", len(message))
+	}
+	message[len(message)-1] ^= 1
+	if exactDigestMessage(message) {
+		t.Fatal("mutated digest message was accepted")
+	}
+}
+
+func TestPinnedRawDigestsMatchCanaryFixture(t *testing.T) {
+	payload, err := os.ReadFile("testdata/v0.0.1-crosswrite-canary.zip")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sha512Value := sha512.Sum512(payload)
+	sha256Value := sha256.Sum256(payload)
+	sha1Value := sha1.Sum(payload)
+	md5Value := md5.Sum(payload)
+	if hex.EncodeToString(sha512Value[:]) != expectedSHA512Hex ||
+		hex.EncodeToString(sha256Value[:]) != targetCanarySHA256 ||
+		hex.EncodeToString(sha1Value[:]) != expectedSHA1Hex ||
+		hex.EncodeToString(md5Value[:]) != expectedMD5Hex {
+		t.Fatal("source-pinned raw digests did not match the exact canary fixture")
 	}
 }
 
@@ -394,6 +448,56 @@ func TestStreamDecoderUsesOnlyTopLevelFieldTwo(t *testing.T) {
 
 type failAfterReader struct {
 	reader *bytes.Reader
+}
+
+func TestIncrementalLookupStopsBeforeEOFAfterExactRecord(t *testing.T) {
+	exact := []byte("synthetic exact persisted record")
+	identity := downloadRecordIdentity{
+		Matched: true, RecordSHA256: expectedRecordSHA256, DigestSHA256: expectedDigestFieldSHA256,
+		IDSHA256: expectedIDFieldSHA256, PathSHA256: expectedPathFieldSHA256, RawDigestsMatched: true,
+	}
+	matcher := func(value []byte) (downloadRecordIdentity, bool, error) {
+		if bytes.Equal(value, exact) {
+			return identity, true, nil
+		}
+		return downloadRecordIdentity{}, false, nil
+	}
+	first := grpcTestFrame(appendBytesField(nil, 1, []byte("other record")))
+	second := grpcTestFrame(appendBytesField(nil, 1, exact))
+	body := append(first, second...)
+	analysis, err := readLookupFramesWithMatcher(&failAfterReader{reader: bytes.NewReader(body)}, matcher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if analysis.FrameCount != 2 || analysis.RecordCount != 2 || analysis.MatchCount != 1 ||
+		analysis.MatchPath != "frame[1].1[0]" || analysis.RecordsSHA256 == "" ||
+		analysis.MatchSHA256 == "" || analysis.BodyBytes != len(body) || !analysis.Identity.RawDigestsMatched {
+		t.Fatalf("incremental Lookup analysis = %#v", analysis)
+	}
+}
+
+func TestIncrementalLookupRejectsInvalidFrames(t *testing.T) {
+	exact := []byte("synthetic exact persisted record")
+	matcher := func(value []byte) (downloadRecordIdentity, bool, error) {
+		return downloadRecordIdentity{Matched: true}, bytes.Equal(value, exact), nil
+	}
+	validMessage := appendBytesField(nil, 1, exact)
+	compressed := grpcTestFrame(validMessage)
+	compressed[0] = 1
+	duplicate := appendBytesField(validMessage, 1, exact)
+	tests := map[string][]byte{
+		"compressed":       compressed,
+		"unexpected-field": grpcTestFrame(appendBytesField(nil, 2, exact)),
+		"duplicate":        grpcTestFrame(duplicate),
+		"no-match":         grpcTestFrame(appendBytesField(nil, 1, []byte("other"))),
+	}
+	for name, body := range tests {
+		t.Run(name, func(t *testing.T) {
+			if _, err := readLookupFramesWithMatcher(bytes.NewReader(body), matcher); err == nil {
+				t.Fatal("invalid incremental Lookup body was accepted")
+			}
+		})
+	}
 }
 
 func (reader *failAfterReader) Read(destination []byte) (int, error) {

