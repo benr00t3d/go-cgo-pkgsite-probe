@@ -8,9 +8,15 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"math/big"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
+
+var linkedPathFixture = "/etc/sos/auth.json"
 
 func TestStringFieldEncoding(t *testing.T) {
 	got := appendStringField(nil, 2, "x")
@@ -159,7 +165,7 @@ func TestVerifyLegacyLocalhost(t *testing.T) {
 
 func TestPlanStepValidation(t *testing.T) {
 	valid := []planStep{
-		{Version: 1, ID: "inspect", Action: "inspect-session-dataflow"},
+		{Version: 1, ID: "inspect", Action: "inspect-auth-filename"},
 		{Version: 1, ID: "done", Action: "finish"},
 	}
 	for _, step := range valid {
@@ -171,7 +177,7 @@ func TestPlanStepValidation(t *testing.T) {
 		{Version: 1, ID: "shell", Action: "exec", RouteMode: "byteman-core-localhost"},
 		{Version: 1, ID: "missing-mode", Action: "probe-byteman"},
 		{Version: 1, ID: "arbitrary", Action: "probe-byteman", RouteMode: "external"},
-		{Version: 1, ID: "inspect-route", Action: "inspect-session-dataflow", RouteMode: "byteman-core-localhost"},
+		{Version: 1, ID: "inspect-route", Action: "inspect-auth-filename", RouteMode: "byteman-core-localhost"},
 		{Version: 1, ID: "bad/slash", Action: "finish"},
 		{Version: 2, ID: "wrong-version", Action: "finish"},
 	}
@@ -179,6 +185,82 @@ func TestPlanStepValidation(t *testing.T) {
 		if err := validatePlanStep(step); err == nil {
 			t.Fatalf("invalid step accepted: %#v", step)
 		}
+	}
+}
+
+func TestValidateLinkedPath(t *testing.T) {
+	valid, err := validateLinkedPath([]byte("/etc/sos/auth.json"))
+	if err != nil || valid != "/etc/sos/auth.json" {
+		t.Fatalf("valid linked path = %q, %v", valid, err)
+	}
+	for _, invalid := range [][]byte{
+		[]byte("relative/path"),
+		[]byte("/etc/sos/../secret"),
+		[]byte("/"),
+		[]byte("/etc/sos/auth\n.json"),
+		{0xff},
+	} {
+		if _, err := validateLinkedPath(invalid); err == nil {
+			t.Fatalf("invalid linked path accepted: %q", invalid)
+		}
+	}
+}
+
+func TestLstatPathDoesNotFollowSymlink(t *testing.T) {
+	directory := t.TempDir()
+	target := filepath.Join(directory, "target")
+	if err := os.WriteFile(target, []byte("contents-are-never-read"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(directory, "link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	result := lstatPath(link)
+	if !result.Present || result.Error != "" || result.Path != link || result.Mode == "" {
+		t.Fatalf("lstat result = %#v", result)
+	}
+	if result.Size != int64(len(target)) {
+		t.Fatalf("symlink size = %d, want %d", result.Size, len(target))
+	}
+}
+
+func TestReadLinkedGoStringFromELF(t *testing.T) {
+	runtime.KeepAlive(&linkedPathFixture)
+	executablePath, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	goPath := filepath.Join(runtime.GOROOT(), "bin", "go")
+	nmOutput, err := exec.Command(goPath, "tool", "nm", executablePath).CombinedOutput()
+	if err != nil {
+		if bytes.Contains(nmOutput, []byte("no symbol section")) {
+			t.Skip("ephemeral go test binary has its symbol section removed")
+		}
+		t.Fatalf("go tool nm: %v: %s", err, nmOutput)
+	}
+	symbolName := "github.com/benr00t3d/go-cgo-pkgsite-probe/_source/byteman-probe.linkedPathFixture"
+	globalAddress, err := exactSymbolAddress(nmOutput, symbolName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stringAddress, path, err := readLinkedGoStringAtAddress(executablePath, globalAddress)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if globalAddress == 0 || stringAddress == 0 || path != linkedPathFixture {
+		t.Fatalf("linked string = %#x/%#x/%q", globalAddress, stringAddress, path)
+	}
+}
+
+func TestExactSymbolAddress(t *testing.T) {
+	output := []byte("0000000000001234 D " + authFileNameSymbol + "\n")
+	address, err := exactSymbolAddress(output, authFileNameSymbol)
+	if err != nil || address != 0x1234 {
+		t.Fatalf("symbol address = %#x, %v", address, err)
+	}
+	if _, err := exactSymbolAddress(append(output, output...), authFileNameSymbol); err == nil {
+		t.Fatal("duplicate exact symbol was accepted")
 	}
 }
 
