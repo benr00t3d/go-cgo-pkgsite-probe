@@ -6,8 +6,10 @@ import (
 	"crypto/sha1"
 	"crypto/sha256"
 	"crypto/sha512"
+	"crypto/tls"
 	"encoding/hex"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
@@ -52,33 +54,84 @@ func TestRuntimeConfigurationPinsProductionURLDigest(t *testing.T) {
 	}
 }
 
-func TestCoordinateLookupRequestIsExact(t *testing.T) {
-	payload := buildCoordinateLookupRequest()
+func TestPinnedDownloadRequestIsExact(t *testing.T) {
+	installTestConfiguration(t)
+	payload := buildPinnedDownloadRequest()
 	fields, err := decodeWireFields(payload)
 	if err != nil || len(fields) != 4 {
 		t.Fatalf("fields=%#v err=%v", fields, err)
 	}
-	if fields[0].number != 7 || fields[0].wire != 2 || string(fields[0].value) != targetRegistry ||
-		fields[1].number != 8 || fields[1].wire != 2 || string(fields[1].value) != targetModuleName ||
-		fields[2].number != 9 || fields[2].wire != 2 || string(fields[2].value) != targetVersion ||
-		fields[3].number != 10 || fields[3].wire != 0 || fields[3].varint != lookupRecordLimit {
+	if fields[0].number != 1 || fields[0].wire != 2 || string(fields[0].value) != pinnedReadbackURL ||
+		fields[1].number != 4 || fields[1].wire != 2 ||
+		fields[2].number != 5 || fields[2].wire != 0 || fields[2].varint != downloadPolicyValue ||
+		fields[3].number != 8 || fields[3].wire != 2 {
 		t.Fatalf("unexpected request fields: %#v", fields)
+	}
+	metadataDigest := sha256.Sum256(fields[1].value)
+	if hex.EncodeToString(metadataDigest[:]) != expectedMetadataSHA256 || !exactTargetMetadata(fields[1].value) {
+		t.Fatal("request metadata was not exact")
+	}
+	redirect, err := decodeWireFields(fields[3].value)
+	if err != nil || len(redirect) != 1 || redirect[0].number != 1 || redirect[0].wire != 0 || redirect[0].varint != redirectPolicyValue {
+		t.Fatalf("redirect config=%#v err=%v", redirect, err)
+	}
+	for _, field := range fields {
+		if field.number == 6 || field.number == 7 {
+			t.Fatalf("request unexpectedly contained field %d", field.number)
+		}
+	}
+	if downloadPolicyName != "NEVER" || downloadPolicyValue != 1 || redirectPolicyName != "FOLLOW_NONE" || redirectPolicyValue != 2 {
+		t.Fatal("descriptor-pinned policy constants changed")
 	}
 }
 
-func TestLookupTransportHeadersAndContentTypeAreExact(t *testing.T) {
-	request, err := http.NewRequest(http.MethodPost, "https://byteman.example.invalid/sos.byteman.Byteman/Lookup", nil)
+func TestDownloadTransportHeadersAndContentTypeAreExact(t *testing.T) {
+	request, err := http.NewRequest(http.MethodPost, "https://byteman.example.invalid/sos.byteman.Byteman/Download", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	applyLookupHeaders(request)
+	applyDownloadHeaders(request)
 	values, present := request.Header["X-Sos-Sessionid"]
 	if !present || len(values) != 1 || values[0] != "" {
 		t.Fatalf("X-SOS-SessionID=%#v present=%t", values, present)
 	}
+	if request.Header.Get("Grpc-Timeout") != "120S" {
+		t.Fatalf("Grpc-Timeout=%q", request.Header.Get("Grpc-Timeout"))
+	}
 	if !allowedGRPCContentType("application/grpc") || allowedGRPCContentType("application/grpc+proto") || allowedGRPCContentType("application/grpc-evil") {
 		t.Fatal("gRPC content type allowlist was not exact")
 	}
+}
+
+func TestRedirectsAreNeverFollowed(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		requests++
+		writer.Header().Set("Location", serverRedirectTarget(request))
+		writer.WriteHeader(http.StatusTemporaryRedirect)
+	}))
+	defer server.Close()
+	client := &http.Client{CheckRedirect: rejectRedirect}
+	response, err := client.Post(server.URL+"/sos.byteman.Byteman/Download", "application/grpc", bytes.NewReader(grpcFrame(nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if requests != 1 || response.StatusCode != http.StatusTemporaryRedirect {
+		t.Fatalf("requests=%d status=%d", requests, response.StatusCode)
+	}
+}
+
+func TestCallbackTransportHasNoProxyAndRequiresTLS12(t *testing.T) {
+	client := newCallbackClient()
+	transport, ok := client.Transport.(*http.Transport)
+	if !ok || transport.Proxy != nil || transport.TLSClientConfig == nil || transport.TLSClientConfig.MinVersion != tls.VersionTLS12 {
+		t.Fatalf("callback transport=%#v", client.Transport)
+	}
+}
+
+func serverRedirectTarget(request *http.Request) string {
+	return "http://" + request.Host + "/unexpected-alternate"
 }
 
 func mustHex(t *testing.T, value string) []byte {
@@ -99,11 +152,7 @@ func fixtureDigest(t *testing.T) []byte {
 }
 
 func fixtureMetadata() []byte {
-	value := appendStringField(nil, 2, targetRegistry)
-	value = appendVarintField(value, 3, 1)
-	value = appendStringField(value, 4, targetModuleName)
-	value = appendVarintField(value, 5, 1)
-	return appendStringField(value, 6, targetVersion)
+	return buildTargetMetadata()
 }
 
 func fixtureRecord(t *testing.T, rawURL string, status uint64) ([]byte, recordExpectation) {
@@ -137,49 +186,107 @@ func fixtureRecord(t *testing.T, rawURL string, status uint64) ([]byte, recordEx
 	}
 }
 
-func TestExactDownloadRecordRequiresAllIntegrityFields(t *testing.T) {
+func fixtureResponse(t *testing.T, outerStatus uint64) ([]byte, recordExpectation) {
+	t.Helper()
 	record, expectation := fixtureRecord(t, "https://owned.example.invalid/v0.0.1.zip", 200)
-	proof, matched, err := analyzeDownloadRecord(record, expectation)
-	if err != nil || !matched || !proof.Matched {
-		t.Fatalf("matched=%t proof=%#v err=%v", matched, proof, err)
+	payload := appendBytesField(nil, 1, record)
+	return appendVarintField(payload, 3, outerStatus), expectation
+}
+
+func mustRecordFromResponse(t *testing.T, payload []byte) []byte {
+	t.Helper()
+	fields, err := decodeWireFields(payload)
+	if err != nil || len(fields) < 1 || fields[0].number != 1 {
+		t.Fatalf("fixture response fields=%#v err=%v", fields, err)
 	}
-	if proof.Size != targetCanaryBytes || proof.StatusCode != 200 || !proof.Digest.AllExact ||
-		!proof.PathPresent || !proof.IDPresent || proof.HeaderCount != 8 {
-		t.Fatalf("proof=%#v", proof)
+	return fields[0].value
+}
+
+func TestExactDownloadResponseRequiresRecordAndOuterStatus(t *testing.T) {
+	payload, expectation := fixtureResponse(t, 200)
+	analysis, err := parseDownloadResponse(payload, expectation)
+	if err != nil || !analysis.RecordPresent || !analysis.RecordMatched || !analysis.Record.Matched ||
+		!analysis.StatusSet || analysis.StatusCode != 200 || !analysis.Record.Digest.AllExact ||
+		!analysis.Record.PathPresent || !analysis.Record.IDPresent || analysis.Record.HeaderCount != 8 {
+		t.Fatalf("analysis=%#v err=%v", analysis, err)
 	}
-	bad, badExpectation := fixtureRecord(t, expectation.URL, 500)
-	if _, _, err := analyzeDownloadRecord(bad, badExpectation); err == nil {
-		t.Fatal("status 500 exact record was accepted")
+
+	missingStatus := appendBytesField(nil, 1, mustRecordFromResponse(t, payload))
+	analysis, err = parseDownloadResponse(missingStatus, expectation)
+	if err != nil || !analysis.RecordMatched || analysis.StatusSet {
+		t.Fatalf("missing outer status analysis=%#v err=%v", analysis, err)
+	}
+	wrongStatus, _ := fixtureResponse(t, 500)
+	analysis, err = parseDownloadResponse(wrongStatus, expectation)
+	if err != nil || !analysis.StatusSet || analysis.StatusCode != 500 {
+		t.Fatalf("wrong outer status analysis=%#v err=%v", analysis, err)
 	}
 }
 
-func TestIncrementalLookupStopsAtFirstExactRecord(t *testing.T) {
-	exact, expectation := fixtureRecord(t, "https://owned.example.invalid/v0.0.1.zip", 200)
-	message := appendBytesField(nil, 1, []byte{0xff}) // Nonmatching raw rows are fingerprinted, not schema-decoded.
-	message = appendBytesField(message, 1, exact)
-	message = appendBytesField(message, 1, []byte{0xfe}) // Entire current frame must still be processed.
-	accumulator := lookupAccumulator{MatchFrame: -1, MatchRecord: -1}
-	frame := lookupFrameResult{Index: 0, MatchedRecord: -1}
-	matched, err := consumeLookupFrame(message, 0, &accumulator, &frame, expectation)
-	if err != nil || !matched || accumulator.RecordCount != 3 || accumulator.MatchCount != 1 ||
-		accumulator.MatchRecord != 1 || frame.MatchedRecord != 1 {
-		t.Fatalf("matched=%t accumulator=%#v frame=%#v err=%v", matched, accumulator, frame, err)
-	}
-}
-
-func TestLookupRejectsDuplicateMatchAndTrailingTopLevelGarbage(t *testing.T) {
-	exact, expectation := fixtureRecord(t, "https://owned.example.invalid/v0.0.1.zip", 200)
-	for name, message := range map[string][]byte{
-		"duplicate":         appendBytesField(appendBytesField(nil, 1, exact), 1, exact),
-		"top-level-garbage": appendBytesField(appendBytesField(nil, 1, exact), 9, []byte("garbage")),
+func TestDownloadResponseRejectsUnknownDuplicateAndMismatch(t *testing.T) {
+	payload, expectation := fixtureResponse(t, 200)
+	record := mustRecordFromResponse(t, payload)
+	for name, candidate := range map[string][]byte{
+		"unknown":          appendBytesField(append([]byte(nil), payload...), 9, []byte("x")),
+		"duplicate-record": appendBytesField(append([]byte(nil), payload...), 1, record),
+		"duplicate-status": appendVarintField(append([]byte(nil), payload...), 3, 200),
 	} {
 		t.Run(name, func(t *testing.T) {
-			accumulator := lookupAccumulator{MatchFrame: -1, MatchRecord: -1}
-			frame := lookupFrameResult{Index: 0, MatchedRecord: -1}
-			if _, err := consumeLookupFrame(message, 0, &accumulator, &frame, expectation); err == nil {
-				t.Fatal("invalid remainder of current frame was accepted")
+			if _, err := parseDownloadResponse(candidate, expectation); err == nil {
+				t.Fatal("invalid DownloadResponse accepted")
 			}
 		})
+	}
+	other, _ := fixtureRecord(t, "https://different-owned.example.invalid/v0.0.1.zip", 200)
+	mismatch := appendVarintField(appendBytesField(nil, 1, other), 3, 200)
+	analysis, err := parseDownloadResponse(mismatch, expectation)
+	if err != nil || analysis.RecordMatched || analysis.Record.RecordSHA256 == "" {
+		t.Fatalf("mismatch analysis=%#v err=%v", analysis, err)
+	}
+}
+
+func TestUnaryDownloadReaderRequiresExactlyOneCompleteFrame(t *testing.T) {
+	payload, expectation := fixtureResponse(t, 200)
+	frame := grpcFrame(payload)
+	parsed, err := readUnaryDownloadBody(bytes.NewReader(frame), expectation)
+	if err != nil || !parsed.FramePresent || !parsed.EOFObserved || !parsed.Analysis.RecordMatched || parsed.Analysis.StatusCode != 200 {
+		t.Fatalf("parsed=%#v err=%v", parsed, err)
+	}
+	for name, wire := range map[string][]byte{
+		"zero":         nil,
+		"two":          append(append([]byte(nil), frame...), frame...),
+		"truncated":    frame[:len(frame)-1],
+		"partial-next": append(append([]byte(nil), frame...), 0),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := readUnaryDownloadBody(bytes.NewReader(wire), expectation); err == nil {
+				t.Fatal("invalid unary response accepted")
+			}
+		})
+	}
+	compressed := append([]byte(nil), frame...)
+	compressed[0] = 1
+	if _, err := readUnaryDownloadBody(bytes.NewReader(compressed), expectation); err == nil {
+		t.Fatal("compressed response accepted")
+	}
+}
+
+func TestGRPCCompletionRequiresExactlyOneStatusZero(t *testing.T) {
+	zero := grpcMetadataValue{Present: true, Values: 1, RawBytes: 1, Text: "0"}
+	nonzero := grpcMetadataValue{Present: true, Values: 1, RawBytes: 1, Text: "2"}
+	if !exactZeroGRPCStatus(grpcMetadataValue{}, zero) || !exactZeroGRPCStatus(zero, grpcMetadataValue{}) {
+		t.Fatal("one status zero was rejected")
+	}
+	pairs := [][2]grpcMetadataValue{
+		{},
+		{zero, zero},
+		{nonzero, {}},
+		{{Present: true, Values: 2, RawBytes: 3, Text: "0"}, {}},
+	}
+	for _, pair := range pairs {
+		if exactZeroGRPCStatus(pair[0], pair[1]) {
+			t.Fatalf("invalid status pair accepted: %#v", pair)
+		}
 	}
 }
 
@@ -204,7 +311,7 @@ func TestDigestConstantsMatchExactCanary(t *testing.T) {
 
 func TestGRPCMetadataCaptureRedactsPinnedIdentity(t *testing.T) {
 	installTestConfiguration(t)
-	header := http.Header{"Grpc-Status": {"13"}, "Grpc-Message": {"lookup%20" + pinnedReadbackSession}}
+	header := http.Header{"Grpc-Status": {"13"}, "Grpc-Message": {"download%20" + pinnedReadbackSession}}
 	status, message := grpcMetadataValue{}, grpcMetadataValue{}
 	captureGRPCMetadata(header, &status, &message)
 	if status.Text != "13" || !message.Present || strings.Contains(message.Text, pinnedReadbackSession) || !strings.Contains(message.Text, "[redacted]") {
@@ -213,9 +320,9 @@ func TestGRPCMetadataCaptureRedactsPinnedIdentity(t *testing.T) {
 }
 
 func TestGRPCFrameIsExact(t *testing.T) {
-	payload := []byte{0x3a, 0x01, 'x'}
+	payload := []byte{0x0a, 0x01, 'x'}
 	frame := grpcFrame(payload)
-	if !bytes.Equal(frame, []byte{0, 0, 0, 0, 3, 0x3a, 0x01, 'x'}) {
+	if !bytes.Equal(frame, []byte{0, 0, 0, 0, 3, 0x0a, 0x01, 'x'}) {
 		t.Fatalf("frame=%x", frame)
 	}
 }

@@ -34,42 +34,45 @@ var pinnedReadbackURLSHA256 string
 var rpcDialAddress string
 
 const (
-	protocolVersion            = 1
-	moduleName                 = "github.com/benr00t3d/go-cgo-pkgsite-probe"
-	probeVersion               = "v0.0.58-codex"
-	expectedUserAgent          = "go-cgo-pkgsite-probe-v058-codex"
-	targetRegistry             = "https://proxy.golang.org"
-	targetModuleName           = "github.com/benr00t3d/go-byteman-crosswrite-canary"
-	targetVersion              = "v0.0.1"
-	targetCanaryBytes          = 2512
-	targetSHA512               = "a3b9e460a4e6c294b91d4677329ede02dd062ff70f431efb1b6853d98f3a146cb5cebafca064ec28e10e84a32b8e5c3892e8fce542528e40b654e5170e32cb68"
-	targetSHA256               = "e795c7054b74d0edf37273a3d6d1098fc57fd7e124d10a0556d3793eb3210684"
-	targetSHA1                 = "b1cd071d32f0c5cd30699b5d27086059c3fba547"
-	targetMD5                  = "570588f59942a9c79262238525fbe16f"
-	descriptorReceiptSHA256    = "2f971b887a6da75675db2d570d14fe28f788a1513cefec2f3c521afb725ec225"
-	expectedPinnedURLSHA256    = "78d7361f8ebd389fc5da7ba45c0e69cde74fbc290522804942bc3cb42fe30334"
-	expectedRecordSHA256       = "adfb1c1ce1b1b12a6c7fb47bc71a599080dec7357763e3af5d937849c7961e47"
-	expectedDigestFieldSHA256  = "6bc319fc0d36191274cec1b7269adfd81385b88169cdf83a783dc882097a6b94"
-	expectedPathFieldSHA256    = "59af025ea13df7229bbdf0be891d14d7e5e329584c1f0ff5c52b6861abcf978f"
-	expectedIDFieldSHA256      = "98a540dcf85bd84794699b0522f3e5d8f5de0697b1b0c51eef1c39058ba58ce3"
-	expectedMetadataSHA256     = "d8a03518274139d9b6dbec8b09ce0e6d9ec1ddfc3c9d5a15119ca7c677d85a62"
-	emptyValueSHA256           = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-	priorFetchReceiptSHA256    = "bbfefc563e5321dc51676ed52d5e7f8d7daae3dc45c423da9fa7dd06bd5fee9d"
-	lookupRecordLimit          = 32
-	callbackTimeout            = 30 * time.Second
-	lookupGRPCTimeout          = 120 * time.Second
-	lookupHTTPTimeout          = 125 * time.Second
-	maximumResultBytes         = 256 * 1024
-	maximumResponseFrame       = 512 * 1024
-	maximumResponseFrames      = 64
-	maximumResponseBytes       = 4 * 1024 * 1024
-	maximumDownloadRecordBytes = 256 * 1024
-	bytemanServiceHost         = "byteman.default.svc.cluster.local"
-	bytemanServicePort         = 9000
-	bytemanTLSServerName       = "localhost"
-	clientCertificatePath      = "/etc/tls/client/tls.crt"
-	clientKeyPath              = "/etc/tls/client/tls.key"
-	serverPoolPath             = "/etc/tls/server-pool/server-tls-pool.pem"
+	protocolVersion              = 1
+	moduleName                   = "github.com/benr00t3d/go-cgo-pkgsite-probe"
+	probeVersion                 = "v0.0.61-codex"
+	expectedUserAgent            = "go-cgo-pkgsite-probe-v061-codex"
+	targetRegistry               = "https://proxy.golang.org"
+	targetModuleName             = "github.com/benr00t3d/go-byteman-crosswrite-canary"
+	targetVersion                = "v0.0.1"
+	targetCanaryBytes            = 2512
+	targetSHA512                 = "a3b9e460a4e6c294b91d4677329ede02dd062ff70f431efb1b6853d98f3a146cb5cebafca064ec28e10e84a32b8e5c3892e8fce542528e40b654e5170e32cb68"
+	targetSHA256                 = "e795c7054b74d0edf37273a3d6d1098fc57fd7e124d10a0556d3793eb3210684"
+	targetSHA1                   = "b1cd071d32f0c5cd30699b5d27086059c3fba547"
+	targetMD5                    = "570588f59942a9c79262238525fbe16f"
+	descriptorReceiptSHA256      = "2f971b887a6da75675db2d570d14fe28f788a1513cefec2f3c521afb725ec225"
+	expectedPinnedURLSHA256      = "78d7361f8ebd389fc5da7ba45c0e69cde74fbc290522804942bc3cb42fe30334"
+	expectedRecordSHA256         = "adfb1c1ce1b1b12a6c7fb47bc71a599080dec7357763e3af5d937849c7961e47"
+	expectedDigestFieldSHA256    = "6bc319fc0d36191274cec1b7269adfd81385b88169cdf83a783dc882097a6b94"
+	expectedPathFieldSHA256      = "59af025ea13df7229bbdf0be891d14d7e5e329584c1f0ff5c52b6861abcf978f"
+	expectedIDFieldSHA256        = "98a540dcf85bd84794699b0522f3e5d8f5de0697b1b0c51eef1c39058ba58ce3"
+	expectedMetadataSHA256       = "d8a03518274139d9b6dbec8b09ce0e6d9ec1ddfc3c9d5a15119ca7c677d85a62"
+	expectedRequestPayloadSHA256 = "886249acb8b148c2ad89800b5c75a0fc1e2f850aeed18c44f58791673c7ce2c9"
+	expectedRequestFrameSHA256   = "05d350ade983db6225799090afb0ba7bf4dd15e5fa35e7997cfab357c88fafff"
+	emptyValueSHA256             = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+	priorFetchReceiptSHA256      = "bbfefc563e5321dc51676ed52d5e7f8d7daae3dc45c423da9fa7dd06bd5fee9d"
+	downloadPolicyName           = "NEVER"
+	downloadPolicyValue          = 1
+	redirectPolicyName           = "FOLLOW_NONE"
+	redirectPolicyValue          = 2
+	callbackTimeout              = 30 * time.Second
+	downloadGRPCTimeout          = 120 * time.Second
+	downloadHTTPTimeout          = 125 * time.Second
+	maximumResultBytes           = 256 * 1024
+	maximumResponseFrame         = 512 * 1024
+	maximumDownloadRecordBytes   = 256 * 1024
+	bytemanServiceHost           = "byteman.default.svc.cluster.local"
+	bytemanServicePort           = 9000
+	bytemanTLSServerName         = "localhost"
+	clientCertificatePath        = "/etc/tls/client/tls.crt"
+	clientKeyPath                = "/etc/tls/client/tls.key"
+	serverPoolPath               = "/etc/tls/server-pool/server-tls-pool.pem"
 )
 
 type commandResult struct {
@@ -123,15 +126,6 @@ type wireFieldDigest struct {
 	SHA256   string  `json:"sha256,omitempty"`
 	Text     string  `json:"text,omitempty"`
 }
-type lookupFrameResult struct {
-	Index         int      `json:"index"`
-	PayloadBytes  int      `json:"payload_bytes"`
-	PayloadSHA256 string   `json:"payload_sha256"`
-	FrameSHA256   string   `json:"frame_sha256"`
-	Records       int      `json:"records"`
-	RecordSHA256s []string `json:"record_sha256s,omitempty"`
-	MatchedRecord int      `json:"matched_record,omitempty"`
-}
 type digestProof struct {
 	RawBytes  int    `json:"raw_bytes"`
 	RawSHA256 string `json:"raw_sha256"`
@@ -160,8 +154,12 @@ type downloadRecordProof struct {
 	IDSHA256       string      `json:"id_sha256"`
 	HeaderCount    int         `json:"header_count"`
 }
-type lookupResult struct {
+type downloadResult struct {
 	Method                  string              `json:"method"`
+	PolicyName              string              `json:"policy_name"`
+	PolicyValue             uint64              `json:"policy_value"`
+	RedirectPolicyName      string              `json:"redirect_policy_name"`
+	RedirectPolicyValue     uint64              `json:"redirect_policy_value"`
 	HTTPStatus              int                 `json:"http_status,omitempty"`
 	ContentType             string              `json:"content_type,omitempty"`
 	GRPCStatusHeader        grpcMetadataValue   `json:"grpc_status_header"`
@@ -179,14 +177,16 @@ type lookupResult struct {
 	SOSSessionHeaderPresent bool                `json:"sos_session_header_present"`
 	SOSSessionHeaderBytes   int                 `json:"sos_session_header_bytes"`
 	SOSSessionHeaderSHA256  string              `json:"sos_session_header_sha256"`
-	Frames                  []lookupFrameResult `json:"frames,omitempty"`
-	FrameCount              int                 `json:"frame_count"`
-	RecordCount             int                 `json:"record_count"`
-	MatchCount              int                 `json:"match_count"`
-	MatchFrame              int                 `json:"match_frame,omitempty"`
-	MatchRecord             int                 `json:"match_record,omitempty"`
-	Match                   downloadRecordProof `json:"match"`
-	StoppedBeforeEOF        bool                `json:"stopped_before_eof"`
+	ResponseFramePresent    bool                `json:"response_frame_present"`
+	ResponsePayloadBytes    int                 `json:"response_payload_bytes,omitempty"`
+	ResponsePayloadSHA256   string              `json:"response_payload_sha256,omitempty"`
+	ResponseFrameBytes      int                 `json:"response_frame_bytes,omitempty"`
+	ResponseFrameSHA256     string              `json:"response_frame_sha256,omitempty"`
+	OuterStatusSet          bool                `json:"outer_status_set"`
+	OuterStatusCode         uint64              `json:"outer_status_code,omitempty"`
+	RecordPresent           bool                `json:"record_present"`
+	RecordMatched           bool                `json:"record_matched"`
+	Record                  downloadRecordProof `json:"record"`
 	Verified                bool                `json:"verified"`
 	StartedUTC              string              `json:"started_utc"`
 	FinishedUTC             string              `json:"finished_utc"`
@@ -210,7 +210,7 @@ type probeReport struct {
 	StartedUTC              string         `json:"started_utc"`
 	FinishedUTC             string         `json:"finished_utc"`
 	Identity                identityResult `json:"identity"`
-	Lookup                  lookupResult   `json:"lookup"`
+	Download                downloadResult `json:"download"`
 	Reason                  string         `json:"reason"`
 }
 type wireField struct {
@@ -227,13 +227,21 @@ type recordExpectation struct {
 	PathFieldSHA256   string
 	IDFieldSHA256     string
 }
-type lookupAccumulator struct {
-	FrameCount  int
-	RecordCount int
-	MatchCount  int
-	MatchFrame  int
-	MatchRecord int
-	Proof       downloadRecordProof
+type downloadResponseAnalysis struct {
+	RecordPresent bool
+	RecordMatched bool
+	Record        downloadRecordProof
+	StatusSet     bool
+	StatusCode    uint64
+}
+type unaryDownloadBody struct {
+	FramePresent  bool
+	PayloadBytes  int
+	PayloadSHA256 string
+	FrameBytes    int
+	FrameSHA256   string
+	Analysis      downloadResponseAnalysis
+	EOFObserved   bool
 }
 
 func main() {
@@ -245,25 +253,25 @@ func main() {
 	identity := inspectIdentity(cwd)
 	report := newProbeReport(started, identity)
 	endpoint := genericResultURL
-	resultID := "v058-codex-" + identity.Lane
+	resultID := "v061-codex-" + identity.Lane
 	if identity.Lane == "capslock" {
 		endpoint = compilerResultURL
-		resultID = "v058-codex-capslock-lookup"
-		report.Lookup = runCoordinateLookup()
-		if report.Lookup.Verified {
-			report.Reason = "incremental coordinate Lookup returned the exact prior v44 owned-B Download record"
+		resultID = "v061-codex-capslock-download-never"
+		report.Download = runPinnedDownloadNever()
+		if report.Download.Verified {
+			report.Reason = "Download with descriptor-pinned NEVER returned the exact prior v44 owned-B record without contacting its origin"
 		} else {
-			report.Reason = "incremental coordinate Lookup did not verify the exact prior v44 owned-B Download record"
+			report.Reason = "Download with descriptor-pinned NEVER did not verify the exact prior v44 owned-B record"
 		}
 	} else {
-		report.Reason = "Lookup is fixed to the verified Capslock lane"
+		report.Reason = "the fixed Byteman read-only-cache check is limited to the verified Capslock lane"
 	}
 	report.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
 	_ = submitProbeReport(endpoint, resultID, cwd, started, report)
 }
 
 func newProbeReport(started time.Time, identity identityResult) probeReport {
-	return probeReport{Schema: "owned-byteman-coordinate-lookup/v1", Module: moduleName, Version: probeVersion, TargetModule: targetModuleName, TargetVersion: targetVersion, TargetURLSHA256: pinnedReadbackURLSHA256, TargetBodySHA256: targetSHA256, DescriptorReceiptSHA256: descriptorReceiptSHA256, PriorFetchReceiptSHA256: priorFetchReceiptSHA256, ExpectedRecordSHA256: expectedRecordSHA256, ExpectedDigestSHA256: expectedDigestFieldSHA256, ExpectedPathSHA256: expectedPathFieldSHA256, ExpectedIDSHA256: expectedIDFieldSHA256, StartedUTC: started.UTC().Format(time.RFC3339Nano), Identity: identity, Lookup: lookupResult{Method: "/sos.byteman.Byteman/Lookup", MatchFrame: -1, MatchRecord: -1}}
+	return probeReport{Schema: "owned-byteman-download-never/v1", Module: moduleName, Version: probeVersion, TargetModule: targetModuleName, TargetVersion: targetVersion, TargetURLSHA256: pinnedReadbackURLSHA256, TargetBodySHA256: targetSHA256, DescriptorReceiptSHA256: descriptorReceiptSHA256, PriorFetchReceiptSHA256: priorFetchReceiptSHA256, ExpectedRecordSHA256: expectedRecordSHA256, ExpectedDigestSHA256: expectedDigestFieldSHA256, ExpectedPathSHA256: expectedPathFieldSHA256, ExpectedIDSHA256: expectedIDFieldSHA256, StartedUTC: started.UTC().Format(time.RFC3339Nano), Identity: identity, Download: downloadResult{Method: "/sos.byteman.Byteman/Download", PolicyName: downloadPolicyName, PolicyValue: downloadPolicyValue, RedirectPolicyName: redirectPolicyName, RedirectPolicyValue: redirectPolicyValue}}
 }
 
 func validNonce(value string) bool {
@@ -321,31 +329,43 @@ func productionExpectation() recordExpectation {
 	return recordExpectation{URL: pinnedReadbackURL, URLSHA256: expectedPinnedURLSHA256, RecordSHA256: expectedRecordSHA256, DigestFieldSHA256: expectedDigestFieldSHA256, PathFieldSHA256: expectedPathFieldSHA256, IDFieldSHA256: expectedIDFieldSHA256}
 }
 
-func runCoordinateLookup() (result lookupResult) {
+func runPinnedDownloadNever() (result downloadResult) {
 	started := time.Now()
-	payload := buildCoordinateLookupRequest()
+	payload := buildPinnedDownloadRequest()
 	frame := grpcFrame(payload)
 	pd := sha256.Sum256(payload)
 	fd := sha256.Sum256(frame)
-	result = lookupResult{Method: "/sos.byteman.Byteman/Lookup", RequestPayloadBytes: len(payload), RequestPayloadSHA256: hex.EncodeToString(pd[:]), RequestFrameBytes: len(frame), RequestFrameSHA256: hex.EncodeToString(fd[:]), RequestWire: summarizeLookupRequest(payload), SOSSessionHeaderPresent: true, SOSSessionHeaderBytes: 0, SOSSessionHeaderSHA256: emptyValueSHA256, MatchFrame: -1, MatchRecord: -1, StartedUTC: started.UTC().Format(time.RFC3339Nano)}
+	result = downloadResult{
+		Method: "/sos.byteman.Byteman/Download", PolicyName: downloadPolicyName,
+		PolicyValue: downloadPolicyValue, RedirectPolicyName: redirectPolicyName,
+		RedirectPolicyValue: redirectPolicyValue, RequestPayloadBytes: len(payload),
+		RequestPayloadSHA256: hex.EncodeToString(pd[:]), RequestFrameBytes: len(frame),
+		RequestFrameSHA256: hex.EncodeToString(fd[:]), RequestWire: summarizeDownloadRequest(payload),
+		SOSSessionHeaderPresent: true, SOSSessionHeaderBytes: 0,
+		SOSSessionHeaderSHA256: emptyValueSHA256, StartedUTC: started.UTC().Format(time.RFC3339Nano),
+	}
 	defer func() {
 		result.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
 		result.DurationMS = time.Since(started).Milliseconds()
 	}()
+	if result.RequestPayloadSHA256 != expectedRequestPayloadSHA256 || result.RequestFrameSHA256 != expectedRequestFrameSHA256 {
+		result.Error = "descriptor-pinned Download request fingerprint mismatch"
+		return
+	}
 	client, endpoint, err := newBytemanClient()
 	if err != nil {
 		result.Error = cleanError(err)
 		return
 	}
 	defer client.CloseIdleConnections()
-	ctx, cancel := context.WithTimeout(context.Background(), lookupHTTPTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), downloadHTTPTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint+result.Method, bytes.NewReader(frame))
 	if err != nil {
 		result.Error = cleanError(err)
 		return
 	}
-	applyLookupHeaders(req)
+	applyDownloadHeaders(req)
 	response, err := client.Do(req)
 	if err != nil {
 		result.Error = cleanError(err)
@@ -356,96 +376,118 @@ func runCoordinateLookup() (result lookupResult) {
 	result.ContentType = response.Header.Get("Content-Type")
 	captureGRPCMetadata(response.Header, &result.GRPCStatusHeader, &result.GRPCMessageHeader)
 	if response.StatusCode != http.StatusOK || !allowedGRPCContentType(result.ContentType) {
-		result.Error = "Lookup response did not have HTTP 200 application/grpc"
+		result.Error = "Download response did not have exact HTTP 200 application/grpc"
 		return
 	}
-	acc := lookupAccumulator{MatchFrame: -1, MatchRecord: -1}
-	total := 0
-	for index := 0; index < maximumResponseFrames; index++ {
-		header := make([]byte, 5)
-		if _, err := io.ReadFull(response.Body, header); err != nil {
-			result.EOFObserved = errors.Is(err, io.EOF)
-			result.TrailersComplete = result.EOFObserved || errors.Is(err, io.ErrUnexpectedEOF)
-			captureGRPCTrailers(response, &result)
-			result.FrameCount, result.RecordCount, result.MatchCount = acc.FrameCount, acc.RecordCount, acc.MatchCount
-			result.Error = cleanError(fmt.Errorf("incremental Lookup gRPC frame header: %w", err))
-			return
-		}
-		if header[0] != 0 {
-			result.Error = "compressed Lookup frame was rejected"
-			return
-		}
-		length := int(binary.BigEndian.Uint32(header[1:]))
-		if length < 0 || length > maximumResponseFrame || total+length > maximumResponseBytes {
-			result.Error = "Lookup response exceeded a fixed byte bound"
-			return
-		}
-		body := make([]byte, length)
-		if _, err := io.ReadFull(response.Body, body); err != nil {
-			result.TrailersComplete = errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)
-			captureGRPCTrailers(response, &result)
-			result.Error = cleanError(fmt.Errorf("incremental Lookup gRPC frame payload: %w", err))
-			return
-		}
-		total += length
-		bd := sha256.Sum256(body)
-		whole := append(append([]byte(nil), header...), body...)
-		wd := sha256.Sum256(whole)
-		fr := lookupFrameResult{Index: index, PayloadBytes: length, PayloadSHA256: hex.EncodeToString(bd[:]), FrameSHA256: hex.EncodeToString(wd[:]), MatchedRecord: -1}
-		matched, err := consumeLookupFrame(body, index, &acc, &fr, productionExpectation())
-		result.Frames = append(result.Frames, fr)
-		result.FrameCount, result.RecordCount, result.MatchCount = acc.FrameCount, acc.RecordCount, acc.MatchCount
-		if err != nil {
-			result.Error = cleanError(err)
-			return
-		}
-		if matched {
-			result.MatchFrame, result.MatchRecord, result.Match = acc.MatchFrame, acc.MatchRecord, acc.Proof
-			result.StoppedBeforeEOF = true
-			result.Verified = acc.MatchCount == 1 && acc.Proof.Matched
-			_ = response.Body.Close()
-			captureGRPCTrailers(response, &result)
-			return
-		}
+	parsed, parseErr := readUnaryDownloadBody(response.Body, productionExpectation())
+	result.ResponseFramePresent = parsed.FramePresent
+	result.ResponsePayloadBytes, result.ResponsePayloadSHA256 = parsed.PayloadBytes, parsed.PayloadSHA256
+	result.ResponseFrameBytes, result.ResponseFrameSHA256 = parsed.FrameBytes, parsed.FrameSHA256
+	result.OuterStatusSet, result.OuterStatusCode = parsed.Analysis.StatusSet, parsed.Analysis.StatusCode
+	result.RecordPresent, result.RecordMatched, result.Record = parsed.Analysis.RecordPresent, parsed.Analysis.RecordMatched, parsed.Analysis.Record
+	result.EOFObserved, result.TrailersComplete = parsed.EOFObserved, parsed.EOFObserved
+	captureDownloadTrailers(response, &result)
+	if parseErr != nil {
+		result.Error = cleanError(parseErr)
+		return
 	}
-	result.Error = "Lookup exceeded the fixed frame bound before an exact match"
+	if !parsed.Analysis.RecordPresent || !parsed.Analysis.RecordMatched || !parsed.Analysis.StatusSet || parsed.Analysis.StatusCode != http.StatusOK {
+		result.Error = "DownloadResponse did not contain the exact v44 record with outer status 200"
+		return
+	}
+	if !exactZeroGRPCStatus(result.GRPCStatusHeader, result.GRPCStatusTrailer) {
+		result.Error = "Download response did not finish with exactly one gRPC status 0"
+		return
+	}
+	result.Verified = true
 	return
 }
 
-func consumeLookupFrame(payload []byte, frameIndex int, acc *lookupAccumulator, fr *lookupFrameResult, expect recordExpectation) (bool, error) {
+func readUnaryDownloadBody(reader io.Reader, expect recordExpectation) (unaryDownloadBody, error) {
+	parsed := unaryDownloadBody{}
+	header := make([]byte, 5)
+	if _, err := io.ReadFull(reader, header); err != nil {
+		parsed.EOFObserved = errors.Is(err, io.EOF)
+		return parsed, fmt.Errorf("unary Download gRPC frame header: %w", err)
+	}
+	if header[0] != 0 {
+		return parsed, errors.New("compressed Download response frame was rejected")
+	}
+	length := int(binary.BigEndian.Uint32(header[1:]))
+	if length < 0 || length > maximumResponseFrame {
+		return parsed, errors.New("Download response exceeded its fixed frame bound")
+	}
+	body := make([]byte, length)
+	if _, err := io.ReadFull(reader, body); err != nil {
+		return parsed, fmt.Errorf("unary Download gRPC frame payload: %w", err)
+	}
+	parsed.FramePresent, parsed.PayloadBytes = true, len(body)
+	payloadDigest := sha256.Sum256(body)
+	parsed.PayloadSHA256 = hex.EncodeToString(payloadDigest[:])
+	whole := append(append([]byte(nil), header...), body...)
+	frameDigest := sha256.Sum256(whole)
+	parsed.FrameBytes, parsed.FrameSHA256 = len(whole), hex.EncodeToString(frameDigest[:])
+	analysis, parseErr := parseDownloadResponse(body, expect)
+	parsed.Analysis = analysis
+	nextHeader := make([]byte, 5)
+	_, endErr := io.ReadFull(reader, nextHeader)
+	if errors.Is(endErr, io.EOF) {
+		parsed.EOFObserved = true
+	} else if endErr == nil {
+		return parsed, errors.New("Download response contained more than one gRPC frame")
+	} else {
+		return parsed, fmt.Errorf("Download response ended with a partial extra frame: %w", endErr)
+	}
+	if parseErr != nil {
+		return parsed, parseErr
+	}
+	return parsed, nil
+}
+
+func parseDownloadResponse(payload []byte, expect recordExpectation) (downloadResponseAnalysis, error) {
+	analysis := downloadResponseAnalysis{}
 	fields, err := decodeWireFields(payload)
 	if err != nil {
-		return false, err
+		return analysis, err
 	}
-	acc.FrameCount++
-	matchedInFrame := false
-	for _, f := range fields {
-		if f.number != 1 || f.wire != 2 {
-			return false, errors.New("LookupResponse contained a field outside repeated Download field 1")
+	counts := map[int]int{}
+	for _, field := range fields {
+		counts[field.number]++
+		if counts[field.number] > 1 {
+			return analysis, errors.New("DownloadResponse duplicated a field")
 		}
-		if acc.RecordCount >= lookupRecordLimit {
-			return false, errors.New("LookupResponse exceeded the requested record limit")
-		}
-		recordIndex := acc.RecordCount
-		acc.RecordCount++
-		fr.Records++
-		d := sha256.Sum256(f.value)
-		fr.RecordSHA256s = append(fr.RecordSHA256s, hex.EncodeToString(d[:]))
-		proof, matched, err := analyzeDownloadRecord(f.value, expect)
-		if err != nil {
-			return false, err
-		}
-		if matched {
-			acc.MatchCount++
-			if acc.MatchCount != 1 {
-				return false, errors.New("LookupResponse contained multiple exact v44 matches")
+		switch field.number {
+		case 1:
+			if field.wire != 2 {
+				return analysis, errors.New("DownloadResponse record field had wrong wire type")
 			}
-			acc.MatchFrame, acc.MatchRecord, acc.Proof = frameIndex, recordIndex, proof
-			fr.MatchedRecord = recordIndex
-			matchedInFrame = true
+			analysis.RecordPresent = true
+			proof, matched, err := analyzeDownloadRecord(field.value, expect)
+			analysis.Record, analysis.RecordMatched = proof, matched
+			if err != nil {
+				return analysis, err
+			}
+		case 3:
+			if field.wire != 0 {
+				return analysis, errors.New("DownloadResponse status_code had wrong wire type")
+			}
+			analysis.StatusSet, analysis.StatusCode = true, field.varint
+		default:
+			return analysis, errors.New("DownloadResponse contained a field outside record 1 and status_code 3")
 		}
 	}
-	return matchedInFrame, nil
+	return analysis, nil
+}
+
+func exactZeroGRPCStatus(header, trailer grpcMetadataValue) bool {
+	if header.Present == trailer.Present {
+		return false
+	}
+	value := header
+	if trailer.Present {
+		value = trailer
+	}
+	return value.Values == 1 && value.RawBytes == 1 && value.Text == "0"
 }
 
 func analyzeDownloadRecord(raw []byte, expect recordExpectation) (downloadRecordProof, bool, error) {
@@ -684,13 +726,21 @@ func validateDownloadHeader(raw []byte) error {
 	return nil
 }
 
-func buildCoordinateLookupRequest() []byte {
-	r := appendStringField(nil, 7, targetRegistry)
-	r = appendStringField(r, 8, targetModuleName)
-	r = appendStringField(r, 9, targetVersion)
-	return appendVarintField(r, 10, lookupRecordLimit)
+func buildTargetMetadata() []byte {
+	metadata := appendStringField(nil, 2, targetRegistry)
+	metadata = appendVarintField(metadata, 3, 1)
+	metadata = appendStringField(metadata, 4, targetModuleName)
+	metadata = appendVarintField(metadata, 5, 1)
+	return appendStringField(metadata, 6, targetVersion)
 }
-func summarizeLookupRequest(payload []byte) []wireFieldDigest {
+func buildPinnedDownloadRequest() []byte {
+	request := appendStringField(nil, 1, pinnedReadbackURL)
+	request = appendBytesField(request, 4, buildTargetMetadata())
+	request = appendVarintField(request, 5, downloadPolicyValue)
+	redirect := appendVarintField(nil, 1, redirectPolicyValue)
+	return appendBytesField(request, 8, redirect)
+}
+func summarizeDownloadRequest(payload []byte) []wireFieldDigest {
 	fields, err := decodeWireFields(payload)
 	if err != nil {
 		return nil
@@ -705,9 +755,6 @@ func summarizeLookupRequest(payload []byte) []wireFieldDigest {
 			d := sha256.Sum256(f.value)
 			item.Bytes = len(f.value)
 			item.SHA256 = hex.EncodeToString(d[:])
-			if f.number == 7 || f.number == 8 || f.number == 9 {
-				item.Text = string(f.value)
-			}
 		}
 		result = append(result, item)
 	}
@@ -780,11 +827,11 @@ func allowedGRPCContentType(value string) bool {
 	return value == "application/grpc"
 }
 
-func applyLookupHeaders(request *http.Request) {
+func applyDownloadHeaders(request *http.Request) {
 	request.Header.Set("Content-Type", "application/grpc")
 	request.Header.Set("TE", "trailers")
 	request.Header.Set("User-Agent", probeUserAgent)
-	request.Header.Set("Grpc-Timeout", strconv.Itoa(int(lookupGRPCTimeout/time.Second))+"S")
+	request.Header.Set("Grpc-Timeout", strconv.Itoa(int(downloadGRPCTimeout/time.Second))+"S")
 	request.Header[http.CanonicalHeaderKey("X-SOS-SessionID")] = []string{""}
 }
 
@@ -792,7 +839,7 @@ func captureGRPCMetadata(h http.Header, status, message *grpcMetadataValue) {
 	*status = captureGRPCMetadataValue(h, "Grpc-Status", false)
 	*message = captureGRPCMetadataValue(h, "Grpc-Message", true)
 }
-func captureGRPCTrailers(response *http.Response, result *lookupResult) {
+func captureDownloadTrailers(response *http.Response, result *downloadResult) {
 	if len(response.Trailer) == 0 {
 		return
 	}
@@ -848,6 +895,9 @@ func verifyLegacyLocalhost(state tls.ConnectionState, roots *x509.CertPool) erro
 	}
 	return nil
 }
+func rejectRedirect(_ *http.Request, _ []*http.Request) error {
+	return http.ErrUseLastResponse
+}
 func newBytemanClient() (*http.Client, string, error) {
 	cert, err := tls.LoadX509KeyPair(clientCertificatePath, clientKeyPath)
 	if err != nil {
@@ -884,7 +934,7 @@ func newBytemanClient() (*http.Client, string, error) {
 		return dialer.DialContext(ctx, network, rpcDialAddress)
 	}, TLSClientConfig: tlsConfig, ForceAttemptHTTP2: true}
 	endpoint := "https://" + net.JoinHostPort(bytemanServiceHost, strconv.Itoa(bytemanServicePort))
-	return &http.Client{Transport: transport, Timeout: lookupHTTPTimeout}, endpoint, nil
+	return &http.Client{Transport: transport, CheckRedirect: rejectRedirect, Timeout: downloadHTTPTimeout}, endpoint, nil
 }
 
 func submitProbeReport(endpoint, id, cwd string, started time.Time, report probeReport) error {
@@ -896,6 +946,10 @@ func submitProbeReport(endpoint, id, cwd string, started time.Time, report probe
 		result.Stdout = string(encoded)
 	}
 	return submitResult(endpoint, result)
+}
+func newCallbackClient() *http.Client {
+	transport := &http.Transport{Proxy: nil, TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12}}
+	return &http.Client{Transport: transport, CheckRedirect: rejectRedirect, Timeout: callbackTimeout}
 }
 func submitResult(endpoint string, result commandResult) error {
 	body, err := json.Marshal(result)
@@ -911,7 +965,8 @@ func submitResult(endpoint string, result commandResult) error {
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("User-Agent", probeUserAgent)
 	request.Header.Set("X-Codex-Probe-Session", callbackSessionNonce)
-	client := &http.Client{CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }, Timeout: callbackTimeout}
+	client := newCallbackClient()
+	defer client.CloseIdleConnections()
 	response, err := client.Do(request)
 	if err != nil {
 		return err
