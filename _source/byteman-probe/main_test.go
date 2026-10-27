@@ -10,7 +10,10 @@ import (
 	"encoding/binary"
 	"math/big"
 	"net/http"
+	"net/http/httptest"
 	"os"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -23,20 +26,113 @@ func TestStringFieldEncoding(t *testing.T) {
 	}
 }
 
-func TestOwnedDownloadRequestShape(t *testing.T) {
-	request := buildTargetDownloadRequest("https://example.invalid/canary")
-	if len(request) == 0 || request[0] != 0x0a {
-		t.Fatalf("unexpected request prefix: %x", request)
+func setValidRuntimeConfigurationForTest(t *testing.T) {
+	t.Helper()
+	priorGeneric := genericResultURL
+	priorCompiler := compilerResultURL
+	priorPlan := planURL
+	priorCanary := bytemanCanaryURL
+	priorSession := sessionNonce
+	priorAgent := probeUserAgent
+	t.Cleanup(func() {
+		genericResultURL = priorGeneric
+		compilerResultURL = priorCompiler
+		planURL = priorPlan
+		bytemanCanaryURL = priorCanary
+		sessionNonce = priorSession
+		probeUserAgent = priorAgent
+	})
+	sessionNonce = strings.Repeat("a", 64)
+	probeUserAgent = expectedUserAgent
+	origin := "https://probe.example.invalid"
+	genericResultURL = origin + "/v1/result/" + sessionNonce + "/generic"
+	compilerResultURL = origin + "/v1/result/" + sessionNonce + "/compiler"
+	planURL = origin + "/v1/plan/" + sessionNonce
+	bytemanCanaryURL = origin + "/v1/goproxy/" + sessionNonce +
+		"/github.com/benr00t3d/go-byteman-crosswrite-canary/@v/v0.0.1.zip"
+}
+
+func TestRuntimeConfigurationPinsSessionOriginAndTargetB(t *testing.T) {
+	setValidRuntimeConfigurationForTest(t)
+	if err := validateRuntimeConfiguration(); err != nil {
+		t.Fatalf("valid configuration rejected: %v", err)
 	}
-	for _, required := range [][]byte{
-		[]byte(targetRegistry),
-		[]byte(targetModuleName),
-		[]byte(targetVersion),
-		[]byte(downloadSource),
+	validCanary := bytemanCanaryURL
+	validCompiler := compilerResultURL
+	validPlan := planURL
+	validSession := sessionNonce
+	validAgent := probeUserAgent
+	for name, mutate := range map[string]func(){
+		"target-a": func() {
+			bytemanCanaryURL = strings.Replace(validCanary, targetModuleName, moduleName, 1)
+		},
+		"foreign-origin": func() {
+			compilerResultURL = strings.Replace(validCompiler, "probe.example.invalid", "other.example.invalid", 1)
+		},
+		"query": func() { bytemanCanaryURL = validCanary + "?substitute=1" },
+		"wrong-session-path": func() {
+			planURL = strings.Replace(validPlan, validSession, strings.Repeat("b", 64), 1)
+		},
+		"invalid-session": func() { sessionNonce = strings.Repeat("A", 64) },
+		"wrong-agent":     func() { probeUserAgent = "other" },
 	} {
-		if !bytes.Contains(request, required) {
-			t.Fatalf("request does not contain %q", required)
-		}
+		t.Run(name, func(t *testing.T) {
+			bytemanCanaryURL = validCanary
+			compilerResultURL = validCompiler
+			planURL = validPlan
+			sessionNonce = validSession
+			probeUserAgent = validAgent
+			mutate()
+			if err := validateRuntimeConfiguration(); err == nil {
+				t.Fatal("unsafe runtime substitution was accepted")
+			}
+		})
+	}
+}
+
+func TestDownloadMutationBudgetIsOneShot(t *testing.T) {
+	available := true
+	if !consumeDownloadBudget(&available) || available {
+		t.Fatal("first Download budget use was rejected")
+	}
+	if consumeDownloadBudget(&available) || consumeDownloadBudget(nil) {
+		t.Fatal("Download budget was reusable")
+	}
+}
+
+func TestOwnedDownloadRequestShape(t *testing.T) {
+	const canaryURL = "https://example.invalid/v1/goproxy/session/github.com/benr00t3d/go-byteman-crosswrite-canary/@v/v0.0.1.zip"
+	request := buildTargetDownloadRequest(canaryURL)
+	decoded, valid := decodeWireMessage(request, 0)
+	if !valid {
+		t.Fatalf("request did not decode: %x", request)
+	}
+	if len(decoded.fields) != 5 {
+		t.Fatalf("request field count = %d, want 5: %x", len(decoded.fields), request)
+	}
+	if decoded.fields[0].number != 1 || decoded.fields[0].wire != 2 || string(decoded.fields[0].value) != canaryURL {
+		t.Fatalf("URL field = %#v", decoded.fields[0])
+	}
+	if decoded.fields[1].number != 4 || decoded.fields[1].wire != 2 {
+		t.Fatalf("metadata field = %#v", decoded.fields[1])
+	}
+	metadata, valid := decodeWireMessage(decoded.fields[1].value, 0)
+	if !valid || !targetMetadataMatches(metadata) || len(metadata.fields) != 5 {
+		t.Fatalf("metadata = %#v, valid=%t", metadata, valid)
+	}
+	if decoded.fields[2].number != 5 || decoded.fields[2].wire != 0 || decoded.fields[2].varint != downloadPolicyOnlyNew {
+		t.Fatalf("ONLY_NEW policy field = %#v", decoded.fields[2])
+	}
+	if decoded.fields[3].number != 6 || decoded.fields[3].wire != 2 || string(decoded.fields[3].value) != downloadSource {
+		t.Fatalf("source field = %#v", decoded.fields[3])
+	}
+	if decoded.fields[4].number != 8 || decoded.fields[4].wire != 2 {
+		t.Fatalf("redirect config field = %#v", decoded.fields[4])
+	}
+	redirect, valid := decodeWireMessage(decoded.fields[4].value, 0)
+	if !valid || len(redirect.fields) != 1 || redirect.fields[0].number != 1 ||
+		redirect.fields[0].wire != 0 || redirect.fields[0].varint != redirectFollowNone {
+		t.Fatalf("FOLLOW_NONE redirect policy = %#v, valid=%t", redirect, valid)
 	}
 	for _, forbidden := range [][]byte{[]byte(moduleName), []byte(probeVersion)} {
 		if bytes.Contains(request, forbidden) {
@@ -91,6 +187,7 @@ func targetLookupRecord(canaryURL string) []byte {
 	record := appendStringField(nil, 1, canaryURL)
 	record = appendBytesField(record, 2, []byte("opaque digest message"))
 	record = appendVarintField(record, 3, targetCanaryBytes)
+	record = appendVarintField(record, 5, downloadHTTPStatus)
 	record = appendStringField(record, 7, "opaque remaining Download field")
 	record = appendBytesField(record, 12, metadata)
 	record = appendBytesField(record, 17, []byte("opaque service record id"))
@@ -109,10 +206,36 @@ func TestLookupDecoderPinsDownloadAndMetadataSchema(t *testing.T) {
 	}
 	empty, err := analyzeLookupBody(grpcTestFrame(nil))
 	if err != nil || empty.RecordCount != 0 || empty.MatchCount != 0 {
-		t.Fatalf("empty unary Lookup = %#v, err %v", empty, err)
+		t.Fatalf("one empty streaming Lookup frame = %#v, err %v", empty, err)
 	}
-	if _, err := analyzeLookupBody(append(grpcTestFrame(nil), grpcTestFrame(nil)...)); err == nil {
-		t.Fatal("multi-frame unary Lookup response was accepted")
+	if _, err := analyzeLookupBody(nil); err == nil {
+		t.Fatal("zero-frame streaming Lookup response was accepted")
+	}
+	twoEmpty, err := analyzeLookupBody(append(grpcTestFrame(nil), grpcTestFrame(nil)...))
+	if err != nil || twoEmpty.RecordCount != 0 {
+		t.Fatalf("two empty streaming Lookup frames = %#v, err %v", twoEmpty, err)
+	}
+}
+
+func TestLookupDecoderAggregatesOrderedServerStreamFrames(t *testing.T) {
+	prior := bytemanCanaryURL
+	bytemanCanaryURL = "https://example.invalid/owned-b.zip"
+	defer func() { bytemanCanaryURL = prior }()
+	nonmatch := targetLookupRecord("https://example.invalid/other.zip")
+	target := targetLookupRecord(bytemanCanaryURL)
+	body := grpcTestFrame(appendBytesField(nil, 1, nonmatch))
+	body = append(body, grpcTestFrame(nil)...)
+	body = append(body, grpcTestFrame(appendBytesField(nil, 1, target))...)
+	analysis, err := analyzeLookupBody(body)
+	if err != nil || analysis.RecordCount != 2 || analysis.MatchCount != 1 ||
+		analysis.MatchPath != "frame[2].1[0]" || analysis.RecordsSHA256 == "" || analysis.MatchSHA256 == "" {
+		t.Fatalf("streaming Lookup aggregation = %#v, err %v", analysis, err)
+	}
+	reversed := grpcTestFrame(appendBytesField(nil, 1, target))
+	reversed = append(reversed, grpcTestFrame(appendBytesField(nil, 1, nonmatch))...)
+	reversedAnalysis, err := analyzeLookupBody(reversed)
+	if err != nil || reversedAnalysis.RecordsSHA256 == analysis.RecordsSHA256 {
+		t.Fatalf("ordered stream record digest was not order-sensitive: %#v, err %v", reversedAnalysis, err)
 	}
 }
 
@@ -156,6 +279,25 @@ func TestLookupDecoderRequiresExactEnums(t *testing.T) {
 	}
 }
 
+func TestTargetMetadataRejectsUnknownAndDuplicateFields(t *testing.T) {
+	base, valid := decodeWireMessage(buildTargetMetadata(), 0)
+	if !valid || !targetMetadataMatches(base) {
+		t.Fatal("fixed B metadata was rejected")
+	}
+	unknown, valid := decodeWireMessage(appendStringField(buildTargetMetadata(), 7, "substitute"), 0)
+	if !valid || targetMetadataMatches(unknown) {
+		t.Fatal("unknown metadata field was accepted")
+	}
+	duplicate, valid := decodeWireMessage(appendStringField(buildTargetMetadata(), 4, targetModuleName), 0)
+	if !valid || targetMetadataMatches(duplicate) {
+		t.Fatal("duplicate B name was accepted")
+	}
+	withSystem, valid := decodeWireMessage(appendVarintField(buildTargetMetadata(), 1, 7), 0)
+	if !valid || !targetMetadataMatches(withSystem) {
+		t.Fatal("single optional legacy system enum was rejected")
+	}
+}
+
 func TestDownloadResponseDecoderRequiresExactIdentifiedRecord(t *testing.T) {
 	prior := bytemanCanaryURL
 	bytemanCanaryURL = "https://example.invalid/owned-b.zip"
@@ -171,20 +313,41 @@ func TestDownloadResponseDecoderRequiresExactIdentifiedRecord(t *testing.T) {
 	missingID := appendStringField(nil, 1, bytemanCanaryURL)
 	missingID = appendBytesField(missingID, 2, []byte("opaque digest message"))
 	missingID = appendVarintField(missingID, 3, targetCanaryBytes)
+	missingID = appendVarintField(missingID, 5, downloadHTTPStatus)
 	metadata := appendStringField(nil, 2, targetRegistry)
 	metadata = appendVarintField(metadata, 3, 1)
 	metadata = appendStringField(metadata, 4, targetModuleName)
 	metadata = appendVarintField(metadata, 5, 1)
 	metadata = appendStringField(metadata, 6, targetVersion)
 	missingID = appendBytesField(missingID, 12, metadata)
-	if _, err := analyzeDownloadBody(grpcTestFrame(appendBytesField(nil, 1, missingID))); err == nil {
+	missingIDResponse := appendBytesField(nil, 1, missingID)
+	missingIDResponse = appendVarintField(missingIDResponse, 3, downloadHTTPStatus)
+	if _, err := analyzeDownloadBody(grpcTestFrame(missingIDResponse)); err == nil {
 		t.Fatal("DownloadResponse without ID field 17 was accepted")
+	}
+	if _, err := analyzeDownloadBody(grpcTestFrame(appendBytesField(nil, 1, record))); err == nil {
+		t.Fatal("DownloadResponse without status_code field 3 was accepted")
+	}
+	badResponseStatus := appendBytesField(nil, 1, record)
+	badResponseStatus = appendVarintField(badResponseStatus, 3, 500)
+	if _, err := analyzeDownloadBody(grpcTestFrame(badResponseStatus)); err == nil {
+		t.Fatal("DownloadResponse with non-success status_code was accepted")
+	}
+	recordWithoutStatus := appendStringField(nil, 1, bytemanCanaryURL)
+	recordWithoutStatus = appendBytesField(recordWithoutStatus, 2, []byte("opaque digest message"))
+	recordWithoutStatus = appendVarintField(recordWithoutStatus, 3, targetCanaryBytes)
+	recordWithoutStatus = appendBytesField(recordWithoutStatus, 12, metadata)
+	recordWithoutStatus = appendBytesField(recordWithoutStatus, 17, []byte("opaque service record id"))
+	missingRecordStatus := appendBytesField(nil, 1, recordWithoutStatus)
+	missingRecordStatus = appendVarintField(missingRecordStatus, 3, downloadHTTPStatus)
+	if _, err := analyzeDownloadBody(grpcTestFrame(missingRecordStatus)); err == nil {
+		t.Fatal("Download record without status_code field 5 was accepted")
 	}
 }
 
 func TestExactLookupPairRequiresReturnedDigestAndID(t *testing.T) {
 	base := grpcResult{
-		HTTPStatus: http.StatusOK, GRPCStatus: "0", LookupMatchCount: 1,
+		HTTPStatus: http.StatusOK, GRPCStatus: "0", ContentType: "application/grpc", LookupMatchCount: 1,
 		LookupMatchSHA256: "record", DigestFieldSHA256: "digest", IDFieldSHA256: "id",
 	}
 	if !exactLookupPair(base, base, "digest", "id") {
@@ -194,6 +357,82 @@ func TestExactLookupPairRequiresReturnedDigestAndID(t *testing.T) {
 	changed.IDFieldSHA256 = "different"
 	if exactLookupPair(base, changed, "digest", "id") {
 		t.Fatal("Lookup pair with different service IDs was accepted")
+	}
+}
+
+func TestStrictDownloadRequiresGRPCAndBothSuccessStatuses(t *testing.T) {
+	base := grpcResult{
+		HTTPStatus: http.StatusOK, GRPCStatus: "0", ContentType: "application/grpc",
+		RecordMatched: true, DigestFieldSHA256: "digest", IDFieldSHA256: "id",
+		DownloadStatusSet: true, DownloadStatusCode: downloadHTTPStatus,
+	}
+	if !downloadStrictlyAccepted(base) {
+		t.Fatal("strict successful Download was rejected")
+	}
+	for name, mutate := range map[string]func(*grpcResult){
+		"wrong-content-type": func(value *grpcResult) { value.ContentType = "text/plain" },
+		"missing-status":     func(value *grpcResult) { value.DownloadStatusSet = false },
+		"bad-status":         func(value *grpcResult) { value.DownloadStatusCode = 500 },
+		"analysis-error":     func(value *grpcResult) { value.AnalysisError = "bad wire" },
+		"missing-id":         func(value *grpcResult) { value.IDFieldSHA256 = "" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			changed := base
+			mutate(&changed)
+			if downloadStrictlyAccepted(changed) {
+				t.Fatal("non-strict Download was accepted")
+			}
+		})
+	}
+}
+
+func TestOriginOfflineCheckDoesNotConsumeAvailableCanary(t *testing.T) {
+	priorURL := bytemanCanaryURL
+	priorAgent := probeUserAgent
+	defer func() {
+		bytemanCanaryURL = priorURL
+		probeUserAgent = priorAgent
+	}()
+	probeUserAgent = expectedUserAgent
+	var gets atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("X-Codex-One-Shot-State", "available")
+		if request.Method == http.MethodGet {
+			gets.Add(1)
+		}
+		writer.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	bytemanCanaryURL = server.URL
+	result := verifyOriginOffline()
+	if result.Offline || result.HeadHTTPStatus != http.StatusOK || result.HeadState != "available" || gets.Load() != 0 {
+		t.Fatalf("available origin check consumed canary: %#v, gets=%d", result, gets.Load())
+	}
+}
+
+func TestOriginOfflineCheckRequiresConsumedHeadAndExactGoneGet(t *testing.T) {
+	priorURL := bytemanCanaryURL
+	priorAgent := probeUserAgent
+	defer func() {
+		bytemanCanaryURL = priorURL
+		probeUserAgent = priorAgent
+	}()
+	probeUserAgent = expectedUserAgent
+	var gets atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		writer.Header().Set("X-Codex-One-Shot-State", "consumed")
+		writer.WriteHeader(http.StatusGone)
+		if request.Method == http.MethodGet {
+			gets.Add(1)
+			_, _ = writer.Write([]byte(`{"error":"one-shot canary consumed"}`))
+		}
+	}))
+	defer server.Close()
+	bytemanCanaryURL = server.URL
+	result := verifyOriginOffline()
+	if !result.Offline || result.HeadHTTPStatus != http.StatusGone || result.HTTPStatus != http.StatusGone || gets.Load() != 1 {
+		t.Fatalf("consumed origin was not proven offline: %#v, gets=%d", result, gets.Load())
 	}
 }
 
@@ -228,6 +467,8 @@ func TestStreamDecoderUsesOnlyTopLevelFieldTwo(t *testing.T) {
 		"field-one":  appendBytesField(nil, 1, payload),
 		"field-nine": appendBytesField(nil, 9, payload),
 		"nested":     appendBytesField(nil, 1, appendBytesField(nil, 2, payload)),
+		"exact-plus-unknown": appendBytesField(
+			appendBytesField(nil, 2, payload), 9, []byte("unexpected")),
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, _, _, err := analyzeStreamBody(grpcTestFrame(message)); err == nil {
@@ -329,13 +570,16 @@ func TestVerifyLegacyLocalhost(t *testing.T) {
 	if err := verifyLegacyLocalhost(tls.ConnectionState{}, roots); err == nil {
 		t.Fatal("missing peer certificate accepted")
 	}
+	_, unrelatedRoots := legacyTLSState(t, "localhost")
+	if err := verifyLegacyLocalhost(state, unrelatedRoots); err == nil {
+		t.Fatal("localhost certificate from an unmounted root was accepted")
+	}
 }
 
 func TestPlanStepValidation(t *testing.T) {
 	valid := []planStep{
 		{Version: 1, ID: "inspect", Action: "inspect-session-dataflow"},
-		{Version: 1, ID: "core", Action: "probe-byteman", RouteMode: "byteman-core-localhost"},
-		{Version: 1, ID: "oregon", Action: "probe-byteman", RouteMode: "byteman-oregon-gateway"},
+		{Version: 1, ID: "direct", Action: "probe-byteman", RouteMode: "byteman-localhost"},
 		{Version: 1, ID: "done", Action: "finish"},
 	}
 	for _, step := range valid {
@@ -347,6 +591,8 @@ func TestPlanStepValidation(t *testing.T) {
 		{Version: 1, ID: "shell", Action: "exec", RouteMode: "byteman-core-localhost"},
 		{Version: 1, ID: "missing-mode", Action: "probe-byteman"},
 		{Version: 1, ID: "arbitrary", Action: "probe-byteman", RouteMode: "external"},
+		{Version: 1, ID: "core", Action: "probe-byteman", RouteMode: "byteman-core-localhost"},
+		{Version: 1, ID: "gateway", Action: "probe-byteman", RouteMode: "byteman-oregon-gateway"},
 		{Version: 1, ID: "inspect-route", Action: "inspect-session-dataflow", RouteMode: "byteman-core-localhost"},
 		{Version: 1, ID: "bad/slash", Action: "finish"},
 		{Version: 2, ID: "wrong-version", Action: "finish"},
