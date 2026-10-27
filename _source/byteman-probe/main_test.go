@@ -7,7 +7,10 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/binary"
 	"math/big"
+	"net/http"
+	"os"
 	"testing"
 	"time"
 )
@@ -58,6 +61,180 @@ func TestCoordinateLookupRequestShape(t *testing.T) {
 			t.Fatalf("coordinate lookup unexpectedly contains executing A coordinate %q", forbidden)
 		}
 	}
+	decoded, valid := decodeWireMessage(request, 0)
+	if !valid {
+		t.Fatal("coordinate lookup did not decode")
+	}
+	limit := uint64(0)
+	for _, field := range decoded.fields {
+		if field.number == 10 && field.wire == 0 {
+			limit = field.varint
+		}
+	}
+	if limit != lookupRecordLimit || limit <= 1 {
+		t.Fatalf("coordinate lookup limit = %d", limit)
+	}
+}
+
+func grpcTestFrame(message []byte) []byte {
+	frame := make([]byte, 5, 5+len(message))
+	binary.BigEndian.PutUint32(frame[1:], uint32(len(message)))
+	return append(frame, message...)
+}
+
+func targetLookupRecord(canaryURL string) []byte {
+	metadata := appendStringField(nil, 2, targetRegistry)
+	metadata = appendVarintField(metadata, 3, 1)
+	metadata = appendStringField(metadata, 4, targetModuleName)
+	metadata = appendVarintField(metadata, 5, 1)
+	metadata = appendStringField(metadata, 6, targetVersion)
+	record := appendStringField(nil, 1, canaryURL)
+	record = appendBytesField(record, 2, []byte("opaque digest message"))
+	record = appendVarintField(record, 3, targetCanaryBytes)
+	record = appendStringField(record, 7, "opaque remaining Download field")
+	record = appendBytesField(record, 12, metadata)
+	record = appendBytesField(record, 17, []byte("opaque service record id"))
+	return record
+}
+
+func TestLookupDecoderPinsDownloadAndMetadataSchema(t *testing.T) {
+	prior := bytemanCanaryURL
+	bytemanCanaryURL = "https://example.invalid/owned-b.zip"
+	defer func() { bytemanCanaryURL = prior }()
+	response := appendBytesField(nil, 1, targetLookupRecord(bytemanCanaryURL))
+	analysis, err := analyzeLookupBody(grpcTestFrame(response))
+	if err != nil || analysis.MatchPath != "frame[0].1[0]" || analysis.RecordCount != 1 ||
+		analysis.MatchCount != 1 || analysis.MatchSHA256 == "" || analysis.RecordsSHA256 == "" {
+		t.Fatalf("exact record decode = %#v, err %v", analysis, err)
+	}
+	empty, err := analyzeLookupBody(grpcTestFrame(nil))
+	if err != nil || empty.RecordCount != 0 || empty.MatchCount != 0 {
+		t.Fatalf("empty unary Lookup = %#v, err %v", empty, err)
+	}
+	if _, err := analyzeLookupBody(append(grpcTestFrame(nil), grpcTestFrame(nil)...)); err == nil {
+		t.Fatal("multi-frame unary Lookup response was accepted")
+	}
+}
+
+func TestLookupDecoderRejectsCrossSiblingAggregation(t *testing.T) {
+	prior := bytemanCanaryURL
+	bytemanCanaryURL = "https://example.invalid/owned-b.zip"
+	defer func() { bytemanCanaryURL = prior }()
+	urlOnly := appendStringField(nil, 1, bytemanCanaryURL)
+	metadata := appendStringField(nil, 2, targetRegistry)
+	metadata = appendVarintField(metadata, 3, 1)
+	metadata = appendStringField(metadata, 4, targetModuleName)
+	metadata = appendVarintField(metadata, 5, 1)
+	metadata = appendStringField(metadata, 6, targetVersion)
+	metadataOnly := appendBytesField(nil, 12, metadata)
+	response := appendBytesField(nil, 1, urlOnly)
+	response = appendBytesField(response, 1, metadataOnly)
+	analysis, err := analyzeLookupBody(grpcTestFrame(response))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if analysis.RecordCount != 2 || analysis.MatchCount != 0 {
+		t.Fatalf("strings split across sibling Downloads produced false match: %#v", analysis)
+	}
+}
+
+func TestLookupDecoderRequiresExactEnums(t *testing.T) {
+	prior := bytemanCanaryURL
+	bytemanCanaryURL = "https://example.invalid/owned-b.zip"
+	defer func() { bytemanCanaryURL = prior }()
+	record := targetLookupRecord(bytemanCanaryURL)
+	for index, value := range record {
+		if value == 0x18 && index+1 < len(record) && record[index+1] == 0x01 {
+			record[index+1] = 0x02
+			break
+		}
+	}
+	response := appendBytesField(nil, 1, record)
+	analysis, err := analyzeLookupBody(grpcTestFrame(response))
+	if err != nil || analysis.MatchCount != 0 {
+		t.Fatalf("wrong metadata enum matched: %#v, err %v", analysis, err)
+	}
+}
+
+func TestDownloadResponseDecoderRequiresExactIdentifiedRecord(t *testing.T) {
+	prior := bytemanCanaryURL
+	bytemanCanaryURL = "https://example.invalid/owned-b.zip"
+	defer func() { bytemanCanaryURL = prior }()
+	record := targetLookupRecord(bytemanCanaryURL)
+	response := appendBytesField(nil, 1, record)
+	response = appendVarintField(response, 3, 200)
+	analysis, err := analyzeDownloadBody(grpcTestFrame(response))
+	if err != nil || !analysis.Identity.Matched || analysis.Identity.DigestSHA256 == "" ||
+		analysis.Identity.IDSHA256 == "" || !analysis.StatusSet || analysis.StatusCode != 200 {
+		t.Fatalf("DownloadResponse decode = %#v, err %v", analysis, err)
+	}
+	missingID := appendStringField(nil, 1, bytemanCanaryURL)
+	missingID = appendBytesField(missingID, 2, []byte("opaque digest message"))
+	missingID = appendVarintField(missingID, 3, targetCanaryBytes)
+	metadata := appendStringField(nil, 2, targetRegistry)
+	metadata = appendVarintField(metadata, 3, 1)
+	metadata = appendStringField(metadata, 4, targetModuleName)
+	metadata = appendVarintField(metadata, 5, 1)
+	metadata = appendStringField(metadata, 6, targetVersion)
+	missingID = appendBytesField(missingID, 12, metadata)
+	if _, err := analyzeDownloadBody(grpcTestFrame(appendBytesField(nil, 1, missingID))); err == nil {
+		t.Fatal("DownloadResponse without ID field 17 was accepted")
+	}
+}
+
+func TestExactLookupPairRequiresReturnedDigestAndID(t *testing.T) {
+	base := grpcResult{
+		HTTPStatus: http.StatusOK, GRPCStatus: "0", LookupMatchCount: 1,
+		LookupMatchSHA256: "record", DigestFieldSHA256: "digest", IDFieldSHA256: "id",
+	}
+	if !exactLookupPair(base, base, "digest", "id") {
+		t.Fatal("identical exact Lookup pair was rejected")
+	}
+	changed := base
+	changed.IDFieldSHA256 = "different"
+	if exactLookupPair(base, changed, "digest", "id") {
+		t.Fatal("Lookup pair with different service IDs was accepted")
+	}
+}
+
+func TestStreamDecoderUsesOnlyTopLevelFieldTwo(t *testing.T) {
+	payload, err := os.ReadFile("testdata/v0.0.1-crosswrite-canary.zip")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(payload) != targetCanaryBytes {
+		t.Fatalf("real canary bytes = %d", len(payload))
+	}
+	cutoffs := []int{1, 33, 544, 1701, len(payload)}
+	body := []byte{}
+	start := 0
+	for index, end := range cutoffs {
+		message := []byte{}
+		if index == 0 {
+			message = appendStringField(message, 1, "opaque StreamResponse header")
+		}
+		message = appendBytesField(message, 2, payload[start:end])
+		body = append(body, grpcTestFrame(message)...)
+		start = end
+	}
+	_, got, path, err := analyzeStreamBody(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, payload) || path != "top-level-field-2" {
+		t.Fatalf("stream payload mismatch: bytes=%d path=%q", len(got), path)
+	}
+	for name, message := range map[string][]byte{
+		"field-one":  appendBytesField(nil, 1, payload),
+		"field-nine": appendBytesField(nil, 9, payload),
+		"nested":     appendBytesField(nil, 1, appendBytesField(nil, 2, payload)),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, _, _, err := analyzeStreamBody(grpcTestFrame(message)); err == nil {
+				t.Fatal("canary outside top-level StreamResponse field 2 was accepted")
+			}
+		})
+	}
 }
 
 func TestTargetCanaryDigestShape(t *testing.T) {
@@ -82,6 +259,12 @@ func TestDirectBytemanRoute(t *testing.T) {
 	}
 	if _, _, _, _, err := bytemanRoute("arbitrary"); err == nil {
 		t.Fatal("arbitrary direct route unexpectedly succeeded")
+	}
+	if got := bytemanAuthorityHost("byteman.default.svc.cluster.local", "localhost", false); got != "byteman.default.svc.cluster.local" {
+		t.Fatalf("direct authority host = %q", got)
+	}
+	if got := bytemanAuthorityHost("10.0.0.1", "rpc.deps.dev", true); got != "rpc.deps.dev" {
+		t.Fatalf("gateway authority host = %q", got)
 	}
 }
 
