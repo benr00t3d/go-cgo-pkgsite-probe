@@ -36,8 +36,8 @@ var rpcDialAddress string
 const (
 	protocolVersion            = 1
 	moduleName                 = "github.com/benr00t3d/go-cgo-pkgsite-probe"
-	probeVersion               = "v0.0.76-codex"
-	expectedUserAgent          = "go-cgo-pkgsite-probe-v076-codex"
+	probeVersion               = "v0.0.78-codex"
+	expectedUserAgent          = "go-cgo-pkgsite-probe-v078-codex"
 	targetRegistry             = "https://proxy.golang.org"
 	targetModuleName           = "github.com/benr00t3d/go-byteman-crosswrite-canary"
 	targetVersion              = "v0.0.3"
@@ -50,7 +50,7 @@ const (
 	expectedDigestFieldSHA256  = "3723f29913d7b12c377d3cb8b9e12a960cb6518a1cf91b0510df85f39794b9c0"
 	expectedMetadataSHA256     = "11518f5174adad6968a0bc3524ba90d6c90b96d2333c5aadcbf137b9b0a62e78"
 	canonicalSourceZipSHA256   = "0dc801e526c75b557787662cc8be75e4930ac0759556cd350b004a30e0a9a23b"
-	downloadSource             = "robert-owned-v076-first-fetch-crosswrite"
+	downloadSource             = "robert-owned-v078-first-fetch-crosswrite"
 	emptyValueSHA256           = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 	downloadPolicyName         = "ALWAYS"
 	downloadPolicyValue        = 4
@@ -242,10 +242,10 @@ func main() {
 	identity := inspectIdentity(cwd)
 	report := newProbeReport(started, identity)
 	endpoint := genericResultURL
-	resultID := "v076-codex-" + identity.Lane
+	resultID := "v078-codex-" + identity.Lane
 	if identity.Lane == "capslock" {
 		endpoint = compilerResultURL
-		resultID = "v076-codex-capslock-first-fetch-crosswrite"
+		resultID = "v078-codex-capslock-first-fetch-crosswrite"
 		report.Download = runContentIngest()
 		if report.Download.Verified {
 			report.Reason = "one descriptor-pinned Download ALWAYS accepted the exact altered owned-B v0.0.3 first-fetch archive"
