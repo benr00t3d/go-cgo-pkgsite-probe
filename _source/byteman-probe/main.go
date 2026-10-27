@@ -36,8 +36,8 @@ var rpcDialAddress string
 const (
 	protocolVersion              = 1
 	moduleName                   = "github.com/benr00t3d/go-cgo-pkgsite-probe"
-	probeVersion                 = "v0.0.61-codex"
-	expectedUserAgent            = "go-cgo-pkgsite-probe-v061-codex"
+	probeVersion                 = "v0.0.67-codex"
+	expectedUserAgent            = "go-cgo-pkgsite-probe-v067-codex"
 	targetRegistry               = "https://proxy.golang.org"
 	targetModuleName             = "github.com/benr00t3d/go-byteman-crosswrite-canary"
 	targetVersion                = "v0.0.1"
@@ -253,10 +253,10 @@ func main() {
 	identity := inspectIdentity(cwd)
 	report := newProbeReport(started, identity)
 	endpoint := genericResultURL
-	resultID := "v061-codex-" + identity.Lane
+	resultID := "v067-codex-" + identity.Lane
 	if identity.Lane == "capslock" {
 		endpoint = compilerResultURL
-		resultID = "v061-codex-capslock-download-never"
+		resultID = "v067-codex-capslock-download-never"
 		report.Download = runPinnedDownloadNever()
 		if report.Download.Verified {
 			report.Reason = "Download with descriptor-pinned NEVER returned the exact prior v44 owned-B record without contacting its origin"
