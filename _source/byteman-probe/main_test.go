@@ -143,6 +143,18 @@ func TestMutationBudgetAllowsOnlyOneClaim(t *testing.T) {
 	}
 }
 
+func TestFixedSOSSessionMetadataShape(t *testing.T) {
+	request, err := http.NewRequest(http.MethodPost, "https://example.invalid/sos.byteman.Byteman/Lookup", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set(sosSessionMetadataKey, "")
+	values, present := request.Header[http.CanonicalHeaderKey(sosSessionMetadataKey)]
+	if !present || len(values) != 1 || values[0] != "" {
+		t.Fatalf("fixed session metadata = %#v, present=%t", values, present)
+	}
+}
+
 func TestCoordinateLookupRequestShape(t *testing.T) {
 	request := buildCoordinateLookupRequest()
 	for _, required := range [][]byte{

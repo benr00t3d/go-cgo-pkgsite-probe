@@ -48,7 +48,7 @@ var descriptorRedirectPolicyName string
 const (
 	protocolVersion              = 1
 	moduleName                   = "github.com/benr00t3d/go-cgo-pkgsite-probe"
-	probeVersion                 = "v0.0.46-codex"
+	probeVersion                 = "v0.0.48-codex"
 	targetRegistry               = "https://proxy.golang.org"
 	targetModuleName             = "github.com/benr00t3d/go-byteman-crosswrite-canary"
 	targetVersion                = "v0.0.1"
@@ -56,8 +56,9 @@ const (
 	targetCanaryBytes            = 2512
 	originGoneSHA256             = "2060dcc16cdd2cb518700076b1ccf2fadbff619b32af84250c176e70590f1f0a"
 	originGoneBytes              = 36
-	downloadSource               = "robert-owned-v046-cross-package-offline-canary"
-	expectedUserAgent            = "go-cgo-pkgsite-probe-v046-codex"
+	downloadSource               = "robert-owned-v048-cross-package-offline-canary"
+	expectedUserAgent            = "go-cgo-pkgsite-probe-v048-codex"
+	sosSessionMetadataKey        = "X-SOS-SessionID"
 	descriptorReceiptSHA256      = "2f971b887a6da75675db2d570d14fe28f788a1513cefec2f3c521afb725ec225"
 	maximumResult                = 256 * 1024
 	maximumBody                  = 256 * 1024
@@ -338,7 +339,7 @@ func main() {
 	report := newProbeReport(started, identity)
 	report.Reason = "internal checks are fixed to the verified capslock lane"
 	report.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-	_ = submitProbeReport(genericResultURL, "v046-codex-"+identity.Lane, cwd, started, report)
+	_ = submitProbeReport(genericResultURL, "v048-codex-"+identity.Lane, cwd, started, report)
 }
 
 func newProbeReport(started time.Time, identity identityResult) probeReport {
@@ -481,7 +482,7 @@ func runCapslockSession(started time.Time, cwd string, identity identityResult) 
 	fillCapslockContext(&initial)
 	initial.Reason = "waiting for a bounded Byteman plan"
 	initial.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-	if err := submitProbeReport(compilerResultURL, "v046-codex-capslock-initial", cwd, started, initial); err != nil {
+	if err := submitProbeReport(compilerResultURL, "v048-codex-capslock-initial", cwd, started, initial); err != nil {
 		return
 	}
 
@@ -519,7 +520,7 @@ func runCapslockSession(started time.Time, cwd string, identity identityResult) 
 			report.Reason = "validated plan action had no implementation"
 		}
 		report.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-		id := "v046-codex-step-" + strconv.Itoa(cursor)
+		id := "v048-codex-step-" + strconv.Itoa(cursor)
 		if err := submitProbeReport(compilerResultURL, id, cwd, stepStarted, report); err != nil {
 			return
 		}
@@ -538,7 +539,7 @@ func runCapslockSession(started time.Time, cwd string, identity identityResult) 
 		final.Reason = "bounded plan polling window expired"
 	}
 	final.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-	_ = submitProbeReport(compilerResultURL, "v046-codex-final", cwd, finalStarted, final)
+	_ = submitProbeReport(compilerResultURL, "v048-codex-final", cwd, finalStarted, final)
 }
 
 func fetchPlan(cursor int) (planStep, bool, error) {
@@ -1860,6 +1861,10 @@ func callGRPCRawLimits(client *http.Client, endpoint, method string, payload []b
 	request.Header.Set("Content-Type", "application/grpc")
 	request.Header.Set("TE", "trailers")
 	request.Header.Set("User-Agent", probeUserAgent)
+	// The production worker's pinned server.dial path attaches this exact key
+	// with an empty value. Match that client shape without accepting a dynamic
+	// session value or exposing a metadata control surface.
+	request.Header.Set(sosSessionMetadataKey, "")
 	if grpcTimeout == bytemanGRPCTimeout {
 		request.Header.Set("Grpc-Timeout", "60S")
 	} else {
