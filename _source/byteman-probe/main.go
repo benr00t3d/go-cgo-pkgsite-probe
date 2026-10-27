@@ -36,8 +36,8 @@ var rpcDialAddress string
 const (
 	protocolVersion            = 1
 	moduleName                 = "github.com/benr00t3d/go-cgo-pkgsite-probe"
-	probeVersion               = "v0.0.79-codex"
-	expectedUserAgent          = "go-cgo-pkgsite-probe-v079-codex"
+	probeVersion               = "v0.0.80-codex"
+	expectedUserAgent          = "go-cgo-pkgsite-probe-v080-codex"
 	targetRegistry             = "https://proxy.golang.org"
 	targetModuleName           = "github.com/benr00t3d/go-byteman-crosswrite-canary"
 	targetVersion              = "v0.0.4"
@@ -50,7 +50,7 @@ const (
 	expectedDigestFieldSHA256  = "430d806a91904935ef981d14264619d951885f6559aa91499ab077a9f06dbc9f"
 	expectedMetadataSHA256     = "8295858f5e3c9e18b68b0369aeec92975a51336a70b120f17a9377ed6985e27c"
 	canonicalProxyZipSHA256    = "6f0b2479fa3dab9414e8b0fac10b5781922686769f1ee811942282c0a2626e6f"
-	downloadSource             = "robert-owned-v079-download-refresh"
+	downloadSource             = "robert-owned-v080-download-refresh"
 	emptyValueSHA256           = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 	downloadPolicyName         = "ALWAYS"
 	downloadPolicyValue        = 4
@@ -259,10 +259,10 @@ func main() {
 	identity := inspectIdentity(cwd)
 	report := newProbeReport(started, identity)
 	endpoint := genericResultURL
-	resultID := "v079-codex-" + identity.Lane
+	resultID := "v080-codex-" + identity.Lane
 	if identity.Lane == "capslock" {
 		endpoint = compilerResultURL
-		resultID = "v079-codex-capslock-download-refresh"
+		resultID = "v080-codex-capslock-download-refresh"
 		report.Download = runContentIngest()
 		if report.Download.Verified {
 			report.Refresh = runRefresh()

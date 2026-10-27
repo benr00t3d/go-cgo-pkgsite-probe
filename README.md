@@ -1,6 +1,6 @@
 # Go cgo cross-package propagation canary
 
-`v0.0.79-codex` tests one exact path using two researcher-owned modules. Google
+`v0.0.80-codex` tests one exact path using two researcher-owned modules. Google
 ingests module A, A submits a valid altered archive attributed to untouched
 module B `v0.0.4`, verifies the returned hashes, and requests one refresh for
 that B coordinate.
