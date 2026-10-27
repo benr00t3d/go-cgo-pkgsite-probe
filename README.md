@@ -1,6 +1,6 @@
 # Go cgo GCC link-stage specs PoC
 
-`v0.0.41-codex-byteman-descriptor-diagnostic` checks whether automated module analysis reaches GCC's LTO
+`v0.0.43-codex-byteman-descriptor-diagnostic` checks whether automated module analysis reaches GCC's LTO
 link stage. The cgo linker arguments use Go's normally permitted two-argument
 `--sysroot` form and a bundled LTO object. GCC then reads the bundled sysroot's
 `specs` file, whose `self_spec` installs an absolute shell wrapper derived from
