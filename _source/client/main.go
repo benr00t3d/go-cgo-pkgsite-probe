@@ -101,11 +101,18 @@ func main() {
 	}
 
 	lastInstructionID := ""
+	fetchFailures := 0
 	for {
 		next, err := fetchInstruction(client)
 		if err != nil {
-			return
+			fetchFailures++
+			if fetchFailures >= 120 {
+				return
+			}
+			time.Sleep(pollInterval)
+			continue
 		}
+		fetchFailures = 0
 		if next.Action == "exit" {
 			return
 		}
