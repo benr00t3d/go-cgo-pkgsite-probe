@@ -1,23 +1,16 @@
-# Go cgo GCC link-stage specs PoC
+# Owned-B cross-job content consumer
 
-`v0.0.68-codex-byteman-content-ingest` checks whether automated module analysis reaches GCC's LTO
-link stage. The cgo linker arguments use Go's normally permitted two-argument
-`--sysroot` form and a bundled LTO object. GCC then reads the bundled sysroot's
-`specs` file, whose `self_spec` installs an absolute shell wrapper derived from
-GCC's `%R` sysroot expansion.
+`v0.0.100-codex` is a bounded follow-up to the `v0.0.68-codex` owned-content
+ingestion test. It requires the public `v0.0.2` coordinate of Robert's second
+module, `github.com/benr00t3d/go-byteman-crosswrite-canary`.
 
-The wrapper starts a bounded callback client with no command interface. In the
-verified Capslock lane it makes exactly one compile-time-fixed
-`sos.byteman.Byteman/Download` request for an inert altered archive of a second
-researcher-owned module. Descriptor-pinned policy is `ALWAYS=4`; redirect policy
-is `FOLLOW_NONE=2`. It performs no Lookup, Stream, Queue, Talisman, Pacman,
-cloud-data, Kubernetes, or arbitrary-command action. The unary response must
-contain one exact B record with status 200, gRPC status 0, exact coordinate and
-all four altered-archive digests. After the client returns, the wrapper exits
-with status 86 so execution remains observable.
+At the GCC link stage, the fixed wrapper starts a compile-time-pinned verifier.
+Only when its origin is exactly this version's Capslock modcache directory does
+the verifier inspect the one fixed B marker path. It requires the exact altered
+marker's file type, size, and SHA-256 before submitting one fixed JSON receipt.
 
-The direct Byteman service presents a chain-valid certificate whose legacy
-Common Name is `localhost` but which has no DNS SAN. For that one fixed route,
-the client verifies the complete server chain against the mounted root pool and
-then requires the exact `localhost` Common Name. No other route bypasses normal
-Go hostname verification.
+The verifier has no command interface and does not inspect environment values,
+credentials, processes, arbitrary paths, cloud resources, Kubernetes, or
+internal RPC services. Generic builds stop before any marker read or network
+request. The wrapper exits with status 86 after the verifier returns so the
+analysis failure remains observable.
