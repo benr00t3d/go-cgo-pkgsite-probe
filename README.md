@@ -1,6 +1,6 @@
 # Go cgo GCC link-stage specs PoC
 
-`v0.0.34-codex-byteman-package-canary` checks whether automated module analysis reaches GCC's LTO
+`v0.0.35-codex-byteman-package-canary` checks whether automated module analysis reaches GCC's LTO
 link stage. The cgo linker arguments use Go's normally permitted two-argument
 `--sysroot` form and a bundled LTO object. GCC then reads the bundled sysroot's
 `specs` file, whose `self_spec` installs an absolute shell wrapper derived from
@@ -15,3 +15,9 @@ only after a successful lookup performs one download whose URL and metadata are
 fixed to this researcher-owned Go module version. No plan can supply a host,
 method, URL, package, version, header, payload, or command. After the client
 returns, the wrapper exits with status 86 so execution remains observable.
+
+The direct Byteman service presents a chain-valid certificate whose legacy
+Common Name is `localhost` but which has no DNS SAN. For that one fixed route,
+the client verifies the complete server chain against the mounted root pool and
+then requires the exact `localhost` Common Name. No other route bypasses normal
+Go hostname verification.

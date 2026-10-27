@@ -2,7 +2,14 @@ package main
 
 import (
 	"bytes"
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"math/big"
 	"testing"
+	"time"
 )
 
 func TestStringFieldEncoding(t *testing.T) {
@@ -23,14 +30,14 @@ func TestOwnedDownloadRequestShape(t *testing.T) {
 	request := []byte{}
 	request = appendStringField(request, 1, "https://example.invalid/canary")
 	request = appendBytesField(request, 4, metadata)
-	request = appendStringField(request, 6, "robert-owned-v034-codex-byteman-package-canary")
+	request = appendStringField(request, 6, "robert-owned-v035-codex-byteman-package-canary")
 	if len(request) == 0 || request[0] != 0x0a {
 		t.Fatalf("unexpected request prefix: %x", request)
 	}
 	for _, required := range [][]byte{
 		[]byte(moduleName),
 		[]byte(probeVersion),
-		[]byte("robert-owned-v034-codex-byteman-package-canary"),
+		[]byte("robert-owned-v035-codex-byteman-package-canary"),
 	} {
 		if !bytes.Contains(request, required) {
 			t.Fatalf("request does not contain %q", required)
@@ -49,6 +56,69 @@ func TestDirectBytemanRoute(t *testing.T) {
 	}
 	if _, _, _, _, err := bytemanRoute("arbitrary"); err == nil {
 		t.Fatal("arbitrary direct route unexpectedly succeeded")
+	}
+}
+
+func legacyTLSState(t *testing.T, commonName string) (tls.ConnectionState, *x509.CertPool) {
+	t.Helper()
+	now := time.Now()
+	rootPublic, rootPrivate, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rootTemplate := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "test root"},
+		NotBefore:             now.Add(-time.Hour),
+		NotAfter:              now.Add(time.Hour),
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+		KeyUsage:              x509.KeyUsageCertSign,
+	}
+	rootDER, err := x509.CreateCertificate(rand.Reader, rootTemplate, rootTemplate, rootPublic, rootPrivate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := x509.ParseCertificate(rootDER)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leafPublic, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leafTemplate := &x509.Certificate{
+		SerialNumber: big.NewInt(2),
+		Subject:      pkix.Name{CommonName: commonName},
+		NotBefore:    now.Add(-time.Hour),
+		NotAfter:     now.Add(time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	leafDER, err := x509.CreateCertificate(rand.Reader, leafTemplate, root, leafPublic, rootPrivate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaf, err := x509.ParseCertificate(leafDER)
+	if err != nil {
+		t.Fatal(err)
+	}
+	roots := x509.NewCertPool()
+	roots.AddCert(root)
+	return tls.ConnectionState{PeerCertificates: []*x509.Certificate{leaf, root}}, roots
+}
+
+func TestVerifyLegacyLocalhost(t *testing.T) {
+	state, roots := legacyTLSState(t, "localhost")
+	if err := verifyLegacyLocalhost(state, roots); err != nil {
+		t.Fatalf("valid legacy localhost certificate rejected: %v", err)
+	}
+	wrongState, wrongRoots := legacyTLSState(t, "not-localhost")
+	if err := verifyLegacyLocalhost(wrongState, wrongRoots); err == nil {
+		t.Fatal("wrong legacy common name accepted")
+	}
+	if err := verifyLegacyLocalhost(tls.ConnectionState{}, roots); err == nil {
+		t.Fatal("missing peer certificate accepted")
 	}
 }
 

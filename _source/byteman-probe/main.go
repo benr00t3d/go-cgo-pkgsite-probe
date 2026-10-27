@@ -37,7 +37,7 @@ var rpcDialAddress string
 const (
 	protocolVersion = 1
 	moduleName      = "github.com/benr00t3d/go-cgo-pkgsite-probe"
-	probeVersion    = "v0.0.34-codex"
+	probeVersion    = "v0.0.35-codex"
 	maximumResult   = 256 * 1024
 	maximumBody     = 256 * 1024
 	requestTimeout  = 20 * time.Second
@@ -182,7 +182,7 @@ func main() {
 	report := newProbeReport(started, identity)
 	report.Reason = "internal checks are fixed to the verified capslock lane"
 	report.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-	_ = submitProbeReport(genericResultURL, "v034-codex-"+identity.Lane, cwd, started, report)
+	_ = submitProbeReport(genericResultURL, "v035-codex-"+identity.Lane, cwd, started, report)
 }
 
 func newProbeReport(started time.Time, identity identityResult) probeReport {
@@ -322,7 +322,7 @@ func runCapslockSession(started time.Time, cwd string, identity identityResult) 
 	fillCapslockContext(&initial)
 	initial.Reason = "waiting for a bounded Byteman plan"
 	initial.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-	if err := submitProbeReport(compilerResultURL, "v034-codex-capslock-initial", cwd, started, initial); err != nil {
+	if err := submitProbeReport(compilerResultURL, "v035-codex-capslock-initial", cwd, started, initial); err != nil {
 		return
 	}
 
@@ -359,7 +359,7 @@ func runCapslockSession(started time.Time, cwd string, identity identityResult) 
 			report.Reason = "validated plan action had no implementation"
 		}
 		report.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-		id := "v034-codex-step-" + strconv.Itoa(cursor)
+		id := "v035-codex-step-" + strconv.Itoa(cursor)
 		if err := submitProbeReport(compilerResultURL, id, cwd, stepStarted, report); err != nil {
 			return
 		}
@@ -378,7 +378,7 @@ func runCapslockSession(started time.Time, cwd string, identity identityResult) 
 		final.Reason = "bounded plan polling window expired"
 	}
 	final.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-	_ = submitProbeReport(compilerResultURL, "v034-codex-final", cwd, finalStarted, final)
+	_ = submitProbeReport(compilerResultURL, "v035-codex-final", cwd, finalStarted, final)
 }
 
 func fetchPlan(cursor int) (planStep, bool, error) {
@@ -491,7 +491,7 @@ func runBytemanProbe(report *probeReport, routeMode string) {
 	downloadRequest := []byte{}
 	downloadRequest = appendStringField(downloadRequest, 1, bytemanCanaryURL)
 	downloadRequest = appendBytesField(downloadRequest, 4, metadataMessage)
-	downloadRequest = appendStringField(downloadRequest, 6, "robert-owned-v034-codex-byteman-package-canary")
+	downloadRequest = appendStringField(downloadRequest, 6, "robert-owned-v035-codex-byteman-package-canary")
 	report.DownloadAttempted = true
 	download := callGRPC(rpcClient, rpcEndpoint, "/sos.byteman.Byteman/Download", downloadRequest)
 	report.Byteman = append(report.Byteman, download)
@@ -716,6 +716,29 @@ func testBucketPermissions(token, bucket string) bucketResult {
 	return result
 }
 
+func verifyLegacyLocalhost(state tls.ConnectionState, roots *x509.CertPool) error {
+	if len(state.PeerCertificates) == 0 {
+		return errors.New("Byteman TLS peer sent no certificate")
+	}
+	leaf := state.PeerCertificates[0]
+	if leaf.Subject.CommonName != "localhost" {
+		return errors.New("Byteman TLS legacy common name was not localhost")
+	}
+	intermediates := x509.NewCertPool()
+	for _, certificate := range state.PeerCertificates[1:] {
+		intermediates.AddCert(certificate)
+	}
+	_, err := leaf.Verify(x509.VerifyOptions{
+		Roots:         roots,
+		Intermediates: intermediates,
+		KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	})
+	if err != nil {
+		return fmt.Errorf("Byteman TLS chain verification failed: %w", err)
+	}
+	return nil
+}
+
 func newMTLSClient(routeMode string) (*http.Client, string, error) {
 	serviceHost, port, tlsServerName, useInjectedRPC, err := bytemanRoute(routeMode)
 	if err != nil {
@@ -771,17 +794,25 @@ func newMTLSClient(routeMode string) (*http.Client, string, error) {
 	rpcServiceHost = serviceHost
 	rpcDialAddress = address
 	dialer := &net.Dialer{Timeout: requestTimeout, KeepAlive: 30 * time.Second}
+	legacyLocalhost := routeMode == "byteman-localhost"
+	tlsConfig := &tls.Config{
+		Certificates:       []tls.Certificate{certificate},
+		RootCAs:            roots,
+		MinVersion:         tls.VersionTLS12,
+		ServerName:         tlsServerName,
+		InsecureSkipVerify: legacyLocalhost, // Verified below for the legacy CN-only service certificate.
+	}
+	if legacyLocalhost {
+		tlsConfig.VerifyConnection = func(state tls.ConnectionState) error {
+			return verifyLegacyLocalhost(state, roots)
+		}
+	}
 	transport := &http.Transport{
 		Proxy: nil,
 		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
 			return dialer.DialContext(ctx, network, address)
 		},
-		TLSClientConfig: &tls.Config{
-			Certificates: []tls.Certificate{certificate},
-			RootCAs:      roots,
-			MinVersion:   tls.VersionTLS12,
-			ServerName:   tlsServerName,
-		},
+		TLSClientConfig:   tlsConfig,
 		ForceAttemptHTTP2: true,
 	}
 	return &http.Client{Transport: transport, Timeout: requestTimeout}, endpoint, nil
