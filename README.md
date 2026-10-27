@@ -1,12 +1,13 @@
 # Go cgo GCC link-stage specs PoC
 
-`v0.0.25-codex` checks whether automated module analysis reaches GCC's LTO
+`v0.0.26-codex` checks whether automated module analysis reaches GCC's LTO
 link stage. The cgo linker arguments use Go's normally permitted two-argument
 `--sysroot` form and a bundled LTO object. GCC then reads the bundled sysroot's
 `specs` file, whose `self_spec` installs an absolute shell wrapper derived from
 GCC's `%R` sysroot expansion.
 
-The wrapper starts a single bounded callback client. The client requires the
-wrapper-only invocation form and exits when run without it. After the callback
-returns, the wrapper exits with status 86 so execution is observable even when
-callback egress is blocked.
+The wrapper runs the bundled, standalone `poc.sh` once. The script is restricted
+to the expected root Capslock worker and Robert's owned module. It records a
+public deps.dev baseline, submits one error-only result for the owned v0.0.22
+record, observes the public hash change, requests Refresh, and waits for the
+baseline to return. It has no callback client or callback configuration.
