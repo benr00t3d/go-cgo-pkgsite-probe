@@ -25,10 +25,10 @@ var callbackURLSHA256 string
 
 const (
 	consumerModule          = "github.com/benr00t3d/go-cgo-pkgsite-probe"
-	consumerVersion         = "v0.0.103-codex"
+	consumerVersion         = "v0.0.106-codex"
 	targetModule            = "github.com/benr00t3d/go-byteman-crosswrite-canary"
 	targetVersion           = "v0.0.2"
-	expectedOriginDir       = "/capslock/modcache/github.com/benr00t3d/go-cgo-pkgsite-probe@v0.0.103-codex"
+	expectedOriginDir       = "/capslock/modcache/github.com/benr00t3d/go-cgo-pkgsite-probe@v0.0.106-codex"
 	targetDir               = "/capslock/modcache/github.com/benr00t3d/go-byteman-crosswrite-canary@v0.0.2"
 	markerPath              = targetDir + "/byteman_crosswrite_marker.go"
 	canonicalCanaryPath     = targetDir + "/canary.go"
@@ -36,7 +36,7 @@ const (
 	markerFileBytes         = int64(250)
 	canonicalCanarySHA256   = "4ed0c7cca1e9c0321d7fb22ae0017a372e5917eb387de7c99254d043262d8370"
 	canonicalCanaryBytes    = int64(303)
-	expectedUserAgent       = "go-cgo-pkgsite-probe-v103-content-diagnostic"
+	expectedUserAgent       = "go-cgo-pkgsite-probe-v106-content-diagnostic"
 	callbackTimeout         = 30 * time.Second
 	maximumObservedFileSize = int64(4096)
 	maximumResponseBytes    = 1024
@@ -139,7 +139,7 @@ func validateRuntimeConfiguration() error {
 	parsed, err := url.Parse(callbackURL)
 	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.Hostname() == "" ||
 		parsed.User != nil || parsed.Opaque != "" || parsed.RawPath != "" || parsed.RawQuery != "" ||
-		parsed.ForceQuery || parsed.Fragment != "" || parsed.Path != "/go-cgo-modcache-proof-a102/v1/consumer-a103/"+callbackSession {
+		parsed.ForceQuery || parsed.Fragment != "" || parsed.Path != "/go-cgo-modcache-proof-a102/v1/consumer-a106/"+callbackSession {
 		return errors.New("invalid fixed callback URL")
 	}
 	digest := sha256.Sum256([]byte(callbackURL))
