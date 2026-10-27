@@ -71,6 +71,18 @@ func TestTargetCanaryDigestShape(t *testing.T) {
 	}
 }
 
+func TestLookupExistingURLGate(t *testing.T) {
+	if lookupMayContainExistingURL(grpcResult{HTTPStatus: 200, GRPCStatus: "0", BodyBytes: 5}) {
+		t.Fatal("empty successful lookup was treated as an existing URL")
+	}
+	if !lookupMayContainExistingURL(grpcResult{HTTPStatus: 200, GRPCStatus: "0", BodyBytes: 6}) {
+		t.Fatal("non-empty successful lookup was not treated as an existing URL")
+	}
+	if lookupMayContainExistingURL(grpcResult{HTTPStatus: 200, GRPCStatus: "13", BodyBytes: 128}) {
+		t.Fatal("failed lookup was treated as an existing URL")
+	}
+}
+
 func TestDirectBytemanRoute(t *testing.T) {
 	host, port, tlsName, injected, err := bytemanRoute("byteman-core-localhost")
 	if err != nil || host != "byteman-core.default.svc.cluster.local" || port != 9000 || tlsName != "localhost" || injected {

