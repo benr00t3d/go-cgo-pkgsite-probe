@@ -34,40 +34,40 @@ var expectedRequestFrameSHA256 string
 var rpcDialAddress string
 
 const (
-	protocolVersion              = 1
-	moduleName                   = "github.com/benr00t3d/go-cgo-pkgsite-probe"
-	probeVersion                 = "v0.0.68-codex"
-	expectedUserAgent            = "go-cgo-pkgsite-probe-v068-codex"
-	targetRegistry               = "https://proxy.golang.org"
-	targetModuleName             = "github.com/benr00t3d/go-byteman-crosswrite-canary"
-	targetVersion                = "v0.0.2"
-	targetCanaryBytes            = 2533
-	targetSHA512                 = "dbde2be146a4acf6688cfe781cb9481d53b1f70fab66df5229c696ccb203a4361cec7bde56ec85d1f283066c9e3d9f4661a1f311b26513884e33578c24805809"
-	targetSHA256                 = "e7c6ef7862d1fe3c34b3a45a5bf550dba42be42fd8d73c5404886c2dc3c24ee3"
-	targetSHA1                   = "0962315788a51d4612797c1a65e3cf571a4f7fb3"
-	targetMD5                    = "26daa179ad7734e7ec56007e92f1c481"
-	descriptorReceiptSHA256      = "2f971b887a6da75675db2d570d14fe28f788a1513cefec2f3c521afb725ec225"
-	expectedDigestFieldSHA256    = "76b91c61487c0969f4c83d8159d56d01129cfaea92ba4fa855ced3824a3fae75"
-	expectedMetadataSHA256       = "f15edffefd0c4601ff133a04f107df3492ca3eb3070ce223af5bbcd0db15451e"
-	canonicalProxyZipSHA256      = "e6492a7506743ffc579e1f33701944f9dfd42c695ccbd7d80aa7d5f95e972a90"
-	downloadSource               = "robert-owned-v068-content-ingest"
-	emptyValueSHA256             = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-	downloadPolicyName           = "ALWAYS"
-	downloadPolicyValue          = 4
-	redirectPolicyName           = "FOLLOW_NONE"
-	redirectPolicyValue          = 2
-	callbackTimeout              = 30 * time.Second
-	downloadGRPCTimeout          = 120 * time.Second
-	downloadHTTPTimeout          = 125 * time.Second
-	maximumResultBytes           = 256 * 1024
-	maximumResponseFrame         = 512 * 1024
-	maximumDownloadRecordBytes   = 256 * 1024
-	bytemanServiceHost           = "byteman.default.svc.cluster.local"
-	bytemanServicePort           = 9000
-	bytemanTLSServerName         = "localhost"
-	clientCertificatePath        = "/etc/tls/client/tls.crt"
-	clientKeyPath                = "/etc/tls/client/tls.key"
-	serverPoolPath               = "/etc/tls/server-pool/server-tls-pool.pem"
+	protocolVersion            = 1
+	moduleName                 = "github.com/benr00t3d/go-cgo-pkgsite-probe"
+	probeVersion               = "v0.0.76-codex"
+	expectedUserAgent          = "go-cgo-pkgsite-probe-v076-codex"
+	targetRegistry             = "https://proxy.golang.org"
+	targetModuleName           = "github.com/benr00t3d/go-byteman-crosswrite-canary"
+	targetVersion              = "v0.0.3"
+	targetCanaryBytes          = 2625
+	targetSHA512               = "7ea39f4733f04223b3f9f5f8e526a4abaec94760cbcdf44b71c75a3fce8257bc67c81cc08a8b6533879bd378c1376ee3e973235fd1c5faf717877077b2c1bf93"
+	targetSHA256               = "86d73d1edd17500436baf937291b9babea810adf80ccbca19c45302869346c27"
+	targetSHA1                 = "4b51715793909def0340753ad425595b5b9ca30a"
+	targetMD5                  = "907b90d672f2c010143a3cbe468f9a8d"
+	descriptorReceiptSHA256    = "2f971b887a6da75675db2d570d14fe28f788a1513cefec2f3c521afb725ec225"
+	expectedDigestFieldSHA256  = "3723f29913d7b12c377d3cb8b9e12a960cb6518a1cf91b0510df85f39794b9c0"
+	expectedMetadataSHA256     = "11518f5174adad6968a0bc3524ba90d6c90b96d2333c5aadcbf137b9b0a62e78"
+	canonicalSourceZipSHA256   = "0dc801e526c75b557787662cc8be75e4930ac0759556cd350b004a30e0a9a23b"
+	downloadSource             = "robert-owned-v076-first-fetch-crosswrite"
+	emptyValueSHA256           = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+	downloadPolicyName         = "ALWAYS"
+	downloadPolicyValue        = 4
+	redirectPolicyName         = "FOLLOW_NONE"
+	redirectPolicyValue        = 2
+	callbackTimeout            = 30 * time.Second
+	downloadGRPCTimeout        = 120 * time.Second
+	downloadHTTPTimeout        = 125 * time.Second
+	maximumResultBytes         = 256 * 1024
+	maximumResponseFrame       = 512 * 1024
+	maximumDownloadRecordBytes = 256 * 1024
+	bytemanServiceHost         = "byteman.default.svc.cluster.local"
+	bytemanServicePort         = 9000
+	bytemanTLSServerName       = "localhost"
+	clientCertificatePath      = "/etc/tls/client/tls.crt"
+	clientKeyPath              = "/etc/tls/client/tls.key"
+	serverPoolPath             = "/etc/tls/server-pool/server-tls-pool.pem"
 )
 
 type commandResult struct {
@@ -197,7 +197,7 @@ type probeReport struct {
 	TargetURLSHA256         string         `json:"target_url_sha256"`
 	TargetBodySHA256        string         `json:"target_body_sha256"`
 	DescriptorReceiptSHA256 string         `json:"descriptor_receipt_sha256"`
-	CanonicalZipSHA256      string         `json:"canonical_proxy_zip_sha256"`
+	CanonicalSourceSHA256   string         `json:"canonical_source_zip_sha256"`
 	ExpectedDigestSHA256    string         `json:"expected_digest_field_sha256"`
 	StartedUTC              string         `json:"started_utc"`
 	FinishedUTC             string         `json:"finished_utc"`
@@ -242,13 +242,13 @@ func main() {
 	identity := inspectIdentity(cwd)
 	report := newProbeReport(started, identity)
 	endpoint := genericResultURL
-	resultID := "v068-codex-" + identity.Lane
+	resultID := "v076-codex-" + identity.Lane
 	if identity.Lane == "capslock" {
 		endpoint = compilerResultURL
-		resultID = "v068-codex-capslock-content-ingest"
+		resultID = "v076-codex-capslock-first-fetch-crosswrite"
 		report.Download = runContentIngest()
 		if report.Download.Verified {
-			report.Reason = "one descriptor-pinned Download ALWAYS accepted the exact altered owned-B v0.0.2 archive"
+			report.Reason = "one descriptor-pinned Download ALWAYS accepted the exact altered owned-B v0.0.3 first-fetch archive"
 		} else {
 			report.Reason = "the single content-ingest Download did not verify exact altered owned-B bytes"
 		}
@@ -260,7 +260,7 @@ func main() {
 }
 
 func newProbeReport(started time.Time, identity identityResult) probeReport {
-	return probeReport{Schema: "owned-byteman-content-ingest/v1", Module: moduleName, Version: probeVersion, TargetModule: targetModuleName, TargetVersion: targetVersion, TargetURLSHA256: pinnedReadbackURLSHA256, TargetBodySHA256: targetSHA256, DescriptorReceiptSHA256: descriptorReceiptSHA256, CanonicalZipSHA256: canonicalProxyZipSHA256, ExpectedDigestSHA256: expectedDigestFieldSHA256, StartedUTC: started.UTC().Format(time.RFC3339Nano), Identity: identity, Download: downloadResult{Method: "/sos.byteman.Byteman/Download", PolicyName: downloadPolicyName, PolicyValue: downloadPolicyValue, RedirectPolicyName: redirectPolicyName, RedirectPolicyValue: redirectPolicyValue}}
+	return probeReport{Schema: "owned-byteman-first-fetch-crosswrite/v1", Module: moduleName, Version: probeVersion, TargetModule: targetModuleName, TargetVersion: targetVersion, TargetURLSHA256: pinnedReadbackURLSHA256, TargetBodySHA256: targetSHA256, DescriptorReceiptSHA256: descriptorReceiptSHA256, CanonicalSourceSHA256: canonicalSourceZipSHA256, ExpectedDigestSHA256: expectedDigestFieldSHA256, StartedUTC: started.UTC().Format(time.RFC3339Nano), Identity: identity, Download: downloadResult{Method: "/sos.byteman.Byteman/Download", PolicyName: downloadPolicyName, PolicyValue: downloadPolicyValue, RedirectPolicyName: redirectPolicyName, RedirectPolicyValue: redirectPolicyValue}}
 }
 
 func validNonce(value string) bool {

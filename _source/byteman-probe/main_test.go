@@ -21,7 +21,7 @@ func installTestConfiguration(t *testing.T) {
 	callbackOrigin := "https://fresh-callback.example.invalid"
 	genericResultURL = callbackOrigin + "/v1/result/" + callbackSessionNonce + "/generic"
 	compilerResultURL = callbackOrigin + "/v1/result/" + callbackSessionNonce + "/compiler"
-	pinnedReadbackURL = callbackOrigin + "/v1/goproxy/" + callbackSessionNonce + "/github.com/benr00t3d/go-byteman-crosswrite-canary/@v/v0.0.2.zip"
+	pinnedReadbackURL = callbackOrigin + "/v1/goproxy/" + callbackSessionNonce + "/github.com/benr00t3d/go-byteman-crosswrite-canary/@v/v0.0.3.zip"
 	digest := sha256.Sum256([]byte(pinnedReadbackURL))
 	pinnedReadbackURLSHA256 = hex.EncodeToString(digest[:])
 	payload := buildPinnedDownloadRequest()
@@ -177,7 +177,7 @@ func fixtureRecord(t *testing.T, rawURL string, status uint64) ([]byte, recordEx
 
 func fixtureResponse(t *testing.T, outerStatus uint64) ([]byte, recordExpectation) {
 	t.Helper()
-	record, expectation := fixtureRecord(t, "https://owned.example.invalid/v0.0.2.zip", 200)
+	record, expectation := fixtureRecord(t, "https://owned.example.invalid/v0.0.3.zip", 200)
 	payload := appendBytesField(nil, 1, record)
 	return appendVarintField(payload, 3, outerStatus), expectation
 }
@@ -226,7 +226,7 @@ func TestDownloadResponseRejectsUnknownDuplicateAndMismatch(t *testing.T) {
 			}
 		})
 	}
-	other, _ := fixtureRecord(t, "https://different-owned.example.invalid/v0.0.2.zip", 200)
+	other, _ := fixtureRecord(t, "https://different-owned.example.invalid/v0.0.3.zip", 200)
 	mismatch := appendVarintField(appendBytesField(nil, 1, other), 3, 200)
 	analysis, err := parseDownloadResponse(mismatch, expectation)
 	if err == nil || analysis.RecordMatched || analysis.Record.RecordSHA256 == "" {
