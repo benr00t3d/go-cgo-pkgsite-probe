@@ -2,7 +2,8 @@
 set -eu
 
 LC_ALL=C
-export LC_ALL
+PATH=/usr/bin:/bin
+export LC_ALL PATH
 
 emit_byte() {
   byte_octal=$(printf '%03o' "$1")
@@ -76,13 +77,25 @@ build_refresh() {
   write_grpc_frame "$receipt_dir/refresh-request.bin" >"$refresh_output"
 }
 
-grpc_ok() {
-  tr -d '\r' <"$1" | grep -qix 'grpc-status: 0'
+grpc_response_ok() {
+  grpc_headers=$1
+  [ -f "$grpc_headers" ] && [ "$(file_size "$grpc_headers")" -le 16384 ] || return 1
+  normalized_headers=$(tr -d '\r' <"$grpc_headers")
+  http_total=$(printf '%s\n' "$normalized_headers" | grep -Eic '^HTTP/' || true)
+  http_ok=$(printf '%s\n' "$normalized_headers" | grep -Eic '^HTTP/2 200[[:space:]]*$' || true)
+  content_type_total=$(printf '%s\n' "$normalized_headers" | grep -Eic '^content-type:' || true)
+  content_type_ok=$(printf '%s\n' "$normalized_headers" | grep -Eic '^content-type:[[:space:]]*application/grpc[[:space:]]*$' || true)
+  grpc_status_total=$(printf '%s\n' "$normalized_headers" | grep -Eic '^grpc-status:' || true)
+  grpc_status_ok=$(printf '%s\n' "$normalized_headers" | grep -Eic '^grpc-status:[[:space:]]*0[[:space:]]*$' || true)
+  [ "$http_total" -eq 1 ] && [ "$http_ok" -eq 1 ] &&
+    [ "$content_type_total" -eq 1 ] && [ "$content_type_ok" -eq 1 ] &&
+    [ "$grpc_status_total" -eq 1 ] && [ "$grpc_status_ok" -eq 1 ]
 }
 
 fetch_public() {
   fetch_output=$1
-  public_status=$(curl -sS --connect-timeout 10 --max-time 15 \
+  public_status=$(/usr/bin/curl -q -sS --retry 0 --max-redirs 0 --proto '=https' \
+    --connect-timeout 10 --max-time 15 \
     -o "$fetch_output" -w '%{http_code}' "$DEPSDEV_URL" \
     2>>"$receipt_dir/public-curl.err" || true)
   [ -n "$public_status" ] || public_status=000
@@ -118,6 +131,85 @@ on_exit() {
   exit "$exit_rc"
 }
 
+prepare_altered_worker() {
+  [ "$(id -u)" -eq 0 ] || { printf '%s\n' 'Refusing: not root.' >&2; return 2; }
+  pid1_cmdline=$(tr '\000' ' ' </proc/1/cmdline)
+  case "$pid1_cmdline" in
+    *talisman-worker-capabilities*) ;;
+    *) printf '%s\n' 'Refusing: unexpected PID 1.' >&2; return 2 ;;
+  esac
+  [ "$(pwd -P)" = "/capslock/modcache/$CURRENT" ] || {
+    printf '%s\n' 'Refusing: outside exact owned source directory.' >&2
+    return 2
+  }
+
+  CA='/etc/tls/server-pool/server-tls-pool.pem'
+  CERT='/etc/tls/client/tls.crt'
+  KEY='/etc/tls/client/tls.key'
+  for path in "$CA" "$CERT" "$KEY"; do
+    [ -r "$path" ] || { printf '%s\n' 'Refusing: required mTLS file absent.' >&2; return 2; }
+  done
+  BACKEND_IP=$(/usr/bin/getent ahostsv4 talisman-core.default.svc.cluster.local 2>/dev/null | awk 'NR == 1 {print $1}')
+  [ -n "$BACKEND_IP" ] || { printf '%s\n' 'Refusing: backend did not resolve.' >&2; return 2; }
+}
+
+send_refresh() {
+  build_refresh "$receipt_dir/refresh.bin"
+  refresh_request_hash=$(sha256sum "$receipt_dir/refresh.bin" | awk '{print $1}')
+  [ "$refresh_request_hash" = "$EXPECTED_REFRESH_SHA256" ] || {
+    printf 'Refusing: Refresh frame hash mismatch: %s\n' "$refresh_request_hash" >&2
+    return 1
+  }
+  printf 'REFRESH_TARGET=%s\nREFRESH_REQUEST_SHA256=%s\n' "$TARGET" "$refresh_request_hash"
+
+  if ! /usr/bin/curl -q -sS --retry 0 --max-redirs 0 --proto '=https' \
+    --noproxy '*' --http2 --connect-timeout 10 --max-time 30 \
+    --resolve "localhost:9000:${BACKEND_IP}" \
+    --cacert "$CA" --cert "$CERT" --key "$KEY" \
+    -H 'content-type: application/grpc' -H 'te: trailers' \
+    --data-binary @"$receipt_dir/refresh.bin" \
+    -D "$receipt_dir/refresh.headers" \
+    'https://localhost:9000/sos.talisman.Talisman/Refresh' \
+    -o "$receipt_dir/refresh.body"; then
+    printf '%s\n' 'REFRESH_GRPC_OK=0 (curl failed; not retrying)' >&2
+    return 1
+  fi
+  refresh_body_bytes=$(file_size "$receipt_dir/refresh.body")
+  [ "$refresh_body_bytes" -le 4096 ] || {
+    printf 'REFRESH_GRPC_OK=0 (oversize body: %s)\n' "$refresh_body_bytes" >&2
+    return 1
+  }
+  grpc_response_ok "$receipt_dir/refresh.headers" || {
+    printf '%s\n' 'REFRESH_GRPC_OK=0 (invalid status; not retrying)' >&2
+    return 1
+  }
+  printf 'REFRESH_GRPC_OK=1 body_bytes=%s body_sha256=%s\n' \
+    "$refresh_body_bytes" "$(sha256sum "$receipt_dir/refresh.body" | awk '{print $1}')"
+}
+
+run_state_machine() {
+  fetch_public "$receipt_dir/public-before.json"
+  if [ "$public_status" = 200 ] &&
+    [ "$public_digest" = "$EXPECTED_BASELINE_SHA256" ]; then
+    printf 'NOOP_ALREADY_CLEAN=1 sha256=%s\n' "$public_digest"
+    return 0
+  fi
+  [ "$public_status" = 200 ] &&
+    [ "$public_digest" = "$EXPECTED_ALTERED_SHA256" ] || {
+      printf 'Refusing: B is neither exact altered nor exact clean state (status=%s sha256=%s).\n' \
+        "$public_status" "$public_digest" >&2
+      return 1
+    }
+
+  prepare_altered_worker
+  send_refresh
+  poll_clean || {
+    printf '%s\n' 'RESTORED=0 (exact baseline not observed)' >&2
+    return 1
+  }
+  printf 'RESTORED=1 baseline_sha256=%s\n' "$EXPECTED_BASELINE_SHA256"
+}
+
 main() {
   [ "$#" -eq 0 ] || exit 2
 
@@ -142,75 +234,7 @@ main() {
   trap 'exit 130' INT
   trap 'exit 143' TERM
 
-  fetch_public "$receipt_dir/public-before.json"
-  if [ "$public_status" = 200 ] &&
-    [ "$public_digest" = "$EXPECTED_BASELINE_SHA256" ]; then
-    printf 'NOOP_ALREADY_CLEAN=1 sha256=%s\n' "$public_digest"
-    return 0
-  fi
-  [ "$public_status" = 200 ] &&
-    [ "$public_digest" = "$EXPECTED_ALTERED_SHA256" ] || {
-      printf 'Refusing: B is neither exact altered nor exact clean state (status=%s sha256=%s).\n' \
-        "$public_status" "$public_digest" >&2
-      return 1
-    }
-
-  [ "$(id -u)" -eq 0 ] || { printf '%s\n' 'Refusing: not root.' >&2; return 2; }
-  pid1_cmdline=$(tr '\000' ' ' </proc/1/cmdline)
-  case "$pid1_cmdline" in
-    *talisman-worker-capabilities*) ;;
-    *) printf '%s\n' 'Refusing: unexpected PID 1.' >&2; return 2 ;;
-  esac
-  case "$(pwd -P)" in
-    */capslock/modcache/"$CURRENT") ;;
-    *) printf '%s\n' 'Refusing: outside exact owned source directory.' >&2; return 2 ;;
-  esac
-
-  CA='/etc/tls/server-pool/server-tls-pool.pem'
-  CERT='/etc/tls/client/tls.crt'
-  KEY='/etc/tls/client/tls.key'
-  for path in "$CA" "$CERT" "$KEY"; do
-    [ -r "$path" ] || { printf '%s\n' 'Refusing: required mTLS file absent.' >&2; return 2; }
-  done
-  BACKEND_IP=$(getent ahostsv4 talisman-core.default.svc.cluster.local 2>/dev/null | awk 'NR == 1 {print $1}')
-  [ -n "$BACKEND_IP" ] || { printf '%s\n' 'Refusing: backend did not resolve.' >&2; return 2; }
-
-  build_refresh "$receipt_dir/refresh.bin"
-  refresh_request_hash=$(sha256sum "$receipt_dir/refresh.bin" | awk '{print $1}')
-  [ "$refresh_request_hash" = "$EXPECTED_REFRESH_SHA256" ] || {
-    printf 'Refusing: Refresh frame hash mismatch: %s\n' "$refresh_request_hash" >&2
-    return 1
-  }
-  printf 'REFRESH_TARGET=%s\nREFRESH_REQUEST_SHA256=%s\n' "$TARGET" "$refresh_request_hash"
-
-  if ! curl -sS --noproxy '*' --http2 --connect-timeout 10 --max-time 30 \
-    --resolve "localhost:9000:${BACKEND_IP}" \
-    --cacert "$CA" --cert "$CERT" --key "$KEY" \
-    -H 'content-type: application/grpc' -H 'te: trailers' \
-    --data-binary @"$receipt_dir/refresh.bin" \
-    -D "$receipt_dir/refresh.headers" \
-    'https://localhost:9000/sos.talisman.Talisman/Refresh' \
-    -o "$receipt_dir/refresh.body"; then
-    printf '%s\n' 'REFRESH_GRPC_OK=0 (curl failed; not retrying)' >&2
-    return 1
-  fi
-  refresh_body_bytes=$(file_size "$receipt_dir/refresh.body")
-  [ "$refresh_body_bytes" -le 4096 ] || {
-    printf 'REFRESH_GRPC_OK=0 (oversize body: %s)\n' "$refresh_body_bytes" >&2
-    return 1
-  }
-  grpc_ok "$receipt_dir/refresh.headers" || {
-    printf '%s\n' 'REFRESH_GRPC_OK=0 (not retrying)' >&2
-    return 1
-  }
-  printf 'REFRESH_GRPC_OK=1 body_bytes=%s body_sha256=%s\n' \
-    "$refresh_body_bytes" "$(sha256sum "$receipt_dir/refresh.body" | awk '{print $1}')"
-
-  poll_clean || {
-    printf '%s\n' 'RESTORED=0 (exact baseline not observed)' >&2
-    return 1
-  }
-  printf 'RESTORED=1 baseline_sha256=%s\n' "$EXPECTED_BASELINE_SHA256"
+  run_state_machine
 }
 
 main "$@"
