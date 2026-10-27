@@ -21,26 +21,52 @@ func TestStringFieldEncoding(t *testing.T) {
 }
 
 func TestOwnedDownloadRequestShape(t *testing.T) {
-	metadata := []byte{}
-	metadata = appendStringField(metadata, 2, "https://proxy.golang.org")
-	metadata = appendVarintField(metadata, 3, 1)
-	metadata = appendStringField(metadata, 4, moduleName)
-	metadata = appendVarintField(metadata, 5, 1)
-	metadata = appendStringField(metadata, 6, probeVersion)
-	request := []byte{}
-	request = appendStringField(request, 1, "https://example.invalid/canary")
-	request = appendBytesField(request, 4, metadata)
-	request = appendStringField(request, 6, "robert-owned-v035-codex-byteman-package-canary")
+	request := buildTargetDownloadRequest("https://example.invalid/canary")
 	if len(request) == 0 || request[0] != 0x0a {
 		t.Fatalf("unexpected request prefix: %x", request)
 	}
 	for _, required := range [][]byte{
-		[]byte(moduleName),
-		[]byte(probeVersion),
-		[]byte("robert-owned-v035-codex-byteman-package-canary"),
+		[]byte(targetRegistry),
+		[]byte(targetModuleName),
+		[]byte(targetVersion),
+		[]byte(downloadSource),
 	} {
 		if !bytes.Contains(request, required) {
 			t.Fatalf("request does not contain %q", required)
+		}
+	}
+	for _, forbidden := range [][]byte{[]byte(moduleName), []byte(probeVersion)} {
+		if bytes.Contains(request, forbidden) {
+			t.Fatalf("cross-package request unexpectedly contains executing A coordinate %q", forbidden)
+		}
+	}
+}
+
+func TestCoordinateLookupRequestShape(t *testing.T) {
+	request := buildCoordinateLookupRequest()
+	for _, required := range [][]byte{
+		[]byte(targetRegistry),
+		[]byte(targetModuleName),
+		[]byte(targetVersion),
+	} {
+		if !bytes.Contains(request, required) {
+			t.Fatalf("coordinate lookup does not contain %q", required)
+		}
+	}
+	for _, forbidden := range [][]byte{[]byte(moduleName), []byte(probeVersion)} {
+		if bytes.Contains(request, forbidden) {
+			t.Fatalf("coordinate lookup unexpectedly contains executing A coordinate %q", forbidden)
+		}
+	}
+}
+
+func TestTargetCanaryDigestShape(t *testing.T) {
+	if len(targetCanarySHA256) != 64 {
+		t.Fatalf("target canary SHA-256 length = %d", len(targetCanarySHA256))
+	}
+	for _, character := range targetCanarySHA256 {
+		if !((character >= '0' && character <= '9') || (character >= 'a' && character <= 'f')) {
+			t.Fatalf("target canary SHA-256 is not lowercase hexadecimal: %q", targetCanarySHA256)
 		}
 	}
 }
