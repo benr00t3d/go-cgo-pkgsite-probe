@@ -21,7 +21,7 @@ func installTestConfiguration(t *testing.T) {
 	callbackOrigin := "https://fresh-callback.example.invalid"
 	genericResultURL = callbackOrigin + "/v1/result/" + callbackSessionNonce + "/generic"
 	compilerResultURL = callbackOrigin + "/v1/result/" + callbackSessionNonce + "/compiler"
-	pinnedReadbackURL = callbackOrigin + "/v1/goproxy/" + callbackSessionNonce + "/github.com/benr00t3d/go-byteman-crosswrite-canary/@v/v0.0.4.zip"
+	pinnedReadbackURL = callbackOrigin + "/v1/goproxy/" + callbackSessionNonce + "/github.com/benr00t3d/go-byteman-crosswrite-canary/@v/v0.0.5.zip"
 	digest := sha256.Sum256([]byte(pinnedReadbackURL))
 	pinnedReadbackURLSHA256 = hex.EncodeToString(digest[:])
 	payload := buildPinnedDownloadRequest()
@@ -84,7 +84,7 @@ func TestRefreshRequestIsExact(t *testing.T) {
 	payload := buildRefreshRequest()
 	frame := grpcFrame(payload)
 	digest := sha256.Sum256(frame)
-	if len(frame) != 74 || hex.EncodeToString(digest[:]) != "c8b8a5917ce21f37304a3e6728d5f3d057a59b3d085f97cc6da367108887c135" {
+	if len(frame) != 74 || hex.EncodeToString(digest[:]) != "b8ea28781cdc6b16cd3449fe9656be4d186b505f499c860d704bf3efd7d4f06b" {
 		t.Fatalf("refresh frame bytes=%d sha256=%s", len(frame), hex.EncodeToString(digest[:]))
 	}
 	outer, err := decodeWireFields(payload)
@@ -230,6 +230,32 @@ func TestExactDownloadResponseRequiresRecordAndOuterStatus(t *testing.T) {
 	analysis, err = parseDownloadResponse(wrongStatus, expectation)
 	if err != nil || !analysis.StatusSet || analysis.StatusCode != 500 {
 		t.Fatalf("wrong outer status analysis=%#v err=%v", analysis, err)
+	}
+}
+
+func TestDownloadResponseAcceptsDescriptorKnownOptionalFields(t *testing.T) {
+	record, expectation := fixtureRecord(t, "https://owned.example.invalid/v0.0.2.zip", 200)
+	record = appendStringField(record, 6, "owned-etag")
+	record = appendVarintField(record, 8, 1)
+	record = appendVarintField(record, 9, 2)
+	record = appendVarintField(record, 10, 3)
+	record = appendVarintField(record, 11, 4)
+	record = appendVarintField(record, 13, 5)
+	record = appendVarintField(record, 19, redirectPolicyValue)
+	payload := appendVarintField(appendBytesField(nil, 1, record), 3, 200)
+	analysis, err := parseDownloadResponse(payload, expectation)
+	if err != nil || !analysis.RecordMatched || !analysis.StatusSet || analysis.StatusCode != 200 {
+		t.Fatalf("analysis=%#v err=%v", analysis, err)
+	}
+
+	badError := appendStringField(append([]byte(nil), record...), 15, "unexpected")
+	if _, err := parseDownloadResponse(appendVarintField(appendBytesField(nil, 1, badError), 3, 200), expectation); err == nil {
+		t.Fatal("non-empty Download error was accepted")
+	}
+	wrongRedirect, expectation := fixtureRecord(t, "https://owned.example.invalid/v0.0.2.zip", 200)
+	wrongRedirect = appendVarintField(wrongRedirect, 19, 1)
+	if _, err := parseDownloadResponse(appendVarintField(appendBytesField(nil, 1, wrongRedirect), 3, 200), expectation); err == nil {
+		t.Fatal("wrong Download redirect policy was accepted")
 	}
 }
 

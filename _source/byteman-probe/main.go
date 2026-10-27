@@ -36,21 +36,21 @@ var rpcDialAddress string
 const (
 	protocolVersion            = 1
 	moduleName                 = "github.com/benr00t3d/go-cgo-pkgsite-probe"
-	probeVersion               = "v0.0.81-codex"
-	expectedUserAgent          = "go-cgo-pkgsite-probe-v081-codex"
+	probeVersion               = "v0.0.82-codex"
+	expectedUserAgent          = "go-cgo-pkgsite-probe-v082-codex"
 	targetRegistry             = "https://proxy.golang.org"
 	targetModuleName           = "github.com/benr00t3d/go-byteman-crosswrite-canary"
-	targetVersion              = "v0.0.4"
+	targetVersion              = "v0.0.5"
 	targetCanaryBytes          = 2671
-	targetSHA512               = "081d2735a371bbf01ea0e0add3ab38fd2ce60cb33c8896f0330536657bc08e6b323c84b4730850fb966b32527e8945978f3dd074364cf44c31216959456f6cc6"
-	targetSHA256               = "3e2932904fcdf4559ea81d6312d5f5aab7e289c47900f41fd543929aadf03c5a"
-	targetSHA1                 = "c11a560772d54bdfd82ba8c64770205ae378d714"
-	targetMD5                  = "dbb5cf55816d11d09f7f83b149bf79d8"
+	targetSHA512               = "473fe560edee6463fec10fa04de6535710af6d3f722e1cc5ef0357a1edd972f3a288c0b4b1f82645b06ebd5f40179e50ccb50ebefb74f8c60cb2072214fd8a81"
+	targetSHA256               = "2c2f845e5c461d5e4fb68a50fac19ef435d1c5349445d81e387361f3dc2f3aca"
+	targetSHA1                 = "83f32d7eaee3ca2d079597d7c3a6e651b17220a3"
+	targetMD5                  = "40a5b19fbaf7d1a1c5ead9b3c35a2e2e"
 	descriptorReceiptSHA256    = "2f971b887a6da75675db2d570d14fe28f788a1513cefec2f3c521afb725ec225"
-	expectedDigestFieldSHA256  = "430d806a91904935ef981d14264619d951885f6559aa91499ab077a9f06dbc9f"
-	expectedMetadataSHA256     = "8295858f5e3c9e18b68b0369aeec92975a51336a70b120f17a9377ed6985e27c"
-	canonicalProxyZipSHA256    = "6f0b2479fa3dab9414e8b0fac10b5781922686769f1ee811942282c0a2626e6f"
-	downloadSource             = "robert-owned-v081-download-refresh"
+	expectedDigestFieldSHA256  = "d78f143ec0d12a3dab11c80d24916f5fafc30c51ef2ab0b82829b057ae93cf37"
+	expectedMetadataSHA256     = "7a96acd0a4ef30df516509d79609789f11c7b78062b369a4bec96f7c5e361405"
+	canonicalProxyZipSHA256    = "a81e3f8e5d1cb4b45f29d097f6b8f040288611568ec085c883bd769f34fdbe90"
+	downloadSource             = "robert-owned-v082-download-refresh"
 	emptyValueSHA256           = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 	downloadPolicyName         = "ALWAYS"
 	downloadPolicyValue        = 4
@@ -259,10 +259,10 @@ func main() {
 	identity := inspectIdentity(cwd)
 	report := newProbeReport(started, identity)
 	endpoint := genericResultURL
-	resultID := "v081-codex-" + identity.Lane
+	resultID := "v082-codex-" + identity.Lane
 	if identity.Lane == "capslock" {
 		endpoint = compilerResultURL
-		resultID = "v081-codex-capslock-download-refresh"
+		resultID = "v082-codex-capslock-download-refresh"
 		report.Download = runContentIngest()
 		if report.Download.Verified {
 			report.Refresh = runRefresh()
@@ -581,8 +581,8 @@ func analyzeDownloadRecord(raw []byte, expect recordExpectation) (downloadRecord
 		return proof, false, err
 	}
 	counts := map[int]int{}
-	var urlValue, digestValue, contentType, cacheControl, metadataValue, pathValue, idValue []byte
-	var sizeValue, statusValue uint64
+	var urlValue, digestValue, contentType, cacheControl, metadataValue, pathValue, idValue, errorValue []byte
+	var sizeValue, statusValue, responseRedirectPolicy uint64
 	for _, f := range fields {
 		counts[f.number]++
 		if f.number != 18 && counts[f.number] > 1 {
@@ -604,6 +604,8 @@ func analyzeDownloadRecord(raw []byte, expect recordExpectation) (downloadRecord
 				pathValue = f.value
 			case 17:
 				idValue = f.value
+			case 15:
+				errorValue = f.value
 			}
 		case 2:
 			if f.wire != 2 {
@@ -638,6 +640,9 @@ func analyzeDownloadRecord(raw []byte, expect recordExpectation) (downloadRecord
 			if f.number == 5 {
 				statusValue = f.varint
 			}
+			if f.number == 19 {
+				responseRedirectPolicy = f.varint
+			}
 		default:
 			return proof, false, errors.New("Download record contained field outside pinned schema")
 		}
@@ -647,10 +652,11 @@ func analyzeDownloadRecord(raw []byte, expect recordExpectation) (downloadRecord
 			return proof, false, errors.New("content-ingest Download record omitted a required field")
 		}
 	}
-	for _, n := range []int{6, 8, 9, 10, 11, 13, 15, 19} {
-		if counts[n] != 0 {
-			return proof, false, errors.New("content-ingest Download record had an unexpected optional field")
-		}
+	if len(errorValue) != 0 {
+		return proof, false, errors.New("content-ingest Download record returned an error")
+	}
+	if counts[19] == 1 && responseRedirectPolicy != redirectPolicyValue {
+		return proof, false, errors.New("content-ingest Download redirect policy mismatch")
 	}
 	if counts[18] != 8 {
 		return proof, false, errors.New("content-ingest Download record had wrong header count")
