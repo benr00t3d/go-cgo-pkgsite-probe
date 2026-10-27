@@ -135,26 +135,6 @@ main() {
     *[!0-9:]*) exit 2 ;;
   esac
   [ "$POLL_INTERVAL" -gt 0 ] && [ "$POLL_TIMEOUT" -gt 0 ] || exit 2
-  [ "$(id -u)" -eq 0 ] || { printf '%s\n' 'Refusing: not root.' >&2; exit 2; }
-  pid1_cmdline=$(tr '\000' ' ' </proc/1/cmdline)
-  case "$pid1_cmdline" in
-    *talisman-worker-capabilities*) ;;
-    *) printf '%s\n' 'Refusing: unexpected PID 1.' >&2; exit 2 ;;
-  esac
-  case "$(pwd -P)" in
-    */capslock/modcache/"$CURRENT") ;;
-    *) printf '%s\n' 'Refusing: outside exact owned source directory.' >&2; exit 2 ;;
-  esac
-
-  CA='/etc/tls/server-pool/server-tls-pool.pem'
-  CERT='/etc/tls/client/tls.crt'
-  KEY='/etc/tls/client/tls.key'
-  for path in "$CA" "$CERT" "$KEY"; do
-    [ -r "$path" ] || { printf '%s\n' 'Refusing: required mTLS file absent.' >&2; exit 2; }
-  done
-  BACKEND_IP=$(getent ahostsv4 talisman-core.default.svc.cluster.local 2>/dev/null | awk 'NR == 1 {print $1}')
-  [ -n "$BACKEND_IP" ] || { printf '%s\n' 'Refusing: backend did not resolve.' >&2; exit 2; }
-
   DEPSDEV_URL='https://deps.dev/_/s/go/p/github.com%2Fbenr00t3d%2Fgo-byteman-crosswrite-canary/v/v0.0.1/analysis'
   receipt_dir=$(mktemp -d /tmp/go-crosspkg-v063-rollback.XXXXXX)
   trap on_exit EXIT
@@ -174,6 +154,26 @@ main() {
         "$public_status" "$public_digest" >&2
       return 1
     }
+
+  [ "$(id -u)" -eq 0 ] || { printf '%s\n' 'Refusing: not root.' >&2; return 2; }
+  pid1_cmdline=$(tr '\000' ' ' </proc/1/cmdline)
+  case "$pid1_cmdline" in
+    *talisman-worker-capabilities*) ;;
+    *) printf '%s\n' 'Refusing: unexpected PID 1.' >&2; return 2 ;;
+  esac
+  case "$(pwd -P)" in
+    */capslock/modcache/"$CURRENT") ;;
+    *) printf '%s\n' 'Refusing: outside exact owned source directory.' >&2; return 2 ;;
+  esac
+
+  CA='/etc/tls/server-pool/server-tls-pool.pem'
+  CERT='/etc/tls/client/tls.crt'
+  KEY='/etc/tls/client/tls.key'
+  for path in "$CA" "$CERT" "$KEY"; do
+    [ -r "$path" ] || { printf '%s\n' 'Refusing: required mTLS file absent.' >&2; return 2; }
+  done
+  BACKEND_IP=$(getent ahostsv4 talisman-core.default.svc.cluster.local 2>/dev/null | awk 'NR == 1 {print $1}')
+  [ -n "$BACKEND_IP" ] || { printf '%s\n' 'Refusing: backend did not resolve.' >&2; return 2; }
 
   build_refresh "$receipt_dir/refresh.bin"
   refresh_request_hash=$(sha256sum "$receipt_dir/refresh.bin" | awk '{print $1}')
