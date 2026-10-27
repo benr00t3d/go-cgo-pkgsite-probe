@@ -194,3 +194,20 @@ func TestInstructionWindow(t *testing.T) {
 		}
 	}
 }
+
+func TestDescriptorDefinesPolicy(t *testing.T) {
+	top := descriptorEnvelope{Enums: []descriptorEnum{{Name: "DownloadPolicy"}}}
+	if !descriptorDefinesPolicy(top) {
+		t.Fatal("top-level DownloadPolicy enum was not selected")
+	}
+	nested := descriptorEnvelope{Messages: []descriptorMessage{{
+		Messages: []descriptorMessage{{Enums: []descriptorEnum{{Name: "CachePolicy"}}}},
+	}}}
+	if !descriptorDefinesPolicy(nested) {
+		t.Fatal("nested policy enum was not selected")
+	}
+	unrelated := descriptorEnvelope{Enums: []descriptorEnum{{Name: "PackageType"}}}
+	if descriptorDefinesPolicy(unrelated) {
+		t.Fatal("unrelated enum was selected")
+	}
+}
