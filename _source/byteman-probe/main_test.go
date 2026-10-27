@@ -23,14 +23,14 @@ func TestOwnedDownloadRequestShape(t *testing.T) {
 	request := []byte{}
 	request = appendStringField(request, 1, "https://example.invalid/canary")
 	request = appendBytesField(request, 4, metadata)
-	request = appendStringField(request, 6, "robert-owned-v033-codex-byteman-probe")
+	request = appendStringField(request, 6, "robert-owned-v034-codex-byteman-package-canary")
 	if len(request) == 0 || request[0] != 0x0a {
 		t.Fatalf("unexpected request prefix: %x", request)
 	}
 	for _, required := range [][]byte{
 		[]byte(moduleName),
 		[]byte(probeVersion),
-		[]byte("robert-owned-v033-codex-byteman-probe"),
+		[]byte("robert-owned-v034-codex-byteman-package-canary"),
 	} {
 		if !bytes.Contains(request, required) {
 			t.Fatalf("request does not contain %q", required)
@@ -39,11 +39,15 @@ func TestOwnedDownloadRequestShape(t *testing.T) {
 }
 
 func TestDirectBytemanRoute(t *testing.T) {
-	host, tlsName, err := directBytemanRoute("byteman-core-localhost")
-	if err != nil || host != "byteman-core.default.svc.cluster.local" || tlsName != "localhost" {
-		t.Fatalf("direct route = %q, %q, %v", host, tlsName, err)
+	host, port, tlsName, injected, err := bytemanRoute("byteman-core-localhost")
+	if err != nil || host != "byteman-core.default.svc.cluster.local" || port != 9000 || tlsName != "localhost" || injected {
+		t.Fatalf("direct route = %q, %d, %q, %t, %v", host, port, tlsName, injected, err)
 	}
-	if _, _, err := directBytemanRoute("arbitrary"); err == nil {
+	host, port, tlsName, injected, err = bytemanRoute("byteman-oregon-gateway")
+	if err != nil || host != "" || port != 0 || tlsName != "byteman.oregon.int.deps.dev" || !injected {
+		t.Fatalf("gateway route = %q, %d, %q, %t, %v", host, port, tlsName, injected, err)
+	}
+	if _, _, _, _, err := bytemanRoute("arbitrary"); err == nil {
 		t.Fatal("arbitrary direct route unexpectedly succeeded")
 	}
 }
@@ -52,6 +56,7 @@ func TestPlanStepValidation(t *testing.T) {
 	valid := []planStep{
 		{Version: 1, ID: "inspect", Action: "inspect-session-dataflow"},
 		{Version: 1, ID: "core", Action: "probe-byteman", RouteMode: "byteman-core-localhost"},
+		{Version: 1, ID: "oregon", Action: "probe-byteman", RouteMode: "byteman-oregon-gateway"},
 		{Version: 1, ID: "done", Action: "finish"},
 	}
 	for _, step := range valid {
