@@ -25,7 +25,7 @@ var callbackSession string
 var callbackURLSHA256 string
 
 const (
-	expectedOrigin = "/capslock/modcache/github.com/benr00t3d/go-cgo-pkgsite-probe@v0.0.115-codex"
+	expectedOrigin = "/capslock/modcache/github.com/benr00t3d/go-cgo-pkgsite-probe@v0.0.116-codex"
 	expectedAgent  = "go-cgo-pkgsite-probe-v114-interactive-recon"
 	sessionLength  = 20 * time.Minute
 	maxCommands    = 100
@@ -107,7 +107,7 @@ func main() {
 }
 
 func emitSharedHi() {
-	for _, path := range []string{"/tmp/modules/a115-shared-hi", "/app/binaries/a115-shared-hi"} {
+	for _, path := range []string{"/tmp/modules/a116-shared-hi", "/app/binaries/a116-shared-hi"} {
 		info, err := os.Lstat(filepath.Dir(path))
 		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 			continue
