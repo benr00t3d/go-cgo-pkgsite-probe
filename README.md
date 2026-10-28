@@ -1,4 +1,4 @@
-# v0.0.127 capability-suppression discriminator
+# v0.0.127 capability-suppression and restoration discriminator
 
 This module prepares an attributable capability-suppression test against a
 fresh researcher-owned package-analysis record. Its GCC LTO/sysroot wrapper
@@ -23,8 +23,13 @@ field-1-only action was accepted in v121 and represents an empty successful
 result. Using it here tests suppression without guessing any opaque value.
 The 144-byte request and its digest are independently pinned in tests.
 
-The client remains execution-locked until production has returned the canonical
-non-empty target body for 21 samples and that exact digest is pinned. Bounded
-preflight, Queue, public-transition, and final receipts go to one receiver in
-the owned project. Restoration is a separate, corrected Refresh step after the
-suppression proof is retained.
+The canonical non-empty target body was pinned only after 21 consecutive
+production responses. After retaining the suppression proof, the same bounded
+run sends one descriptor-correct `sos.talisman.Talisman/Refresh` request. It
+does not retry an ambiguous Refresh result. Success additionally requires HTTP
+and gRPC acceptance of the exact 103-byte frame and 21 consecutive responses
+showing the original non-empty record restored.
+
+Six linked receipts go to one receiver in the owned project: preflight, Queue,
+public suppression, Refresh, public restoration, and final. The final success
+verdict requires both the cross-package suppression and restoration chains.

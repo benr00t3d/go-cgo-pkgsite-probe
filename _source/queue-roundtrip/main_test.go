@@ -97,6 +97,38 @@ func TestSuppressionPushWireImageIsPinned(t *testing.T) {
 	}
 }
 
+func TestCorrectedRefreshWireImageIsPinned(t *testing.T) {
+	request := buildRefreshFrame()
+	digest := sha256.Sum256(request)
+	if len(request) != restoreFrameBytes || hex.EncodeToString(digest[:]) != restoreFrameSHA256 {
+		t.Fatalf("request bytes=%d sha256=%s", len(request), hex.EncodeToString(digest[:]))
+	}
+	frames := splitTestFrames(t, request)
+	if len(frames) != 1 {
+		t.Fatalf("frames=%d", len(frames))
+	}
+	outer := decodeTestFields(t, frames[0])
+	if len(outer) != 1 || outer[0].number != 2 {
+		t.Fatalf("outer=%#v", outer)
+	}
+	capability := decodeTestFields(t, outer[0].value)
+	if len(capability) != 2 || capability[0].number != 1 || string(capability[0].value) != targetCoordinate ||
+		capability[1].number != 2 || string(capability[1].value) != restoreSource {
+		t.Fatalf("capability=%#v", capability)
+	}
+}
+
+func TestRestoreCallbackPhasesAreExplicit(t *testing.T) {
+	for _, phase := range []string{"preflight", "mutation_queue", "mutation_public", "restore_refresh", "restore_public", "final"} {
+		if !validCallbackPhase(phase) {
+			t.Fatalf("phase %q rejected", phase)
+		}
+	}
+	if validCallbackPhase("restore_retry") {
+		t.Fatal("unbounded restore retry phase accepted")
+	}
+}
+
 func TestProductionCapabilityResultActionOuterAndMapEntryWireImage(t *testing.T) {
 	// This vector tests only the v125-proven outer/map-entry schema. The opaque
 	// bytes are deliberately not interpreted as a production capability value.
@@ -195,8 +227,8 @@ func TestConvergenceReceiptRetainsTrailingProofWindowAndTotal(t *testing.T) {
 }
 
 func TestPublicHashesMapOnlyToPinnedStates(t *testing.T) {
-	if publicStateForDigest(cleanSHA256) != "unknown" {
-		t.Fatal("locked clean state accepted")
+	if publicStateForDigest(cleanSHA256) != "clean" {
+		t.Fatal("clean state mapping changed")
 	}
 	if publicStateForDigest(mutatedSHA256) != "mutated" {
 		t.Fatal("suppressed state mapping changed")
@@ -222,9 +254,9 @@ func TestRuntimeConfigurationPinsOwnedFunction(t *testing.T) {
 	}
 }
 
-func TestStaticPinsRejectUnobservedCanonicalBaseline(t *testing.T) {
-	if err := validateStaticPins(); err == nil {
-		t.Fatal("unobserved canonical baseline accepted")
+func TestStaticPinsAcceptObservedCanonicalBaseline(t *testing.T) {
+	if err := validateStaticPins(); err != nil {
+		t.Fatal(err)
 	}
 	request, err := buildMutationPush()
 	if err != nil || !matchesRequestPin(request, mutationPushBytes, mutationPushSHA256) {
