@@ -110,6 +110,19 @@ func TestPrecheckClassificationRequiresOneExactState(t *testing.T) {
 	}
 }
 
+func TestConvergenceReceiptRetainsTrailingProofWindowAndTotal(t *testing.T) {
+	receipt := emptyConvergenceReceipt("mutated")
+	for sequence := 1; sequence <= 450; sequence++ {
+		appendConvergenceSample(&receipt, publicSample{Sequence: sequence, State: "clean"})
+	}
+	if receipt.TotalSamples != 450 || len(receipt.Samples) != convergenceSamples {
+		t.Fatalf("total=%d retained=%d", receipt.TotalSamples, len(receipt.Samples))
+	}
+	if receipt.Samples[0].Sequence != 430 || receipt.Samples[len(receipt.Samples)-1].Sequence != 450 {
+		t.Fatalf("retained sequence range=%d..%d", receipt.Samples[0].Sequence, receipt.Samples[len(receipt.Samples)-1].Sequence)
+	}
+}
+
 func TestPublicHashesMapOnlyToPinnedStates(t *testing.T) {
 	if publicStateForDigest(cleanSHA256) != "clean" {
 		t.Fatal("clean state mapping changed")
@@ -149,25 +162,29 @@ func TestStaticPinsRejectIncompleteMutationDescriptor(t *testing.T) {
 
 func TestGRPCResponseShapeRequiresCompleteFrames(t *testing.T) {
 	valid := append(grpcFrame([]byte("one")), grpcFrame([]byte("two"))...)
-	if count, ok := countGRPCFrames(valid); !ok || count != 2 {
+	if count, ok := exactQueueResponseFrames(valid); !ok || count != 2 {
 		t.Fatalf("valid count=%d ok=%t", count, ok)
 	}
-	if _, ok := countGRPCFrames(valid[:len(valid)-1]); ok {
+	if _, ok := exactQueueResponseFrames(valid[:len(valid)-1]); ok {
 		t.Fatal("truncated frame accepted")
 	}
-	if count, ok := countGRPCFrames(nil); ok || count != 0 {
+	if count, ok := exactQueueResponseFrames(grpcFrame([]byte("one"))); ok || count != 1 {
+		t.Fatalf("one frame count=%d ok=%t", count, ok)
+	}
+	if count, ok := exactQueueResponseFrames(nil); ok || count != 0 {
 		t.Fatalf("empty count=%d ok=%t", count, ok)
 	}
 }
 
 func TestGRPCStatusMustBeExactlyOneZero(t *testing.T) {
-	zero := grpcMetadata{Present: true, Values: 1, Text: "0"}
+	digest := sha256.Sum256([]byte("0"))
+	zero := grpcMetadata{Present: true, Values: 1, RawBytes: 1, RawSHA256: hex.EncodeToString(digest[:]), Text: "0"}
 	empty := grpcMetadata{}
-	if !exactZeroGRPCStatus(empty, zero) || !exactZeroGRPCStatus(zero, empty) {
-		t.Fatal("one status zero rejected")
+	if !exactZeroGRPCStatus(empty, zero) {
+		t.Fatal("exact trailer status zero rejected")
 	}
-	if exactZeroGRPCStatus(zero, zero) || exactZeroGRPCStatus(empty, empty) ||
-		exactZeroGRPCStatus(empty, grpcMetadata{Present: true, Values: 1, Text: "7"}) {
+	if exactZeroGRPCStatus(zero, zero) || exactZeroGRPCStatus(zero, empty) || exactZeroGRPCStatus(empty, empty) ||
+		exactZeroGRPCStatus(empty, grpcMetadata{Present: true, Values: 1, RawBytes: 1, Text: "7"}) {
 		t.Fatal("invalid gRPC status accepted")
 	}
 }
@@ -181,6 +198,19 @@ func TestCallbackAcknowledgementBindsPhaseAndExactBodyHash(t *testing.T) {
 		validCallbackAck(body, "queue", strings.Repeat("b", 64)) ||
 		validCallbackAck([]byte(`{"accepted":true,"phase":"queue","sha256":"`+strings.Repeat("a", 64)+`","extra":1}`), "queue", strings.Repeat("a", 64)) {
 		t.Fatal("unbound acknowledgement accepted")
+	}
+}
+
+func TestCallbackPhaseSetMatchesRoundtripStateMachine(t *testing.T) {
+	for _, phase := range []string{"preflight", "mutation_queue", "mutation_public", "cleanup_queue", "final"} {
+		if !validCallbackPhase(phase) {
+			t.Fatalf("roundtrip phase %q rejected", phase)
+		}
+	}
+	for _, phase := range []string{"", "queue", "mutation", "cleanup", "unknown"} {
+		if validCallbackPhase(phase) {
+			t.Fatalf("unknown phase %q accepted", phase)
+		}
 	}
 }
 

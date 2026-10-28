@@ -157,6 +157,7 @@ type queueReceipt struct {
 type convergenceReceipt struct {
 	Attempted     bool           `json:"attempted"`
 	Samples       []publicSample `json:"samples"`
+	TotalSamples  int            `json:"total_samples"`
 	ExpectedState string         `json:"expected_state"`
 	ExactStreak   int            `json:"exact_streak"`
 	Converged     bool           `json:"converged"`
@@ -276,7 +277,7 @@ func main() {
 	cleanupReport.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
 	receipt.CleanupReportSHA256, err = submitPhase("cleanup_queue", cleanupReport)
 	receipt.CleanupCallbackOK = err == nil
-	receipt.CleanupPublic = runConvergence("clean", precheckSamples+len(receipt.MutationPublic.Samples))
+	receipt.CleanupPublic = runConvergence("clean", precheckSamples+receipt.MutationPublic.TotalSamples)
 
 	if receipt.Mutation.Verified && receipt.MutationCallbackOK && receipt.MutationPublic.Converged && receipt.MutationPublicCallbackOK &&
 		receipt.Cleanup.Verified && receipt.CleanupCallbackOK && receipt.CleanupPublic.Converged {
@@ -467,8 +468,10 @@ func runConvergence(expectedState string, sequenceOffset int) convergenceReceipt
 	deadline := time.Now().Add(pollTimeout)
 	for sequence := 1; sequence <= maximumPostSamples && time.Now().Before(deadline); sequence++ {
 		sample, err := fetchPublic(sequenceOffset + sequence)
-		result.Samples = append(result.Samples, sample)
+		appendConvergenceSample(&result, sample)
 		if err != nil || (sample.State != "clean" && sample.State != "mutated") {
+			result.ExactStreak = 0
+			result.FinalBody, result.FinalSHA256 = "", ""
 			result.Error = "public_convergence_failed"
 			return result
 		}
@@ -487,6 +490,14 @@ func runConvergence(expectedState string, sequenceOffset int) convergenceReceipt
 	}
 	result.Error = "public_convergence_timeout"
 	return result
+}
+
+func appendConvergenceSample(result *convergenceReceipt, sample publicSample) {
+	result.TotalSamples++
+	result.Samples = append(result.Samples, sample)
+	if len(result.Samples) > convergenceSamples {
+		result.Samples = append([]publicSample(nil), result.Samples[len(result.Samples)-convergenceSamples:]...)
+	}
 }
 
 func fetchPublic(sequence int) (publicSample, error) {
@@ -638,7 +649,7 @@ func runQueuePush(body []byte, source string, expectedBytes int, expectedSHA256 
 	result.ResponseBytes = len(responseBody)
 	responseDigest := sha256.Sum256(responseBody)
 	result.ResponseSHA256 = hex.EncodeToString(responseDigest[:])
-	frames, framesOK := countGRPCFrames(responseBody)
+	frames, framesOK := exactQueueResponseFrames(responseBody)
 	result.ResponseFrames = frames
 	actionIDs := uuidPattern.FindAll(responseBody, -1)
 	result.ActionIDCount = len(actionIDs)
@@ -649,7 +660,7 @@ func runQueuePush(body []byte, source string, expectedBytes int, expectedSHA256 
 	result.TargetEchoCount = bytes.Count(responseBody, []byte(targetCoordinate))
 	result.TargetEchoVerified = result.TargetEchoCount == 1
 	if response.StatusCode != http.StatusOK || strings.TrimSpace(strings.ToLower(result.ContentType)) != "application/grpc" ||
-		!exactZeroGRPCStatus(result.GRPCStatusHeader, result.GRPCStatusTrailer) || !framesOK || frames < 1 ||
+		!exactZeroGRPCStatus(result.GRPCStatusHeader, result.GRPCStatusTrailer) || !framesOK || frames != 2 ||
 		result.ActionIDCount != 1 || !result.TargetEchoVerified {
 		result.Error = "queue_response_not_exact"
 		return
@@ -674,6 +685,11 @@ func countGRPCFrames(body []byte) (int, bool) {
 	return count, count > 0
 }
 
+func exactQueueResponseFrames(body []byte) (int, bool) {
+	frames, complete := countGRPCFrames(body)
+	return frames, complete && frames == 2
+}
+
 func captureGRPCMetadata(header http.Header, name string) grpcMetadata {
 	values := []string(nil)
 	for key, candidates := range header {
@@ -694,16 +710,9 @@ func captureGRPCMetadata(header http.Header, name string) grpcMetadata {
 }
 
 func exactZeroGRPCStatus(header, trailer grpcMetadata) bool {
-	count := 0
-	for _, value := range []grpcMetadata{header, trailer} {
-		if value.Present {
-			if value.Values != 1 || value.Text != "0" {
-				return false
-			}
-			count++
-		}
-	}
-	return count == 1
+	zeroDigest := sha256.Sum256([]byte("0"))
+	return !header.Present && trailer.Present && trailer.Values == 1 && trailer.RawBytes == 1 &&
+		trailer.RawSHA256 == hex.EncodeToString(zeroDigest[:]) && trailer.Text == "0"
 }
 
 func newInternalClient() (*http.Client, string, error) {
@@ -773,8 +782,17 @@ func verifyInternalPeer(state tls.ConnectionState, roots *x509.CertPool) error {
 	return nil
 }
 
+func validCallbackPhase(phase string) bool {
+	switch phase {
+	case "preflight", "mutation_queue", "mutation_public", "cleanup_queue", "final":
+		return true
+	default:
+		return false
+	}
+}
+
 func submitPhase(phase string, value report) (string, error) {
-	if phase != "preflight" && phase != "queue" && phase != "final" {
+	if !validCallbackPhase(phase) {
 		return "", errors.New("invalid callback phase")
 	}
 	encoded, err := json.Marshal(value)
