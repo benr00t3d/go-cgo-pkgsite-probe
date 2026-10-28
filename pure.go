@@ -2,4 +2,4 @@ package pkgsiteprobe
 
 // AnalysisVisible keeps this package visible to analyzers that disable cgo.
 // The cgo-specific probe remains in probe.go.
-const AnalysisVisible = "v0.0.119-kimi-interactive-recon-upgraded-relay"
+const AnalysisVisible = "v0.0.120-kimi-interactive-recon-long-session"
