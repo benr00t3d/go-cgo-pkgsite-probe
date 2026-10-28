@@ -1,23 +1,21 @@
-# v0.0.132-source-substitution-mutate-codex
+# v0.0.135-source-substitution-queue-codex
 
-This owned A/B test checks whether a download record written by A can change
-the source consumed by a separate normal analysis of B.
+This is a held-back queue-only phase for the owned source-integrity test. It is
+used only after v134 has independently verified the exact altered B record.
 
 The test uses `go-byteman-crosswrite-canary@v0.0.10`, whose canonical proxy
 archive is inert and produces an empty capability list. The altered archive is
 also inert, but contains one non-executed `os/exec` construction so the
 analysis result has a deterministic `CAPABILITY_EXEC` marker.
 
-The mutation sequence is:
+The fixed sequence is:
 
-1. A stores the altered B archive through one descriptor-pinned Byteman
-   `Download(ALWAYS)` request.
-2. A submits one `CapabilityAction(B)` to the normal Capslock input queue.
-3. A waits briefly for B's public result to converge on the altered marker.
+1. A confirms B is in one of the two exact pinned public states.
+2. A submits one previously verified `CapabilityAction(B)` wire image to the
+   normal Capslock input queue.
+3. A waits briefly for B's public result while the longer independent monitor
+   remains authoritative.
 
-The altered record remains available for the independently queued B worker,
-whose observed delay can exceed the lifetime of A's compiler process. A
-separate canonical restoration version is held back until the altered marker
-is observed or the bounded external monitor times out. Both archive and queue
-requests are compiled and hash-pinned. The clients have no command interface
-and target only Robert's two modules.
+This version performs no Byteman write. It deliberately reuses the exact v132
+queue source and wire-image pin so the only operation is scheduling the
+separate B worker. It is not published until the v134 write receipt is exact.

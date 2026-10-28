@@ -36,9 +36,9 @@ var runMode string
 
 const (
 	moduleName       = "github.com/benr00t3d/go-cgo-pkgsite-probe"
-	probeVersion     = "v0.0.132-source-substitution-mutate-codex"
-	expectedOrigin   = "/capslock/modcache/github.com/benr00t3d/go-cgo-pkgsite-probe@v0.0.132-source-substitution-mutate-codex"
-	expectedAgent    = "go-cgo-pkgsite-probe-v132-source-substitution-mutate"
+	probeVersion     = "v0.0.135-source-substitution-queue-codex"
+	expectedOrigin   = "/capslock/modcache/github.com/benr00t3d/go-cgo-pkgsite-probe@v0.0.135-source-substitution-queue-codex"
+	expectedAgent    = "go-cgo-pkgsite-probe-v135-source-substitution-queue"
 	targetCoordinate = "github.com/benr00t3d/go-byteman-crosswrite-canary@v0.0.10"
 	queueName        = "capslock-capability"
 	alteredSource    = "robert-owned-v132-codex-altered-source-rescan"
@@ -578,7 +578,7 @@ func fetchPublic(sequence int) (publicSample, error) {
 	result := publicSample{Sequence: sequence, ObservedUTC: time.Now().UTC().Format(time.RFC3339Nano), State: "unknown"}
 	parsed, _ := url.Parse(analysisURL)
 	query := parsed.Query()
-	query.Set("v132_sample", strconv.Itoa(sequence)+"-"+strconv.FormatInt(time.Now().UnixNano(), 10))
+	query.Set("v135_sample", strconv.Itoa(sequence)+"-"+strconv.FormatInt(time.Now().UnixNano(), 10))
 	parsed.RawQuery = query.Encode()
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
