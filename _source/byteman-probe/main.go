@@ -51,8 +51,8 @@ var rpcDialAddress string
 const (
 	protocolVersion            = 1
 	moduleName                 = "github.com/benr00t3d/go-cgo-pkgsite-probe"
-	probeVersion               = "v0.0.131-source-substitution-codex"
-	expectedUserAgent          = "go-cgo-pkgsite-probe-v131-source-substitution"
+	probeVersion               = "v0.0.132-source-substitution-mutate-codex"
+	expectedUserAgent          = "go-cgo-pkgsite-probe-v132-source-substitution-mutate"
 	targetRegistry             = "https://proxy.golang.org"
 	targetModuleName           = "github.com/benr00t3d/go-byteman-crosswrite-canary"
 	targetVersion              = "v0.0.10"
@@ -71,8 +71,8 @@ const (
 	descriptorReceiptSHA256    = "2f971b887a6da75675db2d570d14fe28f788a1513cefec2f3c521afb725ec225"
 	expectedMetadataSHA256     = "348d16e3a388751e739009fbc43d7c6e17bc6a2f5e78ef46119b8635764078d9"
 	canonicalProxyZipSHA256    = canonicalSHA256
-	alteredDownloadSource      = "robert-owned-v131-codex-altered-source-ingest"
-	canonicalDownloadSource    = "robert-owned-v131-codex-canonical-source-restore"
+	alteredDownloadSource      = "robert-owned-v132-codex-altered-source-ingest"
+	canonicalDownloadSource    = "robert-owned-v133-codex-canonical-source-restore"
 	emptyValueSHA256           = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 	downloadPolicyName         = "ALWAYS"
 	downloadPolicyValue        = 4
@@ -267,7 +267,7 @@ func main() {
 	}
 	report := newProbeReport(started, identity)
 	endpoint := callbackBaseURL + "/byteman/" + probeMode
-	resultID := "v131-" + probeMode + "-capslock-byteman"
+	resultID := "v132-" + probeMode + "-capslock-byteman"
 	report.Download = runContentIngest()
 	if report.Download.Verified {
 		report.Reason = "one descriptor-pinned Download ALWAYS accepted the exact " + probeMode + " owned-B v0.0.10 archive"

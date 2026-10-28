@@ -36,13 +36,13 @@ var runMode string
 
 const (
 	moduleName       = "github.com/benr00t3d/go-cgo-pkgsite-probe"
-	probeVersion     = "v0.0.131-source-substitution-codex"
-	expectedOrigin   = "/capslock/modcache/github.com/benr00t3d/go-cgo-pkgsite-probe@v0.0.131-source-substitution-codex"
-	expectedAgent    = "go-cgo-pkgsite-probe-v131-source-substitution"
+	probeVersion     = "v0.0.132-source-substitution-mutate-codex"
+	expectedOrigin   = "/capslock/modcache/github.com/benr00t3d/go-cgo-pkgsite-probe@v0.0.132-source-substitution-mutate-codex"
+	expectedAgent    = "go-cgo-pkgsite-probe-v132-source-substitution-mutate"
 	targetCoordinate = "github.com/benr00t3d/go-byteman-crosswrite-canary@v0.0.10"
 	queueName        = "capslock-capability"
-	alteredSource    = "robert-owned-v131-codex-altered-source-rescan"
-	canonicalSource  = "robert-owned-v131-codex-canonical-source-restore"
+	alteredSource    = "robert-owned-v132-codex-altered-source-rescan"
+	canonicalSource  = "robert-owned-v133-codex-canonical-source-restore"
 	restoreSource    = "robert-owned-v127-capability-restore"
 	queueMethod      = "/sos.queue.Queue/Push"
 	restoreMethod    = "/sos.talisman.Talisman/Refresh"
@@ -54,9 +54,9 @@ const (
 	cleanSHA256         = "998355e9e87b906d41ca6def5274eb67b220579b9de1a222a828a648e7913967"
 	mutatedSHA256       = "c674975cc6166af64ea7b672669009205684260482ba2bf31b51c9198465dca7"
 	alteredPushBytes    = 143
-	alteredPushSHA256   = "1e2633a721645a43206006154d681a78d46e05ee1587d1c9c653551eca92103e"
+	alteredPushSHA256   = "955b9f7a4b8774a7fc6890ff7721644b366cf70fa4aa8ae2f6e85cf401077f17"
 	canonicalPushBytes  = 146
-	canonicalPushSHA256 = "1fd9a40fc4b64e590416491b9960e6ec2a93134f3320ab96d5ba9f968ed60bd4"
+	canonicalPushSHA256 = "414583df469d092eae2b17a7d9e3d47efc5c0aea5cd53981285cf4ed366fcf83"
 	restoreFrameBytes   = 104
 	restoreFrameSHA256  = "eada76c09ef986dde60ada28f0d955d9f67c7d183a1faf72f682bcea7b3fa602"
 	emptyFrameSHA256    = "8855508aade16ec573d21e6a485dfd0a7624085c1a14b5ecdd6485de0c6839a4"
@@ -578,7 +578,7 @@ func fetchPublic(sequence int) (publicSample, error) {
 	result := publicSample{Sequence: sequence, ObservedUTC: time.Now().UTC().Format(time.RFC3339Nano), State: "unknown"}
 	parsed, _ := url.Parse(analysisURL)
 	query := parsed.Query()
-	query.Set("v131_sample", strconv.Itoa(sequence)+"-"+strconv.FormatInt(time.Now().UnixNano(), 10))
+	query.Set("v132_sample", strconv.Itoa(sequence)+"-"+strconv.FormatInt(time.Now().UnixNano(), 10))
 	parsed.RawQuery = query.Encode()
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
