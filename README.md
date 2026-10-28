@@ -1,16 +1,9 @@
-# Owned-B independent live cache reader
+# Owned A111 live B-content writer
 
-`v0.0.110-codex` independently tests live cross-worker cache integrity. It requires the
-public `v0.0.5` coordinate of Robert's second
-module, `github.com/benr00t3d/go-byteman-crosswrite-canary`.
-
-At the GCC link stage, the fixed wrapper starts a compile-time-pinned reader.
-Only when its origin is exactly this version's Capslock modcache directory does
-it inspect B's fixed `canary.go`. It never writes. A positive result requires
-the exact 366-byte A109 altered SHA-256 and marker in this independent worker.
-
-The diagnostic has no command interface and does not inspect environment values,
-credentials, processes, arbitrary paths, cloud resources, Kubernetes, or
-internal RPC services. Generic builds stop before any marker read or network
-request. The wrapper exits with status 86 after the verifier returns so the
-analysis failure remains observable.
+`v0.0.111-codex` imports the canonical researcher-owned B module at `v0.0.7`.
+At the GCC link stage, the fixed wrapper runs only from this version's exact
+Capslock module-cache directory. If B's canonical `canary.go` matches its
+pinned 303-byte SHA-256 and the new marker is absent, the writer creates only
+`a111_injected_content.go` with one inert exported constant. It never rewrites
+an existing marker and reports before/after states to an independent receipt
+service. The wrapper exits 86 after the diagnostic.

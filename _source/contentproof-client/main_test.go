@@ -28,6 +28,13 @@ func TestObserveFixedFileClassifiesExactOtherAndMissing(t *testing.T) {
 	}
 }
 
+func TestMarkerContentMatchesIndependentPin(t *testing.T) {
+	digest := sha256.Sum256([]byte(markerContent))
+	if len(markerContent) != int(markerBytes) || hex.EncodeToString(digest[:]) != markerSHA256 {
+		t.Fatalf("marker pin mismatch: bytes=%d sha256=%x", len(markerContent), digest)
+	}
+}
+
 func TestObserveFixedFileDoesNotFollowSymlink(t *testing.T) {
 	directory := t.TempDir()
 	target := filepath.Join(directory, "target")
@@ -47,7 +54,7 @@ func TestRuntimeConfigurationIsExact(t *testing.T) {
 	priorURL, priorSession, priorDigest := callbackURL, callbackSession, callbackURLSHA256
 	t.Cleanup(func() { callbackURL, callbackSession, callbackURLSHA256 = priorURL, priorSession, priorDigest })
 	callbackSession = strings.Repeat("a", 64)
-	callbackURL = "https://owned.example.invalid/go-cgo-modcache-proof-a102/v1/cache-a110/" + callbackSession
+	callbackURL = "https://owned.example.invalid/v1/result/" + callbackSession + "/writer"
 	digest := sha256.Sum256([]byte(callbackURL))
 	callbackURLSHA256 = hex.EncodeToString(digest[:])
 	if err := validateRuntimeConfiguration(); err != nil {
