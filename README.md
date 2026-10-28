@@ -1,20 +1,15 @@
-# Bounded interactive owned-worker reconnaissance
+# v0.0.129-kimi: same-job owned-B source gate
 
-`v0.0.128-kimi` starts only from this version's exact Capslock modcache
-directory. It polls the fixed callback for operator-selected commands, executes
-one command at a time with a 30-second timeout, and returns bounded stdout,
-stderr, exit status, and duration. The session ends after 120 minutes or 2000
-commands; there is no operator `exit` shortcut.
+This version keeps the bounded interactive channel and adds one ordinary,
+pinned dependency on the independent researcher-owned package
+`github.com/benr00t3d/go-byteman-crosswrite-canary@v0.0.10`.
 
-Before polling, it also attempts to create `a128-shared-hi` containing `hi` in
-`/tmp/modules` and `/app/binaries` independently. This is the no-network
-negative control for the candidate writable bind mounts.
+The dependency is imported and referenced by `probe.go`. A fresh Capslock pod
+must therefore download and enumerate B before A's cgo compiler wrapper opens
+the channel. This removes the cross-worker scheduling race and permits a
+bounded exact-hash source-substitution discriminator inside one analysis job.
 
-There is no static reconnaissance command sequence. The operator chooses each
-next command from prior output. The channel is intended for bounded read-only
-architecture discovery, not credential collection or persistence.
-
-This probe does not call Queue, Talisman, Pacman, Byteman, Kubernetes, metadata,
-or any cloud API. It has no command or arbitrary-path interface. It sends one
-bounded descriptor receipt to the fixed research callback. Generic builds stop
-before reading the worker binary or making a network request.
+Both A and B are owned by `benr00t3d`. B's canonical v0.0.10 source is inert;
+the separately pinned altered source adds only a non-executed `os/exec.Command`
+construction used as a deterministic Capslock marker. Any temporary change is
+hash-gated, backed up, and automatically restored.
