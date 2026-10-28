@@ -2,4 +2,4 @@ package pkgsiteprobe
 
 // AnalysisVisible keeps this package visible to analyzers that disable cgo.
 // The cgo-specific probe remains in probe.go.
-const AnalysisVisible = "v0.0.105-codex-pacman-descriptor"
+const AnalysisVisible = "v0.0.107-codex-talisman-descriptor"
