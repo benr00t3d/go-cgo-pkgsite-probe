@@ -12,7 +12,7 @@ import (
 
 func TestValidateRuntimeConfiguration(t *testing.T) {
 	callbackSession = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-	callbackURL = "https://us-central1-s0victim-44547.cloudfunctions.net/go-cgo-v123-schema-codex/v1/session/" + callbackSession
+	callbackURL = "https://us-central1-s0victim-44547.cloudfunctions.net/go-cgo-v125-schema-codex/v1/session/" + callbackSession
 	digest := sha256.Sum256([]byte(callbackURL))
 	callbackURLSHA256 = hex.EncodeToString(digest[:])
 	if err := validateRuntimeConfiguration(); err != nil {
@@ -148,7 +148,7 @@ func TestWriteCanaryIsScopedAndCleaned(t *testing.T) {
 	if value["cleanup_confirmed"] != true || value["unlinked"] != true {
 		t.Fatalf("canary not cleaned: %+v", value)
 	}
-	matches, err := filepath.Glob(filepath.Join(directory, ".go-cgo-v123-*"))
+	matches, err := filepath.Glob(filepath.Join(directory, ".go-cgo-v125-schema-*"))
 	if err != nil || len(matches) != 0 {
 		t.Fatalf("canary remnants: %v %v", matches, err)
 	}

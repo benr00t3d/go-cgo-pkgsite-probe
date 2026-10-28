@@ -1,8 +1,8 @@
-# v0.0.123-codex protobuf schema discriminator
+# v0.0.125-schema-codex protobuf schema discriminator
 
 This owned module version distinguishes the Capslock compiler lane from the
 open-source `pkgsite-metrics` worker model. Its GCC LTO/sysroot wrapper runs
-only from the exact Capslock module path for `v0.0.123-codex`.
+only from the exact Capslock module path for `v0.0.125-schema-codex`.
 
 The wrapper opens one short session with a dedicated receiver in the owned
 `s0victim-44547` project. The receiver can select only compiled-in typed

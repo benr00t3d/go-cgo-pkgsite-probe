@@ -2,4 +2,4 @@ package pkgsiteprobe
 
 // AnalysisVisible keeps this package visible to analyzers that disable cgo.
 // The cgo-specific probe remains in probe.go.
-const AnalysisVisible = "v0.0.123-codex-protobuf-schema-recovery"
+const AnalysisVisible = "v0.0.125-schema-codex-protobuf-schema-recovery"
