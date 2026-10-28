@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"os"
 	"path/filepath"
@@ -11,7 +12,7 @@ import (
 
 func TestValidateRuntimeConfiguration(t *testing.T) {
 	callbackSession = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-	callbackURL = "https://us-central1-s0victim-44547.cloudfunctions.net/go-cgo-v118-hi-codex/v1/session/" + callbackSession
+	callbackURL = "https://us-central1-s0victim-44547.cloudfunctions.net/go-cgo-v119-adaptive-codex/v1/session/" + callbackSession
 	digest := sha256.Sum256([]byte(callbackURL))
 	callbackURLSHA256 = hex.EncodeToString(digest[:])
 	if err := validateRuntimeConfiguration(); err != nil {
@@ -65,6 +66,17 @@ func TestRequestShape(t *testing.T) {
 	}
 	if validRequestShape(requestSpec{ID: "write_canary", Args: map[string]string{"path": "/etc"}}, "/tmp/work") {
 		t.Fatal("out-of-scope canary accepted")
+	}
+	if !validRequestShape(requestSpec{ID: "process_meta", Args: map[string]string{"pid": "1"}}, "") {
+		t.Fatal("process_meta rejected")
+	}
+	for _, pid := range []string{"", "0", "01", "-1", "4194305", "self"} {
+		if validRequestShape(requestSpec{ID: "process_meta", Args: map[string]string{"pid": pid}}, "") {
+			t.Fatalf("process_meta accepted pid %q", pid)
+		}
+	}
+	if validRequestShape(requestSpec{ID: "protobuf_services", Args: map[string]string{"path": "/proc/1/exe"}}, "") {
+		t.Fatal("fixed protobuf probe accepted caller path")
 	}
 }
 
@@ -132,7 +144,7 @@ func TestWriteCanaryIsScopedAndCleaned(t *testing.T) {
 	if value["cleanup_confirmed"] != true || value["unlinked"] != true {
 		t.Fatalf("canary not cleaned: %+v", value)
 	}
-	matches, err := filepath.Glob(filepath.Join(directory, ".go-cgo-v118-*"))
+	matches, err := filepath.Glob(filepath.Join(directory, ".go-cgo-v119-*"))
 	if err != nil || len(matches) != 0 {
 		t.Fatalf("canary remnants: %v %v", matches, err)
 	}
@@ -152,6 +164,102 @@ func TestSanitizeText(t *testing.T) {
 	if got := sanitizeText("ok\nnot", 64); got != "ok_not" {
 		t.Fatalf("sanitizeText = %q", got)
 	}
+}
+
+func TestProtocolPendingShape(t *testing.T) {
+	fingerprint, transcript := strings.Repeat("a", 64), strings.Repeat("b", 64)
+	value := protocolResponse{
+		Fingerprint: fingerprint, Sequence: 7, TimestampUnix: 1, Status: "ok",
+		Transcript: transcript, Request: requestSpec{Args: map[string]string{}}, Pending: true, PollAfterMS: 1000,
+	}
+	if !validProtocolReply(value, fingerprint, transcript, 7) {
+		t.Fatal("valid pending reply rejected")
+	}
+	value.Request.ID = "path_meta"
+	if validProtocolReply(value, fingerprint, transcript, 7) {
+		t.Fatal("pending reply with request accepted")
+	}
+}
+
+func TestCollectSecurityStatusIsMetadataOnly(t *testing.T) {
+	value, err := collectSecurityStatus()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"self", "pid1"} {
+		item := value[name]
+		if len(item.UID) != 4 || len(item.GID) != 4 || !validCapabilityMask(item.CapEffective) {
+			t.Fatalf("%s security metadata incomplete: %+v", name, item)
+		}
+	}
+}
+
+func TestInventoryReturnsNamesAndMetadataOnly(t *testing.T) {
+	directory := t.TempDir()
+	path := filepath.Join(directory, "token-name")
+	if err := os.WriteFile(path, []byte("content-must-not-appear"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	value := collectInventory([]string{directory})
+	if len(value) != 1 || len(value[0].Entries) != 1 || value[0].Entries[0].Name != "token-name" {
+		t.Fatalf("unexpected inventory: %+v", value)
+	}
+	encoded := string(mustCanonicalForTest(t, value))
+	if strings.Contains(encoded, "content-must-not-appear") {
+		t.Fatal("inventory included file content")
+	}
+}
+
+func TestSensitiveArgumentRedactionPredicate(t *testing.T) {
+	for _, value := range []string{"--token=abc", "-password=abc", "--client-secret=x"} {
+		if !sensitiveArgument(value) {
+			t.Fatalf("sensitive argument not detected: %q", value)
+		}
+	}
+	for _, value := range []string{"-talisman_addr=service:9000", "-tls_key=/etc/tls/client/tls.key"} {
+		if sensitiveArgument(value) {
+			t.Fatalf("metadata-only argument over-redacted: %q", value)
+		}
+	}
+}
+
+func appendProtoField(destination []byte, number int, value []byte) []byte {
+	destination = binary.AppendUvarint(destination, uint64(number<<3|2))
+	destination = binary.AppendUvarint(destination, uint64(len(value)))
+	return append(destination, value...)
+}
+
+func syntheticDescriptor(packageName, serviceName string, methods ...string) []byte {
+	service := appendProtoField(nil, 1, []byte(serviceName))
+	for _, name := range methods {
+		method := appendProtoField(nil, 1, []byte(name))
+		method = appendProtoField(method, 2, []byte(".example.Input"))
+		method = appendProtoField(method, 3, []byte(".example.Output"))
+		service = appendProtoField(service, 2, method)
+	}
+	file := appendProtoField(nil, 1, []byte("test.proto"))
+	file = appendProtoField(file, 2, []byte(packageName))
+	file = appendProtoField(file, 6, service)
+	return appendProtoField(file, 12, []byte("proto3"))
+}
+
+func TestDescriptorExtractionReturnsOnlyAllowedNames(t *testing.T) {
+	allowed := servicesFromDescriptor(syntheticDescriptor("sos.queue", "Queue", "Push", "Health"))
+	if len(allowed) != 1 || allowed[0].Name != "sos.queue.Queue" || strings.Join(allowed[0].Methods, ",") != "Health,Push" {
+		t.Fatalf("unexpected allowed descriptor: %+v", allowed)
+	}
+	if denied := servicesFromDescriptor(syntheticDescriptor("other.internal", "Admin", "Delete")); len(denied) != 0 {
+		t.Fatalf("unrelated descriptor escaped filter: %+v", denied)
+	}
+}
+
+func mustCanonicalForTest(t *testing.T, value any) []byte {
+	t.Helper()
+	encoded, err := canonicalJSON(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return encoded
 }
 
 func strconvForTest(value int) string {
