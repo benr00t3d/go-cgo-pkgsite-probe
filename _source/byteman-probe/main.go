@@ -608,8 +608,9 @@ func analyzeDownloadRecord(raw []byte, expect recordExpectation) (downloadRecord
 			return proof, false, errors.New("content-ingest Download record contained an error field")
 		}
 	}
-	if counts[18] != 8 {
-		return proof, false, errors.New("content-ingest Download record had wrong header count")
+	proof.HeaderCount = counts[18]
+	if counts[18] == 0 {
+		return proof, false, errors.New("content-ingest Download record omitted response headers")
 	}
 	ud := sha256.Sum256(urlValue)
 	proof.URLSHA256 = hex.EncodeToString(ud[:])
@@ -631,7 +632,7 @@ func analyzeDownloadRecord(raw []byte, expect recordExpectation) (downloadRecord
 	proof.PathPresent, proof.PathBytes, proof.PathSHA256 = len(pathValue) > 0, len(pathValue), hex.EncodeToString(pd[:])
 	proof.IDPresent, proof.IDBytes, proof.IDSHA256 = len(idValue) > 0, len(idValue), hex.EncodeToString(id[:])
 	proof.Size, proof.StatusCode = sizeValue, statusValue
-	proof.ContentType, proof.CacheControl, proof.HeaderCount = string(contentType), string(cacheControl), counts[18]
+	proof.ContentType, proof.CacheControl = string(contentType), string(cacheControl)
 	if sizeValue != targetCanaryBytes || statusValue != http.StatusOK || string(contentType) != "application/zip" || string(cacheControl) != "no-store" || !proof.PathPresent || !proof.IDPresent || dp.RawSHA256 != expect.DigestFieldSHA256 || !dp.AllExact {
 		return proof, false, errors.New("content-ingest Download integrity fields did not match")
 	}

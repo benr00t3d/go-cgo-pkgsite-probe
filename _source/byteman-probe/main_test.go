@@ -252,6 +252,17 @@ func TestDownloadRecordAcceptsBoundedProductionOptionalMetadata(t *testing.T) {
 	}
 }
 
+func TestDownloadRecordAcceptsBoundedVariableHeaderCount(t *testing.T) {
+	record, expectation := fixtureRecord(t, "https://owned.example.invalid/v0.0.2.zip", 200)
+	extra := appendStringField(nil, 1, "x-production-extra")
+	extra = appendBytesField(extra, 2, []byte("bounded"))
+	record = appendBytesField(record, 18, extra)
+	proof, matched, err := analyzeDownloadRecord(record, expectation)
+	if err != nil || !matched || !proof.Matched || proof.HeaderCount != 9 {
+		t.Fatalf("proof=%#v matched=%v err=%v", proof, matched, err)
+	}
+}
+
 func TestDownloadResponseRejectsUnknownDuplicateAndMismatch(t *testing.T) {
 	payload, expectation := fixtureResponse(t, 200)
 	record := mustRecordFromResponse(t, payload)
