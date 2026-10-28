@@ -1,5 +1,5 @@
-// Command contentproof-client independently checks whether A109's inert marker
-// persists in Robert's owned B module in a different live Capslock worker.
+// Command contentproof-client runs only after this independent worker has
+// compiled owned B with the symbol injected by A111.
 package main
 
 import (
@@ -24,18 +24,19 @@ var callbackURLSHA256 string
 
 const (
 	consumerModule          = "github.com/benr00t3d/go-cgo-pkgsite-probe"
-	consumerVersion         = "v0.0.110-codex"
+	consumerVersion         = "v0.0.112-codex"
 	targetModule            = "github.com/benr00t3d/go-byteman-crosswrite-canary"
-	targetVersion           = "v0.0.5"
-	expectedOriginDir       = "/capslock/modcache/github.com/benr00t3d/go-cgo-pkgsite-probe@v0.0.110-codex"
-	targetDir               = "/capslock/modcache/github.com/benr00t3d/go-byteman-crosswrite-canary@v0.0.5"
+	targetVersion           = "v0.0.7"
+	expectedOriginDir       = "/capslock/modcache/github.com/benr00t3d/go-cgo-pkgsite-probe@v0.0.112-codex"
+	targetDir               = "/capslock/modcache/github.com/benr00t3d/go-byteman-crosswrite-canary@v0.0.7"
 	canonicalCanaryPath     = targetDir + "/canary.go"
-	canonicalCanarySHA256   = "ea04cd6c093567cbc58fad85efd680a7bcfaad6b3a5ef26628db0a2afde4fc06"
+	canonicalCanarySHA256   = "6b1f0a01b3fc13dbb14ab80add947248e1b8f98429eb5877d23bd7a1c905aa6e"
 	canonicalCanaryBytes    = int64(303)
-	alteredCanarySHA256     = "18938e4332e6144085141816af8a44445ec5f030323d041923f60fe2ef555f94"
-	alteredCanaryBytes      = int64(366)
-	cacheMarker             = "\n// A109LiveCacheMarker: owned-inert-cross-worker-cache-canary\n"
-	expectedUserAgent       = "go-cgo-pkgsite-probe-v110-cache-reader"
+	markerPath              = targetDir + "/a111_injected_content.go"
+	markerSHA256            = "c836e79c4615e620b9ac5df957b74dcbbb6a7482a81e2c9b9ac4cf413131c8b1"
+	markerBytes             = int64(158)
+	consumerGate            = "reached_link_after_compiling_injected_b_symbol"
+	expectedUserAgent       = "go-cgo-pkgsite-probe-v112-content-reader"
 	callbackTimeout         = 30 * time.Second
 	maximumObservedFileSize = int64(4096)
 	maximumResponseBytes    = 1024
@@ -48,18 +49,19 @@ type fileObservation struct {
 }
 
 type receipt struct {
-	Schema                  string          `json:"schema"`
-	ConsumerModule          string          `json:"consumer_module"`
-	ConsumerVersion         string          `json:"consumer_version"`
-	TargetModule            string          `json:"target_module"`
-	TargetVersion           string          `json:"target_version"`
-	TargetDirPresent        bool            `json:"target_dir_present"`
-	Before                  fileObservation `json:"before"`
-	After                   fileObservation `json:"after"`
-	WriteAttempted          bool            `json:"write_attempted"`
-	MarkerPresent           bool            `json:"marker_present"`
-	ExpectedMarkerSHA256    string          `json:"expected_marker_sha256"`
-	ExpectedCanonicalSHA256 string          `json:"expected_canonical_sha256"`
+	Schema               string          `json:"schema"`
+	ConsumerModule       string          `json:"consumer_module"`
+	ConsumerVersion      string          `json:"consumer_version"`
+	TargetModule         string          `json:"target_module"`
+	TargetVersion        string          `json:"target_version"`
+	ConsumerGate         string          `json:"consumer_gate"`
+	MarkerFilename       string          `json:"marker_filename"`
+	TargetDirPresent     bool            `json:"target_dir_present"`
+	Before               fileObservation `json:"before"`
+	After                fileObservation `json:"after"`
+	WriteAttempted       bool            `json:"write_attempted"`
+	MarkerPresent        bool            `json:"marker_present"`
+	ExpectedMarkerSHA256 string          `json:"expected_marker_sha256"`
 }
 
 func main() {
@@ -75,16 +77,17 @@ func main() {
 	if info, err := os.Lstat(targetDir); err == nil && info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
 		directoryPresent = true
 	}
-	before := observeFixedFile(canonicalCanaryPath, alteredCanaryBytes, alteredCanarySHA256)
-	after := observeFixedFile(canonicalCanaryPath, alteredCanaryBytes, alteredCanarySHA256)
+	before := observeFixedFile(markerPath, markerBytes, markerSHA256)
+	after := observeFixedFile(markerPath, markerBytes, markerSHA256)
 	writeAttempted := false
 	body, err := json.Marshal(receipt{
-		Schema: "owned-live-cross-worker-cache/v1", ConsumerModule: consumerModule,
+		Schema: "owned-live-content-consumption/v1", ConsumerModule: consumerModule,
 		ConsumerVersion: consumerVersion, TargetModule: targetModule,
-		TargetVersion: targetVersion, TargetDirPresent: directoryPresent,
+		TargetVersion: targetVersion, ConsumerGate: consumerGate,
+		MarkerFilename: "a111_injected_content.go", TargetDirPresent: directoryPresent,
 		Before: before, After: after, WriteAttempted: writeAttempted,
 		MarkerPresent:        after.State == "exact",
-		ExpectedMarkerSHA256: alteredCanarySHA256, ExpectedCanonicalSHA256: canonicalCanarySHA256,
+		ExpectedMarkerSHA256: markerSHA256,
 	})
 	if err != nil {
 		return
@@ -143,7 +146,7 @@ func validateRuntimeConfiguration() error {
 	parsed, err := url.Parse(callbackURL)
 	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.Hostname() == "" ||
 		parsed.User != nil || parsed.Opaque != "" || parsed.RawPath != "" || parsed.RawQuery != "" ||
-		parsed.ForceQuery || parsed.Fragment != "" || parsed.Path != "/go-cgo-modcache-proof-a102/v1/cache-a110/"+callbackSession {
+		parsed.ForceQuery || parsed.Fragment != "" || parsed.Path != "/v1/result/"+callbackSession+"/reader" {
 		return errors.New("invalid fixed callback URL")
 	}
 	digest := sha256.Sum256([]byte(callbackURL))
