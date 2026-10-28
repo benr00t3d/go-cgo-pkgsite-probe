@@ -10,7 +10,7 @@ import "C"
 const Present = true
 
 // ProbeVersion forces a fresh package-analysis input.
-const ProbeVersion = "v0.0.123-kimi-interactive-recon-two-hour-session"
+const ProbeVersion = "v0.0.124-kimi-interactive-recon-two-hour-session"
 
 // LTOValue keeps the bundled LTO object in cgo's link input.
 func LTOValue() int { return int(C.lto_payload()) }
