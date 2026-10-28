@@ -1,35 +1,23 @@
-# v0.0.127 capability-suppression and restoration discriminator
+# v0.0.130-capability-rescan-codex
 
-This module prepares an attributable capability-suppression test against a
-fresh researcher-owned package-analysis record. Its GCC LTO/sysroot wrapper
-runs only as root from this exact module's production Capslock path.
+This owned module tests the reverse side of the Queue boundary already proven
+by v127. The v127 result action left the owned B package's public capability
+record in the exact suppressed state. This version submits one fixed
+`CapabilityAction(B)` to the `capslock-capability` input queue.
 
-Before internal access, the client reads five cache-busted public analysis
-responses for the fixed owned target
-`github.com/benr00t3d/go-byteman-crosswrite-canary@v0.0.8`. That immutable
-module intentionally contains one inert `os/exec.Command` call, so its normal
-Google analysis has a non-empty EXEC capability. Five exact canonical responses
-and a successful callback preflight are required before internal access.
+The expected production sequence is:
 
-The test sends one field-1-only `CapabilityResultAction` through the already
-proven `sos.queue.Queue/Push` path. Success requires the legitimate non-empty
-record to become exact empty capability metadata for 21 consecutive
-cache-busted responses. The Queue response must have HTTP/gRPC success, two
-complete frames, one target echo, and one action UUID. Receipts retain only the
-UUID hash.
+1. A confirms five exact suppressed B responses.
+2. A pushes one pinned action containing only B's owned package coordinate.
+3. A waits for 21 consecutive exact canonical B responses.
 
-The production descriptor proves that `package_version` is field 1. A
-field-1-only action was accepted in v121 and represents an empty successful
-result. Using it here tests suppression without guessing any opaque value.
-The 144-byte request and its digest are independently pinned in tests.
+A successful transition means Google started its normal B analysis path from
+an action created by A and regenerated B's legitimate result. This is a
+cross-worker scheduling and restoration proof. It does not substitute source
+bytes or claim that B's source was attacker-chosen under another publisher's
+identity.
 
-The canonical non-empty target body was pinned only after 21 consecutive
-production responses. After retaining the suppression proof, the same bounded
-run sends one descriptor-correct `sos.talisman.Talisman/Refresh` request. It
-does not retry an ambiguous Refresh result. Success additionally requires HTTP
-and gRPC acceptance of the exact 103-byte frame and 21 consecutive responses
-showing the original non-empty record restored.
-
-Six linked receipts go to one receiver in the owned project: preflight, Queue,
-public suppression, Refresh, public restoration, and final. The final success
-verdict requires both the cross-package suppression and restoration chains.
+The client is bound to this exact module-cache path, queue name, package
+coordinate, request byte length, and SHA-256. It retains only hashes and an
+action-ID hash. It has no command interface, does not target third-party
+packages, and performs no persistence or credential export.

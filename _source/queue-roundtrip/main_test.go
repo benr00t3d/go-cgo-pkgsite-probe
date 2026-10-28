@@ -61,7 +61,7 @@ func splitTestFrames(t *testing.T, data []byte) [][]byte {
 	return frames
 }
 
-func TestSuppressionPushWireImageIsPinned(t *testing.T) {
+func TestInputQueueRescanWireImageIsPinned(t *testing.T) {
 	request, err := buildMutationPush()
 	if err != nil {
 		t.Fatal(err)
@@ -241,7 +241,7 @@ func TestPublicHashesMapOnlyToPinnedStates(t *testing.T) {
 func TestRuntimeConfigurationPinsOwnedFunction(t *testing.T) {
 	priorURL, priorSession, priorSHA := callbackBaseURL, callbackSession, callbackURLSHA256
 	callbackSession = strings.Repeat("a", 64)
-	callbackBaseURL = "https://us-central1-s0victim-44547.cloudfunctions.net/go-cgo-v127-suppression-codex/v1/session/" + callbackSession
+	callbackBaseURL = "https://us-central1-s0victim-44547.cloudfunctions.net/go-cgo-v130-capability-rescan-codex/v1/session/" + callbackSession
 	digest := sha256.Sum256([]byte(callbackBaseURL))
 	callbackURLSHA256 = hex.EncodeToString(digest[:])
 	t.Cleanup(func() { callbackBaseURL, callbackSession, callbackURLSHA256 = priorURL, priorSession, priorSHA })
@@ -260,7 +260,7 @@ func TestStaticPinsAcceptObservedCanonicalBaseline(t *testing.T) {
 	}
 	request, err := buildMutationPush()
 	if err != nil || !matchesRequestPin(request, mutationPushBytes, mutationPushSHA256) {
-		t.Fatal("suppression request does not match its independent pin")
+		t.Fatal("rescan request does not match its independent pin")
 	}
 }
 
@@ -308,7 +308,7 @@ func TestCallbackAcknowledgementBindsPhaseAndExactBodyHash(t *testing.T) {
 func TestCallbackPhaseSetMatchesSuppressionStateMachine(t *testing.T) {
 	for _, phase := range []string{"preflight", "mutation_queue", "mutation_public", "final"} {
 		if !validCallbackPhase(phase) {
-			t.Fatalf("suppression phase %q rejected", phase)
+			t.Fatalf("rescan phase %q rejected", phase)
 		}
 	}
 	for _, phase := range []string{"", "queue", "mutation", "cleanup", "cleanup_queue", "unknown"} {

