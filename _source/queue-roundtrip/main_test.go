@@ -61,10 +61,13 @@ func splitTestFrames(t *testing.T, data []byte) [][]byte {
 	return frames
 }
 
-func TestCleanPushWireImageIsPinned(t *testing.T) {
-	request := buildCleanPush()
+func TestSuppressionPushWireImageIsPinned(t *testing.T) {
+	request, err := buildMutationPush()
+	if err != nil {
+		t.Fatal(err)
+	}
 	digest := sha256.Sum256(request)
-	if len(request) != cleanupPushBytes || hex.EncodeToString(digest[:]) != cleanupPushSHA256 {
+	if len(request) != mutationPushBytes || hex.EncodeToString(digest[:]) != mutationPushSHA256 {
 		t.Fatalf("request bytes=%d sha256=%s", len(request), hex.EncodeToString(digest[:]))
 	}
 	frames := splitTestFrames(t, request)
@@ -77,7 +80,7 @@ func TestCleanPushWireImageIsPinned(t *testing.T) {
 	}
 	metadata := decodeTestFields(t, queueOuter[0].value)
 	if len(metadata) != 2 || metadata[0].number != 1 || string(metadata[0].value) != queueName ||
-		metadata[1].number != 4 || string(metadata[1].value) != cleanupSource {
+		metadata[1].number != 4 || string(metadata[1].value) != mutationSource {
 		t.Fatalf("metadata=%#v", metadata)
 	}
 	pushOuter := decodeTestFields(t, frames[1])
@@ -132,7 +135,7 @@ func TestProductionCapabilityResultActionErrorFieldIsThree(t *testing.T) {
 	}
 }
 
-func TestPublicCapslockCapabilityStatsWireHypothesisIsNotAPin(t *testing.T) {
+func TestPublicCapslockCapabilityStatsWireHypothesis(t *testing.T) {
 	// Public Capslock commit 2ee85fd defines CapabilityStats capability=1,
 	// direct_count=3, and transitive_count=4. This candidate is tested only as
 	// a decoding hypothesis; it is not evidence for the opaque Talisman value.
@@ -140,9 +143,6 @@ func TestPublicCapslockCapabilityStatsWireHypothesisIsNotAPin(t *testing.T) {
 	fields := decodeCandidateVarintFields(t, candidate)
 	if len(fields) != 3 || fields[1] != 10 || fields[3] != 1 || fields[4] != 2 {
 		t.Fatalf("candidate fields=%v", fields)
-	}
-	if request, err := buildMutationPush(); err == nil || request != nil {
-		t.Fatal("public Capslock hypothesis unexpectedly unlocked mutation")
 	}
 }
 
@@ -195,11 +195,11 @@ func TestConvergenceReceiptRetainsTrailingProofWindowAndTotal(t *testing.T) {
 }
 
 func TestPublicHashesMapOnlyToPinnedStates(t *testing.T) {
-	if publicStateForDigest(cleanSHA256) != "clean" {
-		t.Fatal("clean state mapping changed")
+	if publicStateForDigest(cleanSHA256) != "unknown" {
+		t.Fatal("locked clean state accepted")
 	}
-	if publicStateForDigest(mutatedSHA256) != "unknown" {
-		t.Fatal("placeholder mutation digest accepted")
+	if publicStateForDigest(mutatedSHA256) != "mutated" {
+		t.Fatal("suppressed state mapping changed")
 	}
 	if publicStateForDigest(strings.Repeat("0", 64)) != "unknown" {
 		t.Fatal("unknown digest accepted")
@@ -209,7 +209,7 @@ func TestPublicHashesMapOnlyToPinnedStates(t *testing.T) {
 func TestRuntimeConfigurationPinsOwnedFunction(t *testing.T) {
 	priorURL, priorSession, priorSHA := callbackBaseURL, callbackSession, callbackURLSHA256
 	callbackSession = strings.Repeat("a", 64)
-	callbackBaseURL = "https://us-central1-s0victim-44547.cloudfunctions.net/go-cgo-v124-roundtrip-codex/v1/session/" + callbackSession
+	callbackBaseURL = "https://us-central1-s0victim-44547.cloudfunctions.net/go-cgo-v127-suppression-codex/v1/session/" + callbackSession
 	digest := sha256.Sum256([]byte(callbackBaseURL))
 	callbackURLSHA256 = hex.EncodeToString(digest[:])
 	t.Cleanup(func() { callbackBaseURL, callbackSession, callbackURLSHA256 = priorURL, priorSession, priorSHA })
@@ -222,12 +222,13 @@ func TestRuntimeConfigurationPinsOwnedFunction(t *testing.T) {
 	}
 }
 
-func TestStaticPinsRejectIncompleteMutationDescriptor(t *testing.T) {
+func TestStaticPinsRejectUnobservedCanonicalBaseline(t *testing.T) {
 	if err := validateStaticPins(); err == nil {
-		t.Fatal("incomplete mutation descriptor pins accepted")
+		t.Fatal("unobserved canonical baseline accepted")
 	}
-	if request, err := buildMutationPush(); err == nil || request != nil {
-		t.Fatal("mutation request built before descriptor was pinned")
+	request, err := buildMutationPush()
+	if err != nil || !matchesRequestPin(request, mutationPushBytes, mutationPushSHA256) {
+		t.Fatal("suppression request does not match its independent pin")
 	}
 }
 
@@ -272,13 +273,13 @@ func TestCallbackAcknowledgementBindsPhaseAndExactBodyHash(t *testing.T) {
 	}
 }
 
-func TestCallbackPhaseSetMatchesRoundtripStateMachine(t *testing.T) {
-	for _, phase := range []string{"preflight", "mutation_queue", "mutation_public", "cleanup_queue", "final"} {
+func TestCallbackPhaseSetMatchesSuppressionStateMachine(t *testing.T) {
+	for _, phase := range []string{"preflight", "mutation_queue", "mutation_public", "final"} {
 		if !validCallbackPhase(phase) {
-			t.Fatalf("roundtrip phase %q rejected", phase)
+			t.Fatalf("suppression phase %q rejected", phase)
 		}
 	}
-	for _, phase := range []string{"", "queue", "mutation", "cleanup", "unknown"} {
+	for _, phase := range []string{"", "queue", "mutation", "cleanup", "cleanup_queue", "unknown"} {
 		if validCallbackPhase(phase) {
 			t.Fatalf("unknown phase %q accepted", phase)
 		}
