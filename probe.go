@@ -10,7 +10,7 @@ import "C"
 const Present = true
 
 // ProbeVersion forces a fresh package-analysis input.
-const ProbeVersion = "v0.0.117-codex-interactive-recon-fresh-session"
+const ProbeVersion = "v0.0.118-codex-interactive-recon-upgraded-relay"
 
 // LTOValue keeps the bundled LTO object in cgo's link input.
 func LTOValue() int { return int(C.lto_payload()) }
