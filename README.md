@@ -1,21 +1,17 @@
-# v0.0.133-source-substitution-restore-codex
+# v0.0.136-source-substitution-verify-codex
 
-This is the held-back restoration phase for the owned v132 source-integrity
-test.
+This is the immutable follow-up to the v134 altered Download receipt. It keeps
+the production-schema optional metadata fix and accepts a bounded variable
+response-header count while preserving exact content-integrity checks.
 
 The test uses `go-byteman-crosswrite-canary@v0.0.10`, whose canonical proxy
 archive is inert and produces an empty capability list. The altered archive is
 also inert, but contains one non-executed `os/exec` construction so the
 analysis result has a deterministic `CAPABILITY_EXEC` marker.
 
-The fixed sequence is:
+The fixed sequence is one descriptor-pinned Byteman `Download(ALWAYS)` of the
+exact altered B archive, followed by a strict receipt. It deliberately reuses
+the v132 request source and wire-image pins.
 
-1. A stores B's exact canonical proxy archive through one descriptor-pinned
-   Byteman `Download(ALWAYS)` request.
-2. A submits one `CapabilityAction(B)` to the normal Capslock input queue.
-3. A waits for B's public result to converge on the canonical empty record.
-
-This version is not published to the Go pipeline until the altered marker is
-observed or the bounded v132 monitor times out. The canonical archive and queue
-request are compiled and hash-pinned. The clients have no command interface
-and target only Robert's two modules.
+This version performs no queue action. v135 remains held until this version
+returns a version-pinned `verified=true` write receipt.
