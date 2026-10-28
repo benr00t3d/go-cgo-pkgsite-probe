@@ -261,17 +261,17 @@ on_exit() {
 
 main() {
   [ "$#" -eq 0 ] || { usage >&2; exit 2; }
-  CURRENT='github.com/benr00t3d/go-cgo-pkgsite-probe@v0.0.62-codex'
-  TARGET='github.com/benr00t3d/go-byteman-crosswrite-canary@v0.0.1'
+  CURRENT='github.com/benr00t3d/go-cgo-pkgsite-probe@v0.0.108-codex'
+  TARGET='github.com/benr00t3d/go-byteman-crosswrite-canary@v0.0.5'
   PACKAGE=${TARGET%@*}
   VERSION=${TARGET##*@}
   QUEUE='capslock-capability-result'
-  SOURCE='robert-owned-v062-a-to-b-public-canary'
-  MARKER='CROSSPKG_V062_B_ZIP_SHA256_e795c7054b74d0edf37273a3d6d1098fc57fd7e124d10a0556d3793eb3210684_PUBLIC_RESULT_CANARY'
-  EXPECTED_PUSH_SHA256='b846a01ea50cf758630fd4c9597937f81b8bf91fb46a8058a181af48bf965d2b'
-  EXPECTED_REFRESH_SHA256='5f5604aff7ef29643b7768e58b3dfdc510e58adcd37e596ac0892b72c733290a'
-  EXPECTED_BASELINE_SHA256='bb0f29abd8210aa614a6175e38265532487079bebd25ab94ca21eaaeb13c157c'
-  EXPECTED_ALTERED_SHA256='5ec2c29ccadbf5bee106dbc53146bb8c2ec5edd37f573720c4bfabe5ca01efa4'
+  SOURCE='robert-owned-v108-a-to-b-public-canary'
+  MARKER='CROSSPKG_V108_B_PUBLIC_RESULT_CANARY'
+  EXPECTED_PUSH_SHA256='c19574cf6d537c05153c0747b29ae9b41840fd08db233d591b5acd118b75fb7c'
+  EXPECTED_REFRESH_SHA256='b8ea28781cdc6b16cd3449fe9656be4d186b505f499c860d704bf3efd7d4f06b'
+  EXPECTED_BASELINE_SHA256='b29cc76a863e9bb78a74e9e417b4914d3c50c9271b928a02e8accd859903a6ec'
+  EXPECTED_ALTERED_SHA256='8fa1ab0a982e0ac97555488c716fb232e1a83cb3214e1be3a71ff22e8a3d9e13'
 
   POLL_INTERVAL=${POLL_INTERVAL:-5}
   POLL_TIMEOUT=${POLL_TIMEOUT:-600}
@@ -307,7 +307,7 @@ main() {
   version_url=$(printf %s "$VERSION" | sed -e 's/+/%2B/g')
   DEPSDEV_URL="https://deps.dev/_/s/go/p/$package_url/v/$version_url/analysis"
 
-  receipt_dir=$(mktemp -d /tmp/go-crosspkg-v062.XXXXXX)
+  receipt_dir=$(mktemp -d /tmp/go-crosspkg-v108.XXXXXX)
   push_may_have_landed=0
   restored=0
   baseline_hash=
@@ -326,7 +326,7 @@ main() {
     exit 1
   }
   grep -Fq '"package":"github.com/benr00t3d/go-byteman-crosswrite-canary"' "$receipt_dir/public-baseline.json" &&
-    grep -Fq '"version":"v0.0.1"' "$receipt_dir/public-baseline.json" &&
+    grep -Fq '"version":"v0.0.5"' "$receipt_dir/public-baseline.json" &&
     grep -Fq '"hasErrors":false' "$receipt_dir/public-baseline.json" || {
       printf '%s\n' 'Refusing: target B baseline is not the exact expected clean record.' >&2
       exit 1
