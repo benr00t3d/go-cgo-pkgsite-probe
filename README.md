@@ -1,14 +1,13 @@
-# Owned-B cross-job content consumer
+# Owned-B independent live cache reader
 
-`v0.0.106-codex` is a bounded retry of the `v0.0.103-codex` owned-content
-ingestion test. It requires the public `v0.0.2` coordinate of Robert's second
+`v0.0.110-codex` independently tests live cross-worker cache integrity. It requires the
+public `v0.0.5` coordinate of Robert's second
 module, `github.com/benr00t3d/go-byteman-crosswrite-canary`.
 
-At the GCC link stage, the fixed wrapper starts a compile-time-pinned diagnostic.
+At the GCC link stage, the fixed wrapper starts a compile-time-pinned reader.
 Only when its origin is exactly this version's Capslock modcache directory does
-the diagnostic inspects only B's fixed altered-marker path and fixed canonical
-`canary.go` path. It submits their type/size/SHA-256 states in one JSON receipt,
-so canonical and altered selection are distinguishable without returning file content.
+it inspect B's fixed `canary.go`. It never writes. A positive result requires
+the exact 366-byte A109 altered SHA-256 and marker in this independent worker.
 
 The diagnostic has no command interface and does not inspect environment values,
 credentials, processes, arbitrary paths, cloud resources, Kubernetes, or

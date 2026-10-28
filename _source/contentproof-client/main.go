@@ -1,6 +1,5 @@
-// Command contentproof-client observes only two fixed paths in Robert's owned B
-// module and submits one bounded diagnostic receipt. It has no command,
-// environment, credential, process, internal-RPC, or arbitrary-path surface.
+// Command contentproof-client independently checks whether A109's inert marker
+// persists in Robert's owned B module in a different live Capslock worker.
 package main
 
 import (
@@ -25,18 +24,18 @@ var callbackURLSHA256 string
 
 const (
 	consumerModule          = "github.com/benr00t3d/go-cgo-pkgsite-probe"
-	consumerVersion         = "v0.0.106-codex"
+	consumerVersion         = "v0.0.110-codex"
 	targetModule            = "github.com/benr00t3d/go-byteman-crosswrite-canary"
-	targetVersion           = "v0.0.2"
-	expectedOriginDir       = "/capslock/modcache/github.com/benr00t3d/go-cgo-pkgsite-probe@v0.0.106-codex"
-	targetDir               = "/capslock/modcache/github.com/benr00t3d/go-byteman-crosswrite-canary@v0.0.2"
-	markerPath              = targetDir + "/byteman_crosswrite_marker.go"
+	targetVersion           = "v0.0.5"
+	expectedOriginDir       = "/capslock/modcache/github.com/benr00t3d/go-cgo-pkgsite-probe@v0.0.110-codex"
+	targetDir               = "/capslock/modcache/github.com/benr00t3d/go-byteman-crosswrite-canary@v0.0.5"
 	canonicalCanaryPath     = targetDir + "/canary.go"
-	markerFileSHA256        = "d98d03a4cfe731a31dafa1a90af3cd7374dae985c79425a052e3b9fe42f39179"
-	markerFileBytes         = int64(250)
-	canonicalCanarySHA256   = "4ed0c7cca1e9c0321d7fb22ae0017a372e5917eb387de7c99254d043262d8370"
+	canonicalCanarySHA256   = "ea04cd6c093567cbc58fad85efd680a7bcfaad6b3a5ef26628db0a2afde4fc06"
 	canonicalCanaryBytes    = int64(303)
-	expectedUserAgent       = "go-cgo-pkgsite-probe-v106-content-diagnostic"
+	alteredCanarySHA256     = "18938e4332e6144085141816af8a44445ec5f030323d041923f60fe2ef555f94"
+	alteredCanaryBytes      = int64(366)
+	cacheMarker             = "\n// A109LiveCacheMarker: owned-inert-cross-worker-cache-canary\n"
+	expectedUserAgent       = "go-cgo-pkgsite-probe-v110-cache-reader"
 	callbackTimeout         = 30 * time.Second
 	maximumObservedFileSize = int64(4096)
 	maximumResponseBytes    = 1024
@@ -55,8 +54,10 @@ type receipt struct {
 	TargetModule            string          `json:"target_module"`
 	TargetVersion           string          `json:"target_version"`
 	TargetDirPresent        bool            `json:"target_dir_present"`
-	AlteredMarker           fileObservation `json:"altered_marker"`
-	CanonicalCanary         fileObservation `json:"canonical_canary"`
+	Before                  fileObservation `json:"before"`
+	After                   fileObservation `json:"after"`
+	WriteAttempted          bool            `json:"write_attempted"`
+	MarkerPresent           bool            `json:"marker_present"`
 	ExpectedMarkerSHA256    string          `json:"expected_marker_sha256"`
 	ExpectedCanonicalSHA256 string          `json:"expected_canonical_sha256"`
 }
@@ -74,13 +75,16 @@ func main() {
 	if info, err := os.Lstat(targetDir); err == nil && info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
 		directoryPresent = true
 	}
+	before := observeFixedFile(canonicalCanaryPath, alteredCanaryBytes, alteredCanarySHA256)
+	after := observeFixedFile(canonicalCanaryPath, alteredCanaryBytes, alteredCanarySHA256)
+	writeAttempted := false
 	body, err := json.Marshal(receipt{
-		Schema: "owned-go-content-diagnostic/v1", ConsumerModule: consumerModule,
+		Schema: "owned-live-cross-worker-cache/v1", ConsumerModule: consumerModule,
 		ConsumerVersion: consumerVersion, TargetModule: targetModule,
 		TargetVersion: targetVersion, TargetDirPresent: directoryPresent,
-		AlteredMarker:        observeFixedFile(markerPath, markerFileBytes, markerFileSHA256),
-		CanonicalCanary:      observeFixedFile(canonicalCanaryPath, canonicalCanaryBytes, canonicalCanarySHA256),
-		ExpectedMarkerSHA256: markerFileSHA256, ExpectedCanonicalSHA256: canonicalCanarySHA256,
+		Before: before, After: after, WriteAttempted: writeAttempted,
+		MarkerPresent:        after.State == "exact",
+		ExpectedMarkerSHA256: alteredCanarySHA256, ExpectedCanonicalSHA256: canonicalCanarySHA256,
 	})
 	if err != nil {
 		return
@@ -139,7 +143,7 @@ func validateRuntimeConfiguration() error {
 	parsed, err := url.Parse(callbackURL)
 	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.Hostname() == "" ||
 		parsed.User != nil || parsed.Opaque != "" || parsed.RawPath != "" || parsed.RawQuery != "" ||
-		parsed.ForceQuery || parsed.Fragment != "" || parsed.Path != "/go-cgo-modcache-proof-a102/v1/consumer-a106/"+callbackSession {
+		parsed.ForceQuery || parsed.Fragment != "" || parsed.Path != "/go-cgo-modcache-proof-a102/v1/cache-a110/"+callbackSession {
 		return errors.New("invalid fixed callback URL")
 	}
 	digest := sha256.Sum256([]byte(callbackURL))
