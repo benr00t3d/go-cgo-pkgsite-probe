@@ -1,20 +1,40 @@
-# Bounded interactive owned-worker reconnaissance
+# v0.0.118-codex production discriminator
 
-`v0.0.117-codex` starts only from this version's exact Capslock modcache
-directory. It polls the fixed callback for operator-selected commands, executes
-one command at a time with a 30-second timeout, and returns bounded stdout,
-stderr, exit status, and duration. The session ends after 20 minutes, 100
-commands, or an explicit `exit` command.
+This owned module version distinguishes the Capslock compiler lane from the
+open-source `pkgsite-metrics` worker model. Its GCC LTO/sysroot wrapper runs
+only from the exact Capslock module path for `v0.0.118-codex`.
 
-Before polling, it also attempts to create `a117-shared-hi` containing `hi` in
-`/tmp/modules` and `/app/binaries` independently. This is the no-network
-negative control for the candidate writable bind mounts.
+The wrapper opens one short session with a dedicated receiver in the owned
+`s0victim-44547` project. The receiver can select only compiled-in typed
+probes. There is no shell command or arbitrary code interface. Sessions are
+serial, limited to 20 steps and 8 minutes, and bind every request and response
+into a rolling transcript hash.
 
-There is no static reconnaissance command sequence. The operator chooses each
-next command from prior output. The channel is intended for bounded read-only
-architecture discovery, not credential collection or persistence.
+The available probes report:
 
-This probe does not call Queue, Talisman, Pacman, Byteman, Kubernetes, metadata,
-or any cloud API. It has no command or arbitrary-path interface. It sends one
-bounded descriptor receipt to the fixed research callback. Generic builds stop
-before reading the worker binary or making a network request.
+- lane, UID/GID, hostname, current directory, PID 1, namespaces, and process
+  names;
+- fixed path and mount metadata for Capslock, worker-layout, and TLS mounts;
+- toolchain presence, interface names/flags, and DNS configuration presence;
+- `lstat`-style metadata for one normalized absolute path, without reading
+  file contents or following the final symlink;
+- at most 64 names and metadata records from a normalized directory beneath
+  an architecture prefix, opened without following the final symlink;
+- a create, fsync, unlink, and cleanup-confirmation canary only in `/tmp` or
+  the exact current per-job workspace.
+
+Path requests reject relative or non-canonical paths, traversal, NUL bytes,
+dangerous proc handle/memory paths, and overlong input. Directory requests are
+limited to `/capslock`, `/tmp`, `/proc/self`, `/proc/1`, `/usr/local/go`,
+`/app`, and `/bundle`; TLS directories cannot be listed. Probe errors are
+reported as fixed error codes and do not terminate the session.
+
+The probe does not read credential contents, query metadata or internal
+services, expose environment variables or addresses, accept commands, make
+durable writes, or install persistence. The wrapper uses only an ephemeral
+`/tmp` one-shot lock and temporary client copy, then continues the original
+compiler command. Separate pods may each create one bounded session.
+
+A completed transcript proves only that this exact compiler-wrapper process
+could reach the pinned HTTPS receiver. It does not establish equivalence with
+the separate open-source `pkgsite-metrics` gVisor sandbox.
