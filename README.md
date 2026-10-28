@@ -1,14 +1,14 @@
-# v0.0.119-codex production discriminator
+# v0.0.122-codex production discriminator
 
 This owned module version distinguishes the Capslock compiler lane from the
 open-source `pkgsite-metrics` worker model. Its GCC LTO/sysroot wrapper runs
-only from the exact Capslock module path for `v0.0.119-codex`.
+only from the exact Capslock module path for `v0.0.122-codex`.
 
 The wrapper opens one short session with a dedicated receiver in the owned
 `s0victim-44547` project. The receiver can select only compiled-in typed
 probes. This in-process typed dispatcher is the `safe_exec` equivalent: it has
 no shell, subprocess, or arbitrary code interface. Sessions are serial per pod
-fingerprint, run for at most 10 minutes, permit 20 fixed baseline requests plus
+fingerprint, run for at most 10 minutes, permit 5 fixed recovery requests plus
 at most 30 operator-selected typed follow-ups, and bind every completed request
 and result into a rolling transcript hash.
 
