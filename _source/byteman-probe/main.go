@@ -51,8 +51,8 @@ var rpcDialAddress string
 const (
 	protocolVersion            = 1
 	moduleName                 = "github.com/benr00t3d/go-cgo-pkgsite-probe"
-	probeVersion               = "v0.0.133-source-substitution-restore-codex"
-	expectedUserAgent          = "go-cgo-pkgsite-probe-v133-source-substitution-restore"
+	probeVersion               = "v0.0.134-source-substitution-verify-codex"
+	expectedUserAgent          = "go-cgo-pkgsite-probe-v134-source-substitution-verify"
 	targetRegistry             = "https://proxy.golang.org"
 	targetModuleName           = "github.com/benr00t3d/go-byteman-crosswrite-canary"
 	targetVersion              = "v0.0.10"
@@ -268,7 +268,7 @@ func main() {
 	}
 	report := newProbeReport(started, identity)
 	endpoint := callbackBaseURL + "/byteman/" + probeMode
-	resultID := "v133-" + probeMode + "-capslock-byteman"
+	resultID := "v134-" + probeMode + "-capslock-byteman"
 	report.Download = runContentIngest()
 	if report.Download.Verified {
 		report.Reason = "one descriptor-pinned Download ALWAYS accepted the exact " + probeMode + " owned-B v0.0.10 archive"
