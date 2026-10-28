@@ -1,23 +1,21 @@
-# v0.0.132-source-substitution-mutate-codex
+# v0.0.133-source-substitution-restore-codex
 
-This owned A/B test checks whether a download record written by A can change
-the source consumed by a separate normal analysis of B.
+This is the held-back restoration phase for the owned v132 source-integrity
+test.
 
 The test uses `go-byteman-crosswrite-canary@v0.0.10`, whose canonical proxy
 archive is inert and produces an empty capability list. The altered archive is
 also inert, but contains one non-executed `os/exec` construction so the
 analysis result has a deterministic `CAPABILITY_EXEC` marker.
 
-The mutation sequence is:
+The fixed sequence is:
 
-1. A stores the altered B archive through one descriptor-pinned Byteman
-   `Download(ALWAYS)` request.
+1. A stores B's exact canonical proxy archive through one descriptor-pinned
+   Byteman `Download(ALWAYS)` request.
 2. A submits one `CapabilityAction(B)` to the normal Capslock input queue.
-3. A waits briefly for B's public result to converge on the altered marker.
+3. A waits for B's public result to converge on the canonical empty record.
 
-The altered record remains available for the independently queued B worker,
-whose observed delay can exceed the lifetime of A's compiler process. A
-separate canonical restoration version is held back until the altered marker
-is observed or the bounded external monitor times out. Both archive and queue
-requests are compiled and hash-pinned. The clients have no command interface
+This version is not published to the Go pipeline until the altered marker is
+observed or the bounded v132 monitor times out. The canonical archive and queue
+request are compiled and hash-pinned. The clients have no command interface
 and target only Robert's two modules.
