@@ -51,13 +51,17 @@ const (
 	cleanSHA256   = "14d798f2aadfed6f6a1eb6951221daa65d5e132d402cf9fa35952c0adc9857dd"
 	mutatedSHA256 = "0000000000000000000000000000000000000000000000000000000000000000"
 
-	// These remain deliberately invalid until v123 supplies the exact nested
-	// Capability element descriptor and the resulting request is independently
-	// decoded and pinned. validateStaticPins prevents any RPC before then.
-	mutationPushBytes  = 0
-	mutationPushSHA256 = "0000000000000000000000000000000000000000000000000000000000000000"
-	cleanupPushBytes   = 136
-	cleanupPushSHA256  = "225fccc94424f1226bb7915a24d71229e09ac4a8e268f22892ffe7b6a0801874"
+	// v125 proved that CapabilityResultAction.capabilities is a repeated
+	// CapabilitiesEntry whose key is field 1/string and value is field 2/bytes.
+	// The meaning and serialization of the opaque value bytes remain unproved,
+	// so these stay empty until the owned v126 Result receipt supplies them.
+	// validateStaticPins prevents any callback or RPC before then.
+	mutationCapabilityKey      = ""
+	mutationCapabilityValueHex = ""
+	mutationPushBytes          = 0
+	mutationPushSHA256         = "0000000000000000000000000000000000000000000000000000000000000000"
+	cleanupPushBytes           = 136
+	cleanupPushSHA256          = "225fccc94424f1226bb7915a24d71229e09ac4a8e268f22892ffe7b6a0801874"
 
 	clientCertificatePath = "/etc/tls/client/tls.crt"
 	clientKeyPath         = "/etc/tls/client/tls.key"
@@ -192,6 +196,14 @@ type report struct {
 	CleanupPublic            convergenceReceipt `json:"cleanup_public"`
 	Outcome                  string             `json:"outcome"`
 	Error                    string             `json:"error,omitempty"`
+}
+
+// capabilityMapEntry is the exact production map-entry wire shape recovered
+// from proto/talisman/capslock.proto by v125. Value is intentionally opaque:
+// the production descriptor declares bytes and does not identify its payload.
+type capabilityMapEntry struct {
+	Key   string
+	Value []byte
 }
 
 func main() {
@@ -587,9 +599,41 @@ func buildCleanPush() []byte {
 }
 
 func buildMutationPush() ([]byte, error) {
-	// Intentionally unavailable until the exact v123 descriptor identifies the
-	// nested Capability message and every field used by the unique public body.
-	return nil, errors.New("mutation descriptor not pinned")
+	if mutationCapabilityKey == "" || mutationCapabilityValueHex == "" {
+		return nil, errors.New("mutation capability value not pinned")
+	}
+	value, err := hex.DecodeString(mutationCapabilityValueHex)
+	if err != nil || len(value) == 0 {
+		return nil, errors.New("mutation capability value invalid")
+	}
+	action, err := encodeCapabilityResultAction(targetCoordinate, []capabilityMapEntry{{
+		Key: mutationCapabilityKey, Value: value,
+	}}, "")
+	if err != nil {
+		return nil, err
+	}
+	return buildQueuePush(mutationSource, action), nil
+}
+
+// encodeCapabilityResultAction encodes only the exact v125 production outer
+// schema. It deliberately treats each map value as opaque bytes.
+func encodeCapabilityResultAction(packageVersion string, capabilities []capabilityMapEntry, errorText string) ([]byte, error) {
+	if packageVersion == "" || len(packageVersion) > 512 || len(capabilities) > 32 || len(errorText) > 1024 {
+		return nil, errors.New("capability result action outside bounds")
+	}
+	result := appendStringField(nil, 1, packageVersion)
+	for _, capability := range capabilities {
+		if capability.Key == "" || len(capability.Key) > 256 || len(capability.Value) == 0 || len(capability.Value) > 16*1024 {
+			return nil, errors.New("capability map entry outside bounds")
+		}
+		entry := appendStringField(nil, 1, capability.Key)
+		entry = appendBytesField(entry, 2, capability.Value)
+		result = appendBytesField(result, 2, entry)
+	}
+	if errorText != "" {
+		result = appendStringField(result, 3, errorText)
+	}
+	return result, nil
 }
 
 func buildQueuePush(source string, capabilityResultAction []byte) []byte {

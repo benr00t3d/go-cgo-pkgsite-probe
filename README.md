@@ -17,10 +17,14 @@ for 21 consecutive exact clean responses. Each response must have HTTP/gRPC
 success, complete gRPC frames, one target echo, and one action UUID. Receipts
 contain only the UUID hash.
 
-The mutation builder and its pins are intentionally disabled until the v123
-production descriptor supplies the exact nested capability schema. With the
-placeholder pins in this branch, the client returns before any callback or
-internal request.
+The v125 production descriptor proves the result's outer wire schema:
+`package_version` is field 1/string, `capabilities` is field 2/repeated
+`CapabilitiesEntry`, and `error` is field 3/string. Each entry is exactly
+`key` field 1/string plus `value` field 2/bytes. The key semantics and opaque
+value serialization are not described by that descriptor, so the mutation
+key/value and request pins remain intentionally empty. With those placeholders
+the client returns before any callback or internal request. A separate owned
+v126 Result receipt must establish the value encoding before this can unlock.
 
 Bounded preflight, mutation, public-transition, cleanup, and final receipts go
 to one pinned receiver in the owned `s0victim-44547` project. Each

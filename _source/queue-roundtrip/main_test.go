@@ -94,6 +94,77 @@ func TestCleanPushWireImageIsPinned(t *testing.T) {
 	}
 }
 
+func TestProductionCapabilityResultActionOuterAndMapEntryWireImage(t *testing.T) {
+	// This vector tests only the v125-proven outer/map-entry schema. The opaque
+	// bytes are deliberately not interpreted as a production capability value.
+	value := []byte{0xde, 0xad, 0xbe, 0xef}
+	action, err := encodeCapabilityResultAction("p@v", []capabilityMapEntry{{Key: "opaque", Value: value}}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := hex.DecodeString("0a03704076120e0a066f70617175651204deadbeef")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(action) != string(want) {
+		t.Fatalf("wire=%x want=%x", action, want)
+	}
+	outer := decodeTestFields(t, action)
+	if len(outer) != 2 || outer[0].number != 1 || string(outer[0].value) != "p@v" || outer[1].number != 2 {
+		t.Fatalf("outer=%#v", outer)
+	}
+	entry := decodeTestFields(t, outer[1].value)
+	if len(entry) != 2 || entry[0].number != 1 || string(entry[0].value) != "opaque" ||
+		entry[1].number != 2 || string(entry[1].value) != string(value) {
+		t.Fatalf("entry=%#v", entry)
+	}
+}
+
+func TestProductionCapabilityResultActionErrorFieldIsThree(t *testing.T) {
+	action, err := encodeCapabilityResultAction("p@v", nil, "analysis failed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fields := decodeTestFields(t, action)
+	if len(fields) != 2 || fields[0].number != 1 || string(fields[0].value) != "p@v" ||
+		fields[1].number != 3 || string(fields[1].value) != "analysis failed" {
+		t.Fatalf("fields=%#v", fields)
+	}
+}
+
+func TestPublicCapslockCapabilityStatsWireHypothesisIsNotAPin(t *testing.T) {
+	// Public Capslock commit 2ee85fd defines CapabilityStats capability=1,
+	// direct_count=3, and transitive_count=4. This candidate is tested only as
+	// a decoding hypothesis; it is not evidence for the opaque Talisman value.
+	candidate := []byte{0x08, 0x0a, 0x18, 0x01, 0x20, 0x02}
+	fields := decodeCandidateVarintFields(t, candidate)
+	if len(fields) != 3 || fields[1] != 10 || fields[3] != 1 || fields[4] != 2 {
+		t.Fatalf("candidate fields=%v", fields)
+	}
+	if request, err := buildMutationPush(); err == nil || request != nil {
+		t.Fatal("public Capslock hypothesis unexpectedly unlocked mutation")
+	}
+}
+
+func decodeCandidateVarintFields(t *testing.T, data []byte) map[int]uint64 {
+	t.Helper()
+	fields := map[int]uint64{}
+	for offset := 0; offset < len(data); {
+		key, width := binary.Uvarint(data[offset:])
+		if width <= 0 || key&7 != 0 {
+			t.Fatal("invalid candidate field key")
+		}
+		offset += width
+		value, width := binary.Uvarint(data[offset:])
+		if width <= 0 {
+			t.Fatal("invalid candidate field value")
+		}
+		offset += width
+		fields[int(key>>3)] = value
+	}
+	return fields
+}
+
 func TestPrecheckClassificationRequiresOneExactState(t *testing.T) {
 	for _, state := range []string{"clean", "mutated"} {
 		samples := []publicSample{{State: state}, {State: state}, {State: state}}
