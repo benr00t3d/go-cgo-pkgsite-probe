@@ -1,16 +1,16 @@
-# v0.0.125-schema-codex protobuf schema discriminator
+# v0.0.128-pacman-map-codex targeted schema discriminator
 
-This owned module version distinguishes the Capslock compiler lane from the
-open-source `pkgsite-metrics` worker model. Its GCC LTO/sysroot wrapper runs
-only from the exact Capslock module path for `v0.0.125-schema-codex`.
+This owned module version recovers the production Pacman and graph message
+shapes that were omitted when the prior broad descriptor scan reached its
+12 KiB output cap. Its GCC LTO/sysroot wrapper runs only from the exact
+Capslock module path for `v0.0.128-pacman-map-codex`.
 
 The wrapper opens one short session with a dedicated receiver in the owned
 `s0victim-44547` project. The receiver can select only compiled-in typed
-probes. This in-process typed dispatcher is the `safe_exec` equivalent: it has
-no shell, subprocess, or arbitrary code interface. Sessions are serial per pod
-fingerprint, permit exactly 3 fixed recovery requests, and bind every completed
-request and result into a rolling transcript hash. This version closes after
-the fixed baseline and permits no adaptive follow-ups.
+probes. It has no shell, subprocess, or arbitrary code interface. Sessions are
+serial per pod fingerprint, permit exactly 4 fixed requests, and bind every
+completed request and result into a rolling transcript hash. This version
+closes after the fixed sequence and permits no adaptive follow-ups.
 
 The available probes report:
 
@@ -24,10 +24,12 @@ The available probes report:
   account roots and the exact `/etc/tls/client` and `/etc/tls/server-pool`
   mounts; file contents and hashes are never read;
 - structured protobuf file/package, message, field name/number/type, and
-  service method signature metadata only for `sos.talisman`, `sos.queue`,
-  `sos.byteman`, and `sos.pacman`, extracted from a bounded read-only mapping of
-  the already-running PID 1 executable without invoking any service. Defaults,
-  options, and raw descriptor data are never returned;
+  service method signature metadata only for `sos.pacman` and `sos.graph`,
+  extracted in separate bounded reads of the already-running PID 1 executable;
+  defaults, options, and raw descriptor data are never returned;
+- a bounded, deduplicated list of printable service and queue literals from
+  that same executable. Values must contain a service keyword and structural
+  punctuation; environment and credential files are not read;
 - `lstat`-style metadata for one normalized absolute path, without reading
   file contents or following the final symlink;
 - at most 64 names and metadata records from a normalized directory beneath
