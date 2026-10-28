@@ -170,6 +170,7 @@ type downloadRecordProof struct {
 	IDBytes        int         `json:"id_bytes"`
 	IDSHA256       string      `json:"id_sha256"`
 	HeaderCount    int         `json:"header_count"`
+	OptionalFields []int       `json:"optional_field_numbers"`
 }
 type downloadResult struct {
 	Method                  string              `json:"method"`
@@ -517,7 +518,7 @@ func exactZeroGRPCStatus(header, trailer grpcMetadataValue) bool {
 }
 
 func analyzeDownloadRecord(raw []byte, expect recordExpectation) (downloadRecordProof, bool, error) {
-	proof := downloadRecordProof{RecordBytes: len(raw)}
+	proof := downloadRecordProof{RecordBytes: len(raw), OptionalFields: []int{}}
 	if len(raw) == 0 || len(raw) > maximumDownloadRecordBytes {
 		return proof, false, errors.New("Download record exceeded exact size bounds")
 	}
@@ -545,6 +546,8 @@ func analyzeDownloadRecord(raw []byte, expect recordExpectation) (downloadRecord
 				urlValue = f.value
 			case 4:
 				contentType = f.value
+			case 6:
+				proof.OptionalFields = append(proof.OptionalFields, f.number)
 			case 7:
 				cacheControl = f.value
 			case 16:
@@ -585,6 +588,12 @@ func analyzeDownloadRecord(raw []byte, expect recordExpectation) (downloadRecord
 			if f.number == 5 {
 				statusValue = f.varint
 			}
+			if f.number == 19 && f.varint != redirectPolicyValue {
+				return proof, false, errors.New("Download redirect policy did not match FOLLOW_NONE")
+			}
+			if f.number == 8 || f.number == 9 || f.number == 10 || f.number == 11 || f.number == 13 || f.number == 19 {
+				proof.OptionalFields = append(proof.OptionalFields, f.number)
+			}
 		default:
 			return proof, false, errors.New("Download record contained field outside pinned schema")
 		}
@@ -594,9 +603,9 @@ func analyzeDownloadRecord(raw []byte, expect recordExpectation) (downloadRecord
 			return proof, false, errors.New("content-ingest Download record omitted a required field")
 		}
 	}
-	for _, n := range []int{6, 8, 9, 10, 11, 13, 15, 19} {
+	for _, n := range []int{15} {
 		if counts[n] != 0 {
-			return proof, false, errors.New("content-ingest Download record had an unexpected optional field")
+			return proof, false, errors.New("content-ingest Download record contained an error field")
 		}
 	}
 	if counts[18] != 8 {

@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -217,6 +218,37 @@ func TestExactDownloadResponseRequiresRecordAndOuterStatus(t *testing.T) {
 	analysis, err = parseDownloadResponse(wrongStatus, expectation)
 	if err != nil || !analysis.StatusSet || analysis.StatusCode != 500 {
 		t.Fatalf("wrong outer status analysis=%#v err=%v", analysis, err)
+	}
+}
+
+func TestDownloadRecordAcceptsBoundedProductionOptionalMetadata(t *testing.T) {
+	record, expectation := fixtureRecord(t, "https://owned.example.invalid/v0.0.2.zip", 200)
+	record = appendStringField(record, 6, "owned-etag")
+	for _, number := range []int{8, 9, 10, 11, 13} {
+		record = appendVarintField(record, number, uint64(1700000000+number))
+	}
+	record = appendVarintField(record, 19, redirectPolicyValue)
+	proof, matched, err := analyzeDownloadRecord(record, expectation)
+	if err != nil || !matched || !proof.Matched {
+		t.Fatalf("proof=%#v matched=%v err=%v", proof, matched, err)
+	}
+	want := []int{6, 8, 9, 10, 11, 13, 19}
+	if !slices.Equal(proof.OptionalFields, want) {
+		t.Fatalf("optional fields=%v want %v", proof.OptionalFields, want)
+	}
+
+	wrongRedirect, _ := fixtureRecord(t, "https://owned.example.invalid/v0.0.2.zip", 200)
+	wrongRedirect = appendVarintField(wrongRedirect, 19, 1)
+	for name, invalid := range map[string][]byte{
+		"error-field":     appendStringField(append([]byte(nil), record...), 15, "download failed"),
+		"redirect-policy": wrongRedirect,
+		"duplicate-etag":  appendStringField(append([]byte(nil), record...), 6, "second"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, _, err := analyzeDownloadRecord(invalid, expectation); err == nil {
+				t.Fatal("invalid optional metadata accepted")
+			}
+		})
 	}
 }
 
