@@ -54,7 +54,7 @@ func TestRuntimeConfigurationIsExact(t *testing.T) {
 	priorURL, priorSession, priorDigest := callbackURL, callbackSession, callbackURLSHA256
 	t.Cleanup(func() { callbackURL, callbackSession, callbackURLSHA256 = priorURL, priorSession, priorDigest })
 	callbackSession = strings.Repeat("a", 64)
-	callbackURL = "https://owned.example.invalid/v1/result/" + callbackSession + "/writer"
+	callbackURL = "https://owned.example.invalid/v1/result/" + callbackSession + "/same-worker"
 	digest := sha256.Sum256([]byte(callbackURL))
 	callbackURLSHA256 = hex.EncodeToString(digest[:])
 	if err := validateRuntimeConfiguration(); err != nil {

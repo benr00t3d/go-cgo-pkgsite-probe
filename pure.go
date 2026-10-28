@@ -2,4 +2,4 @@ package pkgsiteprobe
 
 // AnalysisVisible keeps this package visible to analyzers that disable cgo.
 // The cgo-specific probe remains in probe.go.
-const AnalysisVisible = "v0.0.111-codex-live-content-writer"
+const AnalysisVisible = "v0.0.113-codex-same-worker-consumer"

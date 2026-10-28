@@ -1,9 +1,11 @@
-# Owned A111 live B-content writer
+# Owned A113 same-worker fresh B consumer
 
-`v0.0.111-codex` imports the canonical researcher-owned B module at `v0.0.7`.
-At the GCC link stage, the fixed wrapper runs only from this version's exact
-Capslock module-cache directory. If B's canonical `canary.go` matches its
-pinned 303-byte SHA-256 and the new marker is absent, the writer creates only
-`a111_injected_content.go` with one inert exported constant. It never rewrites
-an existing marker and reports before/after states to an independent receipt
-service. The wrapper exits 86 after the diagnostic.
+`v0.0.113-codex` first performs A111's bounded write: after verifying canonical
+B `v0.0.7`, it creates only the pinned inert `a111_injected_content.go` in B's
+module-cache directory. If the exact marker is present, it creates a new
+ordinary Go consumer and runs `go run .` with a fresh `GOCACHE`, the same
+`/capslock/modcache`, `GOPROXY=off`, the standard checksum database setting,
+and no inherited environment except the Go binary's PATH location. The
+consumer must print the exact injected value and canonical B baseline. Its
+exit code and bounded output are reported; a link-stage callback alone is not
+considered evidence of content consumption.
