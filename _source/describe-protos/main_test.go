@@ -12,7 +12,7 @@ import (
 
 func TestValidateRuntimeConfiguration(t *testing.T) {
 	callbackSession = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-	callbackURL = "https://us-central1-s0victim-44547.cloudfunctions.net/go-cgo-v122-recovery-codex/v1/session/" + callbackSession
+	callbackURL = "https://us-central1-s0victim-44547.cloudfunctions.net/go-cgo-v123-schema-codex/v1/session/" + callbackSession
 	digest := sha256.Sum256([]byte(callbackURL))
 	callbackURLSHA256 = hex.EncodeToString(digest[:])
 	if err := validateRuntimeConfiguration(); err != nil {
@@ -77,6 +77,10 @@ func TestRequestShape(t *testing.T) {
 	}
 	if validRequestShape(requestSpec{ID: "protobuf_services", Args: map[string]string{"path": "/proc/1/exe"}}, "") {
 		t.Fatal("fixed protobuf probe accepted caller path")
+	}
+	if !validRequestShape(requestSpec{ID: "protobuf_schemas", Args: map[string]string{}}, "") ||
+		validRequestShape(requestSpec{ID: "protobuf_schemas", Args: map[string]string{"path": "/proc/1/exe"}}, "") {
+		t.Fatal("protobuf_schemas request shape mismatch")
 	}
 }
 
@@ -144,7 +148,7 @@ func TestWriteCanaryIsScopedAndCleaned(t *testing.T) {
 	if value["cleanup_confirmed"] != true || value["unlinked"] != true {
 		t.Fatalf("canary not cleaned: %+v", value)
 	}
-	matches, err := filepath.Glob(filepath.Join(directory, ".go-cgo-v122-*"))
+	matches, err := filepath.Glob(filepath.Join(directory, ".go-cgo-v123-*"))
 	if err != nil || len(matches) != 0 {
 		t.Fatalf("canary remnants: %v %v", matches, err)
 	}
@@ -229,6 +233,11 @@ func appendProtoField(destination []byte, number int, value []byte) []byte {
 	return append(destination, value...)
 }
 
+func appendProtoVarint(destination []byte, number int, value uint64) []byte {
+	destination = binary.AppendUvarint(destination, uint64(number<<3))
+	return binary.AppendUvarint(destination, value)
+}
+
 func syntheticDescriptor(packageName, serviceName string, methods ...string) []byte {
 	service := appendProtoField(nil, 1, []byte(serviceName))
 	for _, name := range methods {
@@ -250,6 +259,85 @@ func TestDescriptorExtractionReturnsOnlyAllowedNames(t *testing.T) {
 	}
 	if denied := servicesFromDescriptor(syntheticDescriptor("other.internal", "Admin", "Delete")); len(denied) != 0 {
 		t.Fatalf("unrelated descriptor escaped filter: %+v", denied)
+	}
+}
+
+func syntheticSchemaDescriptor(packageName string) []byte {
+	moduleField := appendProtoField(nil, 1, []byte("module_path"))
+	moduleField = appendProtoVarint(moduleField, 3, 1)
+	moduleField = appendProtoVarint(moduleField, 4, 1)
+	moduleField = appendProtoVarint(moduleField, 5, 9)
+	moduleField = appendProtoField(moduleField, 7, []byte("raw-default-must-not-escape"))
+	actionField := appendProtoField(nil, 1, []byte("action"))
+	actionField = appendProtoVarint(actionField, 3, 2)
+	actionField = appendProtoVarint(actionField, 4, 1)
+	actionField = appendProtoVarint(actionField, 5, 11)
+	actionField = appendProtoField(actionField, 6, []byte("."+packageName+".Action"))
+	message := appendProtoField(nil, 1, []byte("PushRequest"))
+	message = appendProtoField(message, 2, actionField)
+	message = appendProtoField(message, 2, moduleField)
+	method := appendProtoField(nil, 1, []byte("Push"))
+	method = appendProtoField(method, 2, []byte("."+packageName+".PushRequest"))
+	method = appendProtoField(method, 3, []byte("."+packageName+".PushResponse"))
+	method = appendProtoVarint(method, 5, 1)
+	service := appendProtoField(nil, 1, []byte("Queue"))
+	service = appendProtoField(service, 2, method)
+	file := appendProtoField(nil, 1, []byte("sos/queue/queue.proto"))
+	file = appendProtoField(file, 2, []byte(packageName))
+	file = appendProtoField(file, 4, message)
+	file = appendProtoField(file, 6, service)
+	return appendProtoField(file, 12, []byte("proto3"))
+}
+
+func TestFullDescriptorSchemaIsStructuredAndDropsDefaults(t *testing.T) {
+	raw := syntheticSchemaDescriptor("sos.queue")
+	messages, fields, services, methods := 0, 0, 0, 0
+	truncated := false
+	file, ok := schemaFromDescriptor(raw, &messages, &fields, &services, &methods, &truncated)
+	if !ok || truncated {
+		t.Fatalf("schema rejected or truncated: ok=%t truncated=%t value=%+v", ok, truncated, file)
+	}
+	if file.Name != "sos/queue/queue.proto" || file.Package != "sos.queue" || len(file.Messages) != 1 || len(file.Services) != 1 {
+		t.Fatalf("unexpected file schema: %+v", file)
+	}
+	message := file.Messages[0]
+	if message.Name != "sos.queue.PushRequest" || len(message.Fields) != 2 {
+		t.Fatalf("unexpected message: %+v", message)
+	}
+	if message.Fields[0].Name != "module_path" || message.Fields[0].Number != 1 || message.Fields[0].Kind != "string" || message.Fields[0].TypeName != "" {
+		t.Fatalf("unexpected scalar field: %+v", message.Fields[0])
+	}
+	if message.Fields[1].Name != "action" || message.Fields[1].Number != 2 || message.Fields[1].Kind != "message" || message.Fields[1].TypeName != ".sos.queue.Action" {
+		t.Fatalf("unexpected message field: %+v", message.Fields[1])
+	}
+	method := file.Services[0].Methods[0]
+	if method.Name != "Push" || method.InputType != ".sos.queue.PushRequest" || method.OutputType != ".sos.queue.PushResponse" || !method.ClientStreaming || method.ServerStreaming {
+		t.Fatalf("unexpected method: %+v", method)
+	}
+	encoded := string(mustCanonicalForTest(t, file))
+	if strings.Contains(encoded, "raw-default-must-not-escape") || strings.Contains(encoded, "default") {
+		t.Fatalf("raw default escaped structured summary: %s", encoded)
+	}
+}
+
+func TestFullDescriptorScanIsPackageAndSizeBounded(t *testing.T) {
+	directory := t.TempDir()
+	path := filepath.Join(directory, "pid1.bin")
+	data := append([]byte("prefix-noise"), syntheticSchemaDescriptor("sos.talisman")...)
+	data = append(data, syntheticSchemaDescriptor("unrelated.admin")...)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	report, err := collectProtoSchemas(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Files) != 1 || report.Files[0].Package != "sos.talisman" {
+		t.Fatalf("package filter failed: %+v", report)
+	}
+	encoded := mustCanonicalForTest(t, report)
+	if len(encoded) > maximumSchemaBytes+256 {
+		t.Fatalf("schema report exceeded bound: %d", len(encoded))
 	}
 }
 

