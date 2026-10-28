@@ -1,57 +1,23 @@
-# v0.0.128-pacman-map-codex targeted schema discriminator
+# v0.0.129-pacman-gate-codex
 
-This owned module version recovers the production Pacman and graph message
-shapes that were omitted when the prior broad descriptor scan reached its
-12 KiB output cap. Its GCC LTO/sysroot wrapper runs only from the exact
-Capslock module path for `v0.0.128-pacman-map-codex`.
+This owned module is a read-only production discriminator for the next
+Capslock chain. Its wrapper runs only from the exact module-cache path for
+this version.
 
-The wrapper opens one short session with a dedicated receiver in the owned
-`s0victim-44547` project. The receiver can select only compiled-in typed
-probes. It has no shell, subprocess, or arbitrary code interface. Sessions are
-serial per pod fingerprint, permit exactly 4 fixed requests, and bind every
-completed request and result into a rolling transcript hash. This version
-closes after the fixed sequence and permits no adaptive follow-ups.
+The fixed three-step transcript reports:
 
-The available probes report:
+1. the worker identity and exact module origin;
+2. the bounded PID 1 command line with sensitive arguments redacted; and
+3. DNS and authenticated gRPC results for four fixed Pacman service names.
 
-- lane, UID/GID, hostname, current directory, PID 1, namespaces, and process
-  names;
-- fixed path and mount metadata for Capslock, worker-layout, and TLS mounts;
-- toolchain presence, interface names/flags, and DNS configuration presence;
-- bounded PID 1 command-line metadata with sensitive-value redaction, self and
-  PID 1 capability/Seccomp/NoNewPrivs fields, and cgroup/container hints;
-- names, modes, sizes, and readability only for common projected service
-  account roots and the exact `/etc/tls/client` and `/etc/tls/server-pool`
-  mounts; file contents and hashes are never read;
-- structured protobuf file/package, message, field name/number/type, and
-  service method signature metadata only for `sos.pacman` and `sos.graph`,
-  extracted in separate bounded reads of the already-running PID 1 executable;
-  defaults, options, and raw descriptor data are never returned;
-- a bounded, deduplicated list of printable service and queue literals from
-  that same executable. Values must contain a service keyword and structural
-  punctuation; environment and credential files are not read;
-- `lstat`-style metadata for one normalized absolute path, without reading
-  file contents or following the final symlink;
-- at most 64 names and metadata records from a normalized directory beneath
-  an architecture prefix, opened without following the final symlink;
-- a create, fsync, unlink, and cleanup-confirmation canary only in `/tmp` or
-  the exact current per-job workspace.
+The last step calls only `sos.pacman.Pacman/ListRegistries` and, after a
+successful response, `sos.pacman.Pacman/Metadata` for the owned
+`github.com/benr00t3d/go-byteman-crosswrite-canary@v0.0.8` target. It records
+request and response hashes, frame counts, status codes, registry names, and
+whether the expected owned version was returned. It does not call Refresh,
+write package state, read credentials, enumerate arbitrary services, accept
+commands, or expose internal IP addresses.
 
-Path requests reject relative or non-canonical paths, traversal, NUL bytes,
-dangerous proc handle/memory paths, and overlong input. Directory requests are
-limited to `/capslock`, `/tmp`, `/proc/self`, `/proc/1`, `/usr/local/go`,
-`/app`, and `/bundle`; TLS directories cannot be listed by dynamic requests.
-Dynamic process requests accept only a canonical numeric PID and return fixed
-process/security metadata, never environment, memory, or file descriptors.
-Probe errors are
-reported as fixed error codes and do not terminate the session.
-
-The probe does not read credential contents, query metadata or internal
-services, expose environment variables, accept commands, make durable writes,
-or install persistence. The wrapper uses only an ephemeral
-`/tmp` one-shot lock and temporary client copy, then continues the original
-compiler command. Separate pods may each create one bounded session.
-
-A completed transcript proves only that this exact compiler-wrapper process
-could reach the pinned HTTPS receiver. It does not establish equivalence with
-the separate open-source `pkgsite-metrics` gVisor sandbox.
+The client uses the worker's existing mTLS files in place and validates the
+server certificate against the mounted pool. The dedicated receiver accepts
+only the compiled-in request sequence and closes the session after step 3.

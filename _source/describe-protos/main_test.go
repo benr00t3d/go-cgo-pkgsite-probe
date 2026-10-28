@@ -12,7 +12,7 @@ import (
 
 func TestValidateRuntimeConfiguration(t *testing.T) {
 	callbackSession = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-	callbackURL = "https://us-central1-s0victim-44547.cloudfunctions.net/go-cgo-v128-pacman-map-codex/v1/session/" + callbackSession
+	callbackURL = "https://us-central1-s0victim-44547.cloudfunctions.net/go-cgo-v129-pacman-gate-codex/v1/session/" + callbackSession
 	digest := sha256.Sum256([]byte(callbackURL))
 	callbackURLSHA256 = hex.EncodeToString(digest[:])
 	if err := validateRuntimeConfiguration(); err != nil {
@@ -200,7 +200,7 @@ func TestWriteCanaryIsScopedAndCleaned(t *testing.T) {
 	if value["cleanup_confirmed"] != true || value["unlinked"] != true {
 		t.Fatalf("canary not cleaned: %+v", value)
 	}
-	matches, err := filepath.Glob(filepath.Join(directory, ".go-cgo-v128-pacman-map-*"))
+	matches, err := filepath.Glob(filepath.Join(directory, ".go-cgo-v129-pacman-gate-*"))
 	if err != nil || len(matches) != 0 {
 		t.Fatalf("canary remnants: %v %v", matches, err)
 	}
@@ -407,6 +407,59 @@ func TestFullDescriptorScanCanSelectOnePackage(t *testing.T) {
 	}
 	if len(report.Files) != 1 || report.Files[0].Package != "sos.graph" {
 		t.Fatalf("targeted package filter failed: %+v", report)
+	}
+}
+
+func TestPacmanRequestShapesArePinned(t *testing.T) {
+	if !validRequestShape(requestSpec{ID: "pacman_readonly", Args: map[string]string{}}, "") {
+		t.Fatal("pacman_readonly request rejected")
+	}
+	if validRequestShape(requestSpec{ID: "pacman_readonly", Args: map[string]string{"host": "example.test"}}, "") {
+		t.Fatal("pacman_readonly accepted dynamic host")
+	}
+	registries := appendProtoVarintField(nil, 1, 1)
+	fields, ok := protobufFields(registries)
+	if !ok || len(fields) != 1 || fields[0].number != 1 || fields[0].wire != 0 || fields[0].varint != 1 {
+		t.Fatalf("unexpected ListRegistries request: %#v", fields)
+	}
+	metadata := appendProtoStringField(nil, 1, ownedTargetName)
+	metadata = appendProtoStringField(metadata, 2, ownedTargetVersion)
+	metadata = appendProtoVarintField(metadata, 3, 1)
+	fields, ok = protobufFields(metadata)
+	if !ok || len(fields) != 3 || firstProtoString(fields, 1) != ownedTargetName ||
+		firstProtoString(fields, 2) != ownedTargetVersion || fields[2].number != 3 || fields[2].varint != 1 {
+		t.Fatalf("unexpected Metadata request: %#v", fields)
+	}
+}
+
+func TestPacmanResponseSummaries(t *testing.T) {
+	registryPayload := appendProtoStringField(nil, 1, "go")
+	registryPayload = appendProtoStringField(registryPayload, 1, "proxy.golang.org")
+	frames, ok := grpcFrames(grpcFrame(registryPayload))
+	if !ok || len(frames) != 1 {
+		t.Fatalf("grpc frame parse failed: %d %t", len(frames), ok)
+	}
+	registries := parseRegistries(frames)
+	if len(registries) != 2 || registries[0] != "go" || registries[1] != "proxy.golang.org" {
+		t.Fatalf("unexpected registries: %#v", registries)
+	}
+	metadata := appendProtoStringField(nil, 8, ownedTargetVersion)
+	if !metadataContainsVersion([][]byte{metadata}) {
+		t.Fatal("owned target version not recognized")
+	}
+	if _, ok := grpcFrames(append(grpcFrame(nil), 1)); ok {
+		t.Fatal("malformed grpc body accepted")
+	}
+}
+
+func TestPacmanCandidateSetIsFixedAndInternal(t *testing.T) {
+	if len(pacmanCandidates) != 4 {
+		t.Fatalf("candidate count=%d", len(pacmanCandidates))
+	}
+	for _, host := range pacmanCandidates {
+		if !strings.HasSuffix(host, ".default.svc.cluster.local") || strings.ContainsAny(host, "/:@") {
+			t.Fatalf("unexpected candidate host %q", host)
+		}
 	}
 }
 
