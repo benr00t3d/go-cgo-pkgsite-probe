@@ -1,23 +1,23 @@
-# v0.0.130-capability-rescan-codex
+# v0.0.131-source-substitution-codex
 
-This owned module tests the reverse side of the Queue boundary already proven
-by v127. The v127 result action left the owned B package's public capability
-record in the exact suppressed state. This version submits one fixed
-`CapabilityAction(B)` to the `capslock-capability` input queue.
+This owned A/B test checks whether a download record written by A can change
+the source consumed by a separate normal analysis of B.
 
-The expected production sequence is:
+The test uses `go-byteman-crosswrite-canary@v0.0.10`, whose canonical proxy
+archive is inert and produces an empty capability list. The altered archive is
+also inert, but contains one non-executed `os/exec` construction so the
+analysis result has a deterministic `CAPABILITY_EXEC` marker.
 
-1. A confirms five exact suppressed B responses.
-2. A pushes one pinned action containing only B's owned package coordinate.
-3. A waits for 21 consecutive exact canonical B responses.
+The fixed sequence is:
 
-A successful transition means Google started its normal B analysis path from
-an action created by A and regenerated B's legitimate result. This is a
-cross-worker scheduling and restoration proof. It does not substitute source
-bytes or claim that B's source was attacker-chosen under another publisher's
-identity.
+1. A stores the altered B archive through one descriptor-pinned Byteman
+   `Download(ALWAYS)` request.
+2. A submits one `CapabilityAction(B)` to the normal Capslock input queue.
+3. A waits for B's public result to converge on the altered marker.
+4. A stores B's exact canonical proxy archive through the same bounded path.
+5. A schedules B again and waits for the canonical empty result to return.
 
-The client is bound to this exact module-cache path, queue name, package
-coordinate, request byte length, and SHA-256. It retains only hashes and an
-action-ID hash. It has no command interface, does not target third-party
-packages, and performs no persistence or credential export.
+The test succeeds only if the altered result and the final restoration each
+appear for 21 consecutive samples. Both archives, both package coordinates,
+both queue requests, and all callback paths are compiled and hash-pinned. The
+clients have no command interface and target only Robert's two modules.

