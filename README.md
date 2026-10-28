@@ -1,31 +1,23 @@
-# v0.0.121-codex owned Queue cleanup receipt
+# v0.0.126 Talisman Result receipt (prepared, disabled)
 
-This owned module version obtains one direct receipt for the production
-Capslock worker's Queue authorization while restoring one researcher-owned
-canary record. Its GCC LTO/sysroot wrapper runs only as root from this exact
-module's `v0.0.121-codex` Capslock path.
+This immutable probe is prepared to make one read-only
+`sos.talisman.Talisman/Result` request from the production Capslock lane for
+the researcher-owned analysis record:
 
-Before internal access, the client reads five cache-busted public analysis
-responses for the fixed owned target
-`github.com/benr00t3d/go-byteman-crosswrite-canary@v0.0.5`:
+`github.com/benr00t3d/go-cgo-pkgsite-probe@v0.0.121-codex`
 
-- five exact clean responses cause a callback-only no-op;
-- any mixed or unknown response aborts before internal access;
-- five exact altered responses require a successful callback preflight before
-  the one internal request is allowed.
+The exact request is a 65-byte unary gRPC body, independently decoded and
+pinned by length and SHA-256. The client sends a preflight receipt before the
+request and never retries. It accepts only one complete response frame,
+HTTP/gRPC success with one status-zero trailer, and an exact production
+`CapabilityResultResponse` containing a non-empty `map<string, bytes>`.
 
-The permitted request is a pinned 136-byte `sos.queue.Queue/Push` stream to
-`capslock-capability-result`. It contains one clean `CapabilityResultAction`
-for the fixed owned target, with no capabilities or error. It is sent once and
-is never retried. The response is accepted only if it has exact HTTP/gRPC
-success, complete gRPC frames, one target echo, and one action UUID. The UUID
-is never returned; only its SHA-256 is included in the receipt.
+The disclosure receipt contains capability keys plus each value's byte length
+and SHA-256. The complete owned response is bound into the result report but
+is retained only in a private Cloud Logging receipt. After a live run that raw
+receipt must be exported mode 600, excluded from disclosure manifests, and
+the receiver deleted. The redacted result log never contains the raw response.
 
-Afterward the client waits for 21 consecutive exact clean public responses.
-It sends bounded preflight, Queue, and final receipts to one pinned receiver in
-the owned `s0victim-44547` project. Each acknowledgement binds the exact
-submitted body hash. Receipts include public response bodies and hashes,
-request/response sizes and hashes, gRPC status metadata, and the client
-certificate's public identity fields and fingerprint. They never include the
-private key, certificate bytes, action UUID, environment, token, command
-channel, arbitrary endpoint, persistence, or a third-party package target.
+The checked-in client is intentionally disabled: its callback URL, session,
+and URL digest are empty. Nothing in this branch has been published, tagged,
+deployed, or submitted for analysis.
