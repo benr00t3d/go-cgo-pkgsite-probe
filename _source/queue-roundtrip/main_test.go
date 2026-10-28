@@ -64,7 +64,7 @@ func splitTestFrames(t *testing.T, data []byte) [][]byte {
 func TestCleanPushWireImageIsPinned(t *testing.T) {
 	request := buildCleanPush()
 	digest := sha256.Sum256(request)
-	if len(request) != expectedPushBytes || hex.EncodeToString(digest[:]) != expectedPushSHA256 {
+	if len(request) != cleanupPushBytes || hex.EncodeToString(digest[:]) != cleanupPushSHA256 {
 		t.Fatalf("request bytes=%d sha256=%s", len(request), hex.EncodeToString(digest[:]))
 	}
 	frames := splitTestFrames(t, request)
@@ -77,7 +77,7 @@ func TestCleanPushWireImageIsPinned(t *testing.T) {
 	}
 	metadata := decodeTestFields(t, queueOuter[0].value)
 	if len(metadata) != 2 || metadata[0].number != 1 || string(metadata[0].value) != queueName ||
-		metadata[1].number != 4 || string(metadata[1].value) != queueSource {
+		metadata[1].number != 4 || string(metadata[1].value) != cleanupSource {
 		t.Fatalf("metadata=%#v", metadata)
 	}
 	pushOuter := decodeTestFields(t, frames[1])
@@ -95,14 +95,14 @@ func TestCleanPushWireImageIsPinned(t *testing.T) {
 }
 
 func TestPrecheckClassificationRequiresOneExactState(t *testing.T) {
-	for _, state := range []string{"clean", "altered"} {
+	for _, state := range []string{"clean", "mutated"} {
 		samples := []publicSample{{State: state}, {State: state}, {State: state}}
 		got, err := classifyPublicSamples(samples)
 		if err != nil || got != state {
 			t.Fatalf("state=%s got=%s err=%v", state, got, err)
 		}
 	}
-	if got, err := classifyPublicSamples([]publicSample{{State: "altered"}, {State: "clean"}}); err == nil || got != "mixed" {
+	if got, err := classifyPublicSamples([]publicSample{{State: "mutated"}, {State: "clean"}}); err == nil || got != "mixed" {
 		t.Fatalf("mixed got=%s err=%v", got, err)
 	}
 	if got, err := classifyPublicSamples([]publicSample{{State: "unknown"}}); err == nil || got != "unknown" {
@@ -111,8 +111,11 @@ func TestPrecheckClassificationRequiresOneExactState(t *testing.T) {
 }
 
 func TestPublicHashesMapOnlyToPinnedStates(t *testing.T) {
-	if publicStateForDigest(cleanSHA256) != "clean" || publicStateForDigest(alteredSHA256) != "altered" {
-		t.Fatal("pinned state mapping changed")
+	if publicStateForDigest(cleanSHA256) != "clean" {
+		t.Fatal("clean state mapping changed")
+	}
+	if publicStateForDigest(mutatedSHA256) != "unknown" {
+		t.Fatal("placeholder mutation digest accepted")
 	}
 	if publicStateForDigest(strings.Repeat("0", 64)) != "unknown" {
 		t.Fatal("unknown digest accepted")
@@ -122,7 +125,7 @@ func TestPublicHashesMapOnlyToPinnedStates(t *testing.T) {
 func TestRuntimeConfigurationPinsOwnedFunction(t *testing.T) {
 	priorURL, priorSession, priorSHA := callbackBaseURL, callbackSession, callbackURLSHA256
 	callbackSession = strings.Repeat("a", 64)
-	callbackBaseURL = "https://us-central1-s0victim-44547.cloudfunctions.net/go-cgo-v121-queue-codex/v1/session/" + callbackSession
+	callbackBaseURL = "https://us-central1-s0victim-44547.cloudfunctions.net/go-cgo-v124-roundtrip-codex/v1/session/" + callbackSession
 	digest := sha256.Sum256([]byte(callbackBaseURL))
 	callbackURLSHA256 = hex.EncodeToString(digest[:])
 	t.Cleanup(func() { callbackBaseURL, callbackSession, callbackURLSHA256 = priorURL, priorSession, priorSHA })
@@ -132,6 +135,15 @@ func TestRuntimeConfigurationPinsOwnedFunction(t *testing.T) {
 	callbackBaseURL += "/extra"
 	if err := validateRuntimeConfiguration(); err == nil {
 		t.Fatal("non-exact callback path accepted")
+	}
+}
+
+func TestStaticPinsRejectIncompleteMutationDescriptor(t *testing.T) {
+	if err := validateStaticPins(); err == nil {
+		t.Fatal("incomplete mutation descriptor pins accepted")
+	}
+	if request, err := buildMutationPush(); err == nil || request != nil {
+		t.Fatal("mutation request built before descriptor was pinned")
 	}
 }
 
