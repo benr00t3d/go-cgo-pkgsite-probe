@@ -1,10 +1,14 @@
 # Bounded interactive owned-worker reconnaissance
 
-`v0.0.114-codex` starts only from this version's exact Capslock modcache
+`v0.0.115-codex` starts only from this version's exact Capslock modcache
 directory. It polls the fixed callback for operator-selected commands, executes
 one command at a time with a 30-second timeout, and returns bounded stdout,
 stderr, exit status, and duration. The session ends after 20 minutes, 100
 commands, or an explicit `exit` command.
+
+Before polling, it also attempts to create `a115-shared-hi` containing `hi` in
+`/tmp/modules` and `/app/binaries` independently. This is the no-network
+negative control for the candidate writable bind mounts.
 
 There is no static reconnaissance command sequence. The operator chooses each
 next command from prior output. The channel is intended for bounded read-only

