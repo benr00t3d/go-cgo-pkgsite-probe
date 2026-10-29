@@ -12,7 +12,7 @@ import crosswritecanary "github.com/benr00t3d/go-byteman-crosswrite-canary"
 const Present = true
 
 // ProbeVersion forces a fresh package-analysis input.
-const ProbeVersion = "v0.0.129-kimi-owned-b-same-job-dependency"
+const ProbeVersion = "v0.0.129-kimi-b-owned-b-same-job-dependency"
 
 // OwnedBBaseline makes the independent researcher-owned B module a real
 // dependency. B is downloaded and enumerated before A's cgo wrapper opens the

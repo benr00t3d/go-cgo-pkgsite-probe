@@ -1,4 +1,4 @@
-# v0.0.129-kimi: same-job owned-B source gate
+# v0.0.129-kimi-b: same-job owned-B source gate
 
 This version keeps the bounded interactive channel and adds one ordinary,
 pinned dependency on the independent researcher-owned package
