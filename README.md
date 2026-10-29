@@ -1,7 +1,9 @@
-# v0.0.135-source-substitution-queue-codex
+# v0.0.137-source-substitution-queue-codex
 
-This is a held-back queue-only phase for the owned source-integrity test. It is
-used only after v134 has independently verified the exact altered B record.
+This is the queue-only phase for the owned source-integrity test. It follows
+the exact v136 altered-write receipt with a monotonically higher semantic
+version so latest-version schedulers cannot discard the queue phase as a
+retrograde tag.
 
 The test uses `go-byteman-crosswrite-canary@v0.0.10`, whose canonical proxy
 archive is inert and produces an empty capability list. The altered archive is
@@ -18,4 +20,5 @@ The fixed sequence is:
 
 This version performs no Byteman write. It deliberately reuses the exact v132
 queue source and wire-image pin so the only operation is scheduling the
-separate B worker. It is not published until the v134 write receipt is exact.
+separate B worker. It is published only after the exact v136 `verified=true`
+write receipt.
