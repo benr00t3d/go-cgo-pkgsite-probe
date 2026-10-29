@@ -1,7 +1,8 @@
-# v0.0.138-source-substitution-combined-codex
+# v0.0.139
 
-This is the monotonic combined phase for the owned source-integrity test. It
-removes the need for two independently scheduled A workers.
+This is the stable-version fallback for the owned source-integrity test. It
+uses the same combined phase as v138 and removes the need for two independently
+scheduled A workers.
 
 The test uses `go-byteman-crosswrite-canary@v0.0.10`, whose canonical proxy
 archive is inert and produces an empty capability list. The altered archive is
