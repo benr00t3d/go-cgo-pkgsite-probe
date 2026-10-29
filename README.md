@@ -1,21 +1,22 @@
-# v0.0.133-source-substitution-restore-codex
+# v0.0.138-source-substitution-combined-codex
 
-This is the held-back restoration phase for the owned v132 source-integrity
-test.
+This is the monotonic combined phase for the owned source-integrity test. It
+removes the need for two independently scheduled A workers.
 
 The test uses `go-byteman-crosswrite-canary@v0.0.10`, whose canonical proxy
 archive is inert and produces an empty capability list. The altered archive is
 also inert, but contains one non-executed `os/exec` construction so the
 analysis result has a deterministic `CAPABILITY_EXEC` marker.
 
-The fixed sequence is:
+One A worker performs this fixed sequence:
 
-1. A stores B's exact canonical proxy archive through one descriptor-pinned
-   Byteman `Download(ALWAYS)` request.
-2. A submits one `CapabilityAction(B)` to the normal Capslock input queue.
-3. A waits for B's public result to converge on the canonical empty record.
+1. Store the exact altered B archive through one descriptor-pinned Byteman
+   `Download(ALWAYS)` request.
+2. Require the exact altered record and callback receipt to verify.
+3. Only on that success, submit one pinned `CapabilityAction(B)` to the normal
+   Capslock input queue.
+4. Leave the altered record in place for the separately scheduled B worker.
 
-This version is not published to the Go pipeline until the altered marker is
-observed or the bounded v132 monitor times out. The canonical archive and queue
-request are compiled and hash-pinned. The clients have no command interface
-and target only Robert's two modules.
+This version performs no restoration. The held v133 version restores B after
+the public marker or bounded observation window. Both clients have no command
+interface and target only Robert's two modules.

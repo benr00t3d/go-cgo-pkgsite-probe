@@ -51,8 +51,8 @@ var rpcDialAddress string
 const (
 	protocolVersion            = 1
 	moduleName                 = "github.com/benr00t3d/go-cgo-pkgsite-probe"
-	probeVersion               = "v0.0.133-source-substitution-restore-codex"
-	expectedUserAgent          = "go-cgo-pkgsite-probe-v133-source-substitution-restore"
+	probeVersion               = "v0.0.138-source-substitution-combined-codex"
+	expectedUserAgent          = "go-cgo-pkgsite-probe-v138-source-substitution-combined"
 	targetRegistry             = "https://proxy.golang.org"
 	targetModuleName           = "github.com/benr00t3d/go-byteman-crosswrite-canary"
 	targetVersion              = "v0.0.10"
@@ -257,18 +257,22 @@ type unaryDownloadBody struct {
 }
 
 func main() {
+	os.Exit(run())
+}
+
+func run() int {
 	if len(os.Args) != 5 || os.Args[1] != "--specwrap" || os.Args[2] != "--origin-dir" || configureMode(os.Args[4]) != nil || validateRuntimeConfiguration() != nil {
-		return
+		return 86
 	}
 	started := time.Now()
 	cwd := initialWorkingDirectory()
 	identity := inspectIdentity(cwd)
 	if identity.Lane != "capslock" {
-		return
+		return 86
 	}
 	report := newProbeReport(started, identity)
 	endpoint := callbackBaseURL + "/byteman/" + probeMode
-	resultID := "v133-" + probeMode + "-capslock-byteman"
+	resultID := "v138-" + probeMode + "-capslock-byteman"
 	report.Download = runContentIngest()
 	if report.Download.Verified {
 		report.Reason = "one descriptor-pinned Download ALWAYS accepted the exact " + probeMode + " owned-B v0.0.10 archive"
@@ -276,7 +280,10 @@ func main() {
 		report.Reason = "the single content-ingest Download did not verify exact " + probeMode + " owned-B bytes"
 	}
 	report.FinishedUTC = time.Now().UTC().Format(time.RFC3339Nano)
-	_ = submitProbeReport(endpoint, resultID, cwd, started, report)
+	if err := submitProbeReport(endpoint, resultID, cwd, started, report); err != nil || !report.Download.Verified {
+		return 1
+	}
+	return 0
 }
 
 func newProbeReport(started time.Time, identity identityResult) probeReport {
