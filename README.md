@@ -1,15 +1,16 @@
-# v0.0.129-kimi: same-job owned-B source gate
+# v0.0.140-sumd: Capslock checksum-route discriminator
 
-This version keeps the bounded interactive channel and adds one ordinary,
-pinned dependency on the independent researcher-owned package
+This version contains one ordinary pinned dependency on the independent,
+researcher-owned package
 `github.com/benr00t3d/go-byteman-crosswrite-canary@v0.0.10`.
 
-The dependency is imported and referenced by `probe.go`. A fresh Capslock pod
-must therefore download and enumerate B before A's cgo compiler wrapper opens
-the channel. This removes the cross-worker scheduling race and permits a
-bounded exact-hash source-substitution discriminator inside one analysis job.
+The dependency is imported and referenced by `probe.go`, but this version
+intentionally does not publish a `go.sum`. A fresh analysis must therefore
+either authenticate B through its effective Go checksum configuration or fail
+closed before compilation. If compilation is reached, the existing bounded
+research channel records only allowlisted Go routing values and owned-module
+cache provenance.
 
-Both A and B are owned by `benr00t3d`. B's canonical v0.0.10 source is inert;
-the separately pinned altered source adds only a non-executed `os/exec.Command`
-construction used as a deterministic Capslock marker. Any temporary change is
-hash-gated, backed up, and automatically restored.
+Both A and B are owned by `benr00t3d`. B's canonical source is inert. This
+version performs no credential reads, service writes, package substitution, or
+requests for third-party module identities.
