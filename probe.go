@@ -12,11 +12,10 @@ import crosswritecanary "github.com/benr00t3d/go-byteman-crosswrite-canary"
 const Present = true
 
 // ProbeVersion forces a fresh package-analysis input.
-const ProbeVersion = "v0.0.140-sumd-capslock-checksum-route"
+const ProbeVersion = "v0.0.141-sumc-capslock-checksum-control"
 
 // OwnedBBaseline makes the independent researcher-owned B module a real
-// dependency. With no published go.sum, B must be authenticated through the
-// worker's effective checksum configuration before this package can compile.
+// dependency. This matched control publishes B's canonical go.sum entries.
 const OwnedBBaseline = crosswritecanary.Baseline
 
 // LTOValue keeps the bundled LTO object in cgo's link input.

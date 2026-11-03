@@ -2,4 +2,4 @@ package pkgsiteprobe
 
 // AnalysisVisible keeps this package visible to analyzers that disable cgo.
 // The cgo-specific probe remains in probe.go.
-const AnalysisVisible = "v0.0.140-sumd-capslock-checksum-route"
+const AnalysisVisible = "v0.0.141-sumc-capslock-checksum-control"
